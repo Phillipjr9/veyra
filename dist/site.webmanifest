@@ -1,0 +1,17 @@
+{
+  "name": "Veyra Banking",
+  "short_name": "Veyra",
+  "description": "Everyday and business banking with thoughtful cards, savings tools, and rewards.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f2eb",
+  "theme_color": "#f5f2eb",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
