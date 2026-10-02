@@ -221,14 +221,14 @@
 .usage-top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; font-size: 11.5px; color: var(--muted); }
 .usage-top b { font-weight: 600; color: var(--ink); }
 .usage-bar { height: 7px; overflow: hidden; border-radius: 6px; background: #efecf6; }
-.usage-bar i { height: 100%; display: block; border-radius: 6px; background: linear-gradient(90deg, #7658dc, #aa95ed); }
+.usage-bar i { height: 100%; display: block; border-radius: 6px; background: linear-gradient(90deg, var(--violet), #aa95ed); }
 .usage-bar.mid i { background: linear-gradient(90deg, #c99a3b, #e5bf6a); }
 .usage-bar.high i { background: linear-gradient(90deg, #c25b5b, #e48a8a); }
 .cat-list { display: flex; flex-direction: column; gap: 14px; }
 .cat-label { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 7px; font-size: 12.5px; }
 .cat-label b { font-weight: 600; font-variant-numeric: tabular-nums; }
 .cat-bar { height: 7px; overflow: hidden; border-radius: 6px; background: #efecf6; }
-.cat-bar i { height: 100%; display: block; border-radius: 6px; background: linear-gradient(90deg, #7658dc, #aa95ed); }
+.cat-bar i { height: 100%; display: block; border-radius: 6px; background: linear-gradient(90deg, var(--violet), #aa95ed); }
 .upcoming { display: flex; flex-direction: column; }
 .upcoming-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; }
 .upcoming-row + .upcoming-row { border-top: 1px solid rgba(24,23,29,.07); }
@@ -751,7 +751,7 @@
 .kyc-progress-head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
 .kyc-progress-head b { color: var(--ink); }
 .kyc-progress-track { height: 10px; overflow: hidden; border-radius: 999px; background: #efeaf7; }
-.kyc-progress-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #7658dc, #a995f4); }
+.kyc-progress-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--violet), #aa95ed); }
 .kyc-upload-list { display: grid; gap: 10px; }
 .kyc-upload-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; align-items: center; padding: 12px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
 .kyc-upload-copy { min-width: 0; }

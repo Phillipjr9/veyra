@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 /* ==========================================================================
@@ -309,7 +309,7 @@ input[type=range]::-moz-range-track { background: transparent; }
 .calc-result p { max-width: 360px; margin: 0; line-height: 1.5; color: #62577e; }
 .calc-result p strong { color: var(--ink); }
 .calc-bars { position: absolute; right: 0; bottom: 0; height: 75px; display: flex; align-items: flex-end; gap: 7px; }
-.calc-bars i { width: 16px; height: 75px; transform-origin: bottom; border-radius: 3px 3px 0 0; background: linear-gradient(#7658dc, #aa95ed); }
+.calc-bars i { width: 16px; height: 75px; transform-origin: bottom; border-radius: 3px 3px 0 0; background: linear-gradient(var(--violet), #aa95ed); }
 
 /* AI section */
 .ai-section { max-width: none; min-height: 850px; display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 9vw; padding-left: max(40px, calc((100% - 1160px) / 2)); padding-right: max(40px, calc((100% - 1160px) / 2)); background: var(--night); color: #fff; }

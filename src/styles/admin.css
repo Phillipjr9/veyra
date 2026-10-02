@@ -8,7 +8,7 @@
   align-items: center;
   gap: 5px;
   font-weight: 700;
-  color: #7414ca;
+  color: var(--violet);
 }
 
 /* Modern Auth Providers (Google & Passkey) */
@@ -1104,7 +1104,7 @@
   padding: 8px;
   border-radius: 18px;
   background: #ffffff;
-  box-shadow: 0 10px 30px rgba(116, 20, 202, 0.15);
+  box-shadow: 0 10px 30px rgba(117, 88, 220, 0.15);
 }
 
 .zelle-user-tag-row {
@@ -1120,7 +1120,7 @@
 .zelle-user-tag-row code {
   font-family: var(--mono);
   font-size: 13px;
-  color: #7414ca;
+  color: var(--violet);
   font-weight: 700;
 }
 
