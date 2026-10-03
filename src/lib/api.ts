@@ -25,15 +25,11 @@ export function clearToken(): void {
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
 }
 
-/** Synchronous read of the last probe result (null before the first probe). */
-export function apiOnline(): boolean {
-  return cachedOnline === true;
-}
-
 /**
- * Tri-state reachability: "unknown" before the first probe resolves. Callers
- * that must decide whether to *send* something can treat unknown as "try it" —
- * the request itself is the better probe — while "offline" is a known fact.
+ * Tri-state reachability, read synchronously from the last probe (null → the
+ * first probe hasn't resolved). Callers that must decide whether to *send*
+ * something treat "unknown" as "try it" — the request itself is the better
+ * probe — while "offline" is a known fact.
  */
 export function apiReachability(): "online" | "offline" | "unknown" {
   return cachedOnline === null ? "unknown" : cachedOnline ? "online" : "offline";
