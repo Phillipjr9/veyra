@@ -199,7 +199,14 @@ export function LoginPage() {
 
   return (
     <AuthShell title="Welcome back" sub="Sign in to your personal or business Veyra account."
-      foot={<>New to Veyra? <Link to="/signup">Create an account</Link></>}>
+      foot={
+        <>
+          New to Veyra? <Link to="/signup">Create an account</Link>
+          {import.meta.env.DEV && (
+            <span className="auth-build">build {__BUILD_STAMP__} · {offline ? "API unreachable" : "API connected"}</span>
+          )}
+        </>
+      }>
       {sessionNotice && !offline && (
         <div className="auth-notice" role="status">
           <ShieldCheck size={18} />
