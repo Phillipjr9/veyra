@@ -12,7 +12,7 @@ import { Link, NavLink, useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import {
   ArrowRight, Award, CalendarClock, Check, Copy, Eye, EyeOff,
-  Gift, Landmark, Menu, PiggyBank, Plus, Search, Send, Sparkles, Target, TrendingUp, X,
+  ChevronDown, Gift, Landmark, Menu, PiggyBank, Plus, Search, Send, Sparkles, Target, TrendingUp, X,
 } from "lucide-react";
 import { AnimatedMoney, Logo, VirtualCard, ease } from "../../components/common";
 import { money, useAcct, type Txn } from "../../lib/store";
@@ -49,6 +49,11 @@ export function PersonalChrome({ user, nav, unread, notifications, onOpenPalette
   const [menuOpen, setMenuOpen] = useState(false);
   const navigate = useNavigate();
   const flat = nav.flatMap(g => g.items);
+  // The rail-equivalent here is a pill row, so it carries the primary
+  // destinations only — everything else lives in the account menu (and the
+  // bottom tabs on phones) rather than scrolling off the edge.
+  const PRIMARY_PILLS = ["/app", "/app/accounts", "/app/cards", "/app/transactions", "/app/transfers", "/app/bills"];
+  const pills = flat.filter(i => PRIMARY_PILLS.includes(i.to));
   const tabs = flat.filter(i => ["/app", "/app/accounts", "/app/transfers", "/app/cards", "/app/settings"].includes(i.to));
   const first = user.name.split(" ")[0];
 
@@ -58,12 +63,15 @@ export function PersonalChrome({ user, nav, unread, notifications, onOpenPalette
         <div className="pshell-top-inner">
           <Logo to="/app" />
           <nav className="pshell-pills" aria-label="Personal banking">
-            {flat.map(item => (
+            {pills.map(item => (
               <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `pshell-pill ${isActive ? "on" : ""}`}>
                 {item.label}
                 {item.badge && <span className="pshell-pill-badge">{item.badge}</span>}
               </NavLink>
             ))}
+            <button type="button" className={`pshell-pill pshell-pill-more ${menuOpen ? "on" : ""}`} onClick={() => setMenuOpen(o => !o)} aria-expanded={menuOpen}>
+              More <ChevronDown size={13} />
+            </button>
           </nav>
           <div className="pshell-top-right">
             <button type="button" className="pshell-icon-btn" onClick={onOpenPalette} aria-label="Search (Command K)"><Search size={16} /></button>

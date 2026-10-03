@@ -62,7 +62,7 @@
 .b-btn.primary { border-color: #12161f; background: #12161f; color: #fff; }
 
 /* ---------- KPI strip (grid-lined, not cards) ---------- */
-.b-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; border: 1px solid #dde2ea; border-radius: 8px; background: #dde2ea; overflow: hidden; }
+.b-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; border: 1px solid #dde2ea; border-radius: 8px; background: #dde2ea; overflow: hidden; }
 .b-kpi { position: relative; min-height: 132px; padding: 15px 17px 30px; background: #fff; }
 .b-kpi-label { display: block; font-size: 10.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: #79808f; }
 .b-kpi-value { display: block; margin-top: 8px; font: 600 clamp(19px, 1.8vw, 23px)/1.1 var(--mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
@@ -135,7 +135,10 @@
 .b-foot-link:hover { background: #f4f6f9; }
 
 /* ---------- responsive ---------- */
-@media (max-width: 1180px) {
+@media (max-width: 1320px) {
+  .b-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1040px) {
   .b-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 980px) {

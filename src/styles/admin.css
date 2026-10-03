@@ -213,10 +213,14 @@
 
 .admin-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 14px;
   margin: 22px 0 24px;
 }
+/* In the control room the tiles form one instrument strip: hairline gaps,
+   square corners, no floating cards. */
+.admin-app .admin-kpi-grid { gap: 1px; margin: 0 0 16px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.admin-app .admin-kpi-card { padding: 15px 16px 14px; border-radius: 0; }
 
 .admin-kpi-card {
   position: relative;
@@ -1654,7 +1658,21 @@
    dashboards, which have their own (lighter) design languages.
    ========================================================================== */
 
-.admin-app { display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: 100vh; background: #0b0e14; color: #e8ecf3; }
+.admin-app {
+  /* Re-map the shared tokens inside the console so every existing component
+     that reads them (panels, chips, inputs, text) lands on the dark canvas —
+     no per-component patch required. */
+  --ink: #e9eef6;
+  --muted: #8b95a7;
+  --paper: #0f141d;
+  --white: #111721;
+  --line: #1e2634;
+  --green: #4bd288;
+  --violet: #a292ff;
+  --violet-soft: #241f3d;
+  display: grid; grid-template-columns: 214px minmax(0, 1fr); min-height: 100vh;
+  background: #0b0e14; color: #e8ecf3; color-scheme: dark;
+}
 .cr-rail { position: sticky; top: 0; z-index: 80; height: 100vh; height: 100dvh; display: flex; flex-direction: column; padding: 14px 10px 12px; border-right: 1px solid #1a2130; background: #0f131b; }
 .cr-rail-brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 16px; }
 .cr-rail-tag { padding: 3px 5px; border: 1px solid #2a3242; border-radius: 4px; color: #8f76ff; font: 700 9px/1 var(--mono); letter-spacing: .16em; }
@@ -1696,10 +1714,19 @@
 .admin-app .panel-head h2 { color: #eef2f8; font-size: 14px; }
 .admin-app .panel-sub { color: #8b95a7; }
 .admin-app .admin-kpi-grid { gap: 1px; border: 1px solid #1e2634; border-radius: 8px; background: #1e2634; overflow: hidden; }
-.admin-app .admin-kpi, .admin-app .admin-chart-panel { border: 0; border-radius: 0; background: #111721; }
-.admin-app .admin-kpi strong, .admin-app .admin-kpi-value { font-family: var(--mono); font-variant-numeric: tabular-nums; color: #f4f7fb; }
-.admin-app .admin-kpi span, .admin-app .admin-kpi-label { color: #8b95a7; }
-.admin-app .admin-kpi-sub, .admin-app .admin-chart-panel span { color: #7b8798; }
+.admin-app .admin-kpi-card {
+  border: 0; border-radius: 0;
+  background: #111721;
+  box-shadow: none;
+}
+.admin-app .admin-kpi-card::before, .admin-app .admin-kpi-card.featured::after { display: none; }
+.admin-app .admin-kpi-card.featured { background: #131b28; border-color: transparent; }
+.admin-app .admin-kpi-card.featured .kpi-val { color: #dcd2ff; }
+.admin-app .admin-kpi-card:hover { transform: none; box-shadow: none; background: #141c29; }
+.admin-app .kpi-label, .admin-app .admin-kpi-card span { color: #8b95a7; letter-spacing: .12em; font-size: 10.5px; }
+.admin-app .kpi-val { font: 600 clamp(21px, 2.2vw, 26px)/1.1 var(--mono); letter-spacing: -.01em; font-variant-numeric: tabular-nums; color: #f4f7fb; }
+.admin-app .admin-chart-panel { background: #111721; }
+.admin-app .admin-chart-panel span { color: #7b8798; }
 .admin-app .admin-chart-grid, .admin-app .admin-grid-split { gap: 14px; }
 .admin-app .admin-table-wrap { border: 1px solid #1e2634; border-radius: 8px; background: #111721; }
 .admin-app .admin-table { color: #cfd6e2; }
