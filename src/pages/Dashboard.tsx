@@ -173,15 +173,21 @@ function Segmented<T extends string>({ id, value, onChange, options }: { id: str
 }
 
 function Modal({ open, onClose, title, subtitle, children }: { open: boolean; onClose: () => void; title: string; subtitle?: string; children: ReactNode }) {
+  // `onClose` is a fresh arrow function on every render of the page that owns
+  // the modal, so it must not be an effect dependency: re-running the effect
+  // released and re-took the scroll lock (and issued a real scroll) on every
+  // keystroke and toast — dozens of pin/unpin cycles per submit.
+  const close = useRef(onClose);
+  useEffect(() => { close.current = onClose; });
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close.current(); };
     // Locks the page without moving it: releasing a plain overflow lock after a
     // submit (which can resize the page) used to jump the member's view.
     const unlock = lockScroll();
     window.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("keydown", onKey); unlock(); };
-  }, [open, onClose]);
+  }, [open]);
   return createPortal(
     <AnimatePresence>
       {open && (
