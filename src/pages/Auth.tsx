@@ -5,7 +5,7 @@ import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound,
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
-import { apiGet } from "../lib/api";
+import { apiGet, describeAuthError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { useToast } from "../components/Toast";
 
@@ -164,18 +164,24 @@ export function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [errorHint, setErrorHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState("");
   const demos = useDemoAccounts();
 
   async function signIn(asEmail: string, asPassword: string) {
-    setError("");
+    setError(""); setErrorHint("");
     try {
       const me = await login(asEmail, asPassword);
       const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
       navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
+      // Say what happened AND what to do about it: the server's own wording, a
+      // hint for the cause, and the status code. "Can't log in" with no reason
+      // is exactly what this screen used to do.
+      const described = describeAuthError(err, "sign in");
+      setError(described.message);
+      setErrorHint(described.status ? `${described.hint} (HTTP ${described.status})` : described.hint);
     }
   }
 
@@ -260,7 +266,12 @@ export function LoginPage() {
         <input id="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
         <div className="label-row"><label htmlFor="password">Password</label><Link to="/forgot-password">Forgot?</Link></div>
         <PasswordField id="password" value={password} onChange={setPassword} autoComplete="current-password" />
-        {error && <p className="form-error">{error}</p>}
+        {error && (
+          <div className="form-error" role="alert">
+            <strong>{error}</strong>
+            {errorHint && <small>{errorHint}</small>}
+          </div>
+        )}
         <button className="auth-submit" type="submit" disabled={busy}>
           {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Signing in…" : "Sign in"}
         </button>

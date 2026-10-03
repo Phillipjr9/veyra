@@ -162,6 +162,38 @@ export class ApiError extends Error {
 }
 
 /**
+ * Turns whatever a call threw into something a member can act on: what the
+ * server said, the status behind it, and what to do about it. The sign-in form
+ * shows all three, so a failure never leaves someone guessing.
+ */
+export function describeAuthError(err: unknown, action = "sign in"): { message: string; hint: string; status?: number } {
+  if (err instanceof ApiError) {
+    switch (err.status) {
+      case 401:
+        return { message: err.message, hint: "Check the email and password — they have to match the account exactly.", status: err.status };
+      case 403:
+        return { message: err.message, hint: "This account is not allowed to sign in. Contact support if that is unexpected.", status: err.status };
+      case 404:
+        return { message: err.message, hint: `No account matches that email. Create one, or use a demo account below.`, status: err.status };
+      case 429:
+        return { message: err.message, hint: "Too many attempts in the last minute. Wait about a minute, then try again.", status: err.status };
+      default:
+        return {
+          message: err.message,
+          hint: err.status >= 500
+            ? "The server hit an error. Try again in a moment."
+            : `The server refused the ${action} request (HTTP ${err.status}).`,
+          status: err.status,
+        };
+    }
+  }
+  if (err instanceof TypeError) {
+    return { message: "Cannot reach the Veyra server.", hint: "The connection failed before the server answered — check your network, or whether the API is running." };
+  }
+  return { message: err instanceof Error ? err.message : `Could not ${action}.`, hint: "Try again — if it keeps happening, contact support." };
+}
+
+/**
  * `handleUnauthorized: false` keeps a 401 out of the app-wide session handling —
  * for the one call that *checks* a leftover session on load, where a rejection
  * is the normal start of a visit rather than a session dying under the member.
