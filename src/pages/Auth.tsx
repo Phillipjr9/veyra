@@ -9,13 +9,20 @@ import { apiGet, describeAuthError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { useToast } from "../components/Toast";
 
-function AuthShell({ title, sub, children, foot }: { title: string; sub: string; children: ReactNode; foot: ReactNode }) {
+/** 3D artwork shown beside the form (desktop) and above it (phones). */
+const AUTH_ART = {
+  cards: { src: "/images/auth-cards.jpg", alt: "A Veyra card sealed inside a crystal sphere, ringed by lock, shield, freeze and fingerprint controls" },
+  rewards: { src: "/images/auth-rewards.jpg", alt: "A 2% cash-back ribbon surrounded by Veyra coins" },
+};
+
+function AuthShell({ title, sub, children, foot, art = AUTH_ART.cards }: { title: string; sub: string; children: ReactNode; foot: ReactNode; art?: { src: string; alt: string } }) {
   return (
     <>
       <div className="auth-page">
         <div className="auth-visual">
           <div className="auth-visual-inner">
             <Logo inverse />
+            <img className="auth-art" src={art.src} alt={art.alt} />
             <h2>Banking that works<br />while you do.</h2>
             <ul>
               <li><BadgeCheck /> Personal and business checking</li>
@@ -27,6 +34,7 @@ function AuthShell({ title, sub, children, foot }: { title: string; sub: string;
           <div className="auth-visual-glow" />
         </div>
         <div className="auth-form-side">
+          <img className="auth-art-mobile" src={art.src} alt="" aria-hidden="true" loading="lazy" />
           <motion.div className="auth-card" initial={{ opacity: 0, y: 22 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .6 }}>
             <Link to="/" className="auth-back">← Back to site</Link>
             <h1>{title}</h1>
@@ -338,7 +346,7 @@ export function SignupPage() {
   }
 
   return (
-    <AuthShell title="Open your account" sub={form.accountType === "personal" ? "Simple checking for spending, saving and everyday life." : "A few details and your business account is ready."}
+    <AuthShell art={AUTH_ART.rewards} title="Open your account" sub={form.accountType === "personal" ? "Simple checking for spending, saving and everyday life." : "A few details and your business account is ready."}
       foot={<>Already with us? <Link to="/login">Sign in</Link></>}>
       <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
       <form className="auth-form" onSubmit={submit}>
