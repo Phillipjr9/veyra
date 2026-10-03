@@ -26,6 +26,10 @@ const CLIENT_FILES = [
   "src/components/Chrome.tsx",
   "src/components/CommandPalette.tsx",
   "src/components/MoneyFlow.tsx",
+  "src/pages/dashboards/parts.tsx",
+  "src/pages/dashboards/PersonalDashboard.tsx",
+  "src/pages/dashboards/BusinessDashboard.tsx",
+  "src/pages/dashboards/AdminShell.tsx",
 ];
 
 /** Routes whose payload is already delivered by an aggregate snapshot. */

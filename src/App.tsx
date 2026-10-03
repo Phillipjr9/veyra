@@ -107,10 +107,12 @@ function Shell() {
           <Route path="kyc" element={<KYCPage />} />
           <Route path="security" element={<SecurityCenterPage />} />
           <Route path="support-desk" element={<SupportCenterPage />} />
-          <Route path="superadmin" element={<SuperAdminPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/app" replace />} />
         </Route>
+
+        {/* Staff console: its own shell (dark control room), not the member dashboard chrome. */}
+        <Route path="/app/superadmin" element={<RequireAuth><SuperAdminPage /></RequireAuth>} />
 
         <Route path="*" element={<SiteLayout><NotFoundPage /></SiteLayout>} />
       </Routes>

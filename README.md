@@ -54,6 +54,26 @@ Every mutating action checks permissions via `assertCan()`, writes an audit entr
 (admin, action, target, before/after) and notifies the affected member. Account
 restriction blocks the member's outgoing sends at the store layer.
 
+## Three dashboards, three designs
+
+Members and staff do different jobs with different urgency, so the three
+authenticated surfaces are deliberately different applications rather than one
+layout with swapped labels:
+
+| | Personal | Business | Admin console |
+|---|---|---|---|
+| Navigation | Horizontal pill nav + phone-style bottom tabs | Dark icon rail + company header band | Near-black module rail + status bar |
+| Canvas | Warm paper (`#fbf7f1`), 24px radii | Cool grey (`#eef0f4`), hairline rules, 8px radii | Near-black (`#0b0e14`), monospace data |
+| Home | One oversized balance hero, quick-action tiles, goal rings, cash-back strip, activity feed | KPI strip (available/30d in/out/net + runway), receivables & payables tables, card programme, team & approvals, ledger | Module dashboard: totals, gateway health, live activity, audit feed |
+| Numbers | Display face, large and friendly | Monospace, tabular, grid-aligned | Monospace, dense |
+
+They share behaviour, not looks: the same account snapshot, the same money
+moves, the same command palette and notification menu (see
+`src/pages/dashboards/parts.tsx`). Route coverage, the account snapshot and the
+member pages are identical across personal and business — only the chrome and
+the home view change. The console keeps its own permission-gated modules and
+runs outside the member shell entirely.
+
 ## Design system
 
 Defined once in `src/index.css` (`:root` tokens) and reused everywhere:
@@ -81,7 +101,12 @@ src/
     store.tsx           Account state: money, cards, invoices, KYC, team…
     scoutEngine.ts      Scout AI insight generation
   pages/
-    Dashboard.tsx       App shell + every authenticated page
+    Dashboard.tsx       Member data layer + shared authenticated pages
+    dashboards/
+      PersonalDashboard.tsx  Personal chrome + "everyday money" overview
+      BusinessDashboard.tsx  Business chrome + treasury overview
+      AdminShell.tsx         Control-room chrome for the admin console
+      parts.tsx              Shared behaviour: notification menu, sparkline, ring
     Marketing.tsx       Public marketing pages
     Auth.tsx            Sign in / sign up / forgot password / invite accept
     SuperAdmin.tsx      Admin console (users, ledger, KYC requests)
@@ -92,7 +117,7 @@ src/
   emails/
     design.ts           Email design system (tokens → inline-style HTML)
     templates.ts        24 transactional templates
-  styles/               Shared CSS per area
+  styles/               Shared CSS per area (personal.css, business.css, admin.css…)
 emails/                 Exported standalone HTML (build:emails)
 scripts/
   test-permissions.ts  RBAC mirror unit tests (14 checks)

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import {
-  Activity, AlertOctagon, AlertTriangle, BadgeCheck, Bell, Check, Download, FileText,
+  Activity, AlertTriangle, BadgeCheck, Bell, Check, Download, FileText,
   Landmark, Lock, LogOut, Mail, Megaphone, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
   TrendingUp, UserCheck, UserRound, Users, Wallet,
 } from "lucide-react";
@@ -21,6 +21,7 @@ import {
   PERMISSIONS, PERMISSION_LABELS, type Permission, type Role, type StaffRole,
 } from "../lib/permissions";
 import { useToast } from "../components/Toast";
+import { AdminShell } from "./dashboards/AdminShell";
 
 type AdminUser = User & { role?: UserRole };
 type TabId =
@@ -464,43 +465,17 @@ export function SuperAdminPage() {
   ];
 
   return (
-    <div className="app-page superadmin-page">
-      {/* Console header */}
-      <header className="app-head admin-head">
-        <div>
-          <span className="admin-master-badge">
-            <AlertOctagon size={13} /> SUPER ADMIN CONTROL CENTER
-          </span>
-          <h1>Platform oversight</h1>
-          <div className="admin-head-controls">
-            <span className="admin-role-chip">{ROLE_LABELS[role]}</span>
-            <span className="admin-identity">{user?.name} · {user?.email}</span>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flex: "none" }}>
-          <button type="button" className="ghost-btn sm" onClick={() => { logout(); navigate("/"); }}>
-            <LogOut size={14} /> Sign out
-          </button>
-        </div>
-      </header>
-
-      {/* Module navigation */}
-      <div className="admin-tabs-nav" role="tablist" aria-label="Admin modules">
-        {visibleModules.map(m => (
-          <button
-            key={m.id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === m.id}
-            className={`admin-tab-btn ${activeTab === m.id ? "on" : ""}`}
-            onClick={() => { setActiveTab(m.id); setMatrixDraft(null); }}
-          >
-            {m.icon}
-            <span>{m.label}</span>
-            {moduleCount(m.id) !== undefined && <span className="admin-tab-count">{moduleCount(m.id)}</span>}
-          </button>
-        ))}
-      </div>
+    <AdminShell
+      user={{ name: user?.name ?? "", email: user?.email ?? "", avatarUrl: user?.avatarUrl }}
+      roleLabel={ROLE_LABELS[role]}
+      modules={visibleModules.map(({ id, label, icon }) => ({ id, label, icon, count: moduleCount(id) }))}
+      activeTab={activeTab}
+      onSelect={id => { setActiveTab(id as TabId); setMatrixDraft(null); }}
+      onSignOut={() => { logout(); navigate("/"); }}
+      health={apiHealth}
+      uptimeSec={apiUptime}
+    >
+      <div className="superadmin-page">
 
       {/* Backend down / unauthorized — the console is API-only */}
       {adminLoadError && (
@@ -1482,6 +1457,7 @@ export function SuperAdminPage() {
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </AdminShell>
   );
 }
