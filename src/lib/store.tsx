@@ -75,7 +75,7 @@ export type Invoice = {
 export type BankAccountDetails = { accountNumber: string; routingNumber: string; bankName: string; accountType: string; holder: string };
 export type TeamMember = { id: string; name: string; email: string; role: "Owner" | "Admin" | "Member" | "Bookkeeper"; cardCount: number; monthlyLimit: number; status: "active" | "invited" };
 export type Perk = { id: string; partner: string; category: string; value: string; description: string; code: string; status: "available" | "redeemed" };
-export type NotificationItem = { id: string; title: string; detail: string; time: number; read: boolean; type: "scout" | "card" | "transfer" | "security" | "invoice" };
+export type NotificationItem = { id: string; title: string; detail: string; time: number; read: boolean; type: "scout" | "card" | "transfer" | "security" | "invoice" | "info" };
 export type Preferences = { twoFactor: boolean; loginAlerts: boolean; scoutAuto: boolean; weeklyDigest: boolean };
 
 export type SavingsPocket = {
@@ -197,6 +197,8 @@ export type Account = {
   sessions: SecuritySession[];
   scoutApplied: string[];
   kyc: KycRecord;
+  /** Platform-level status set by admins ("restricted" blocks outgoing sends). */
+  accountStatus?: "active" | "restricted";
 };
 
 export type Profile = { name: string; business: string; email: string; accountType: "personal" | "business" };
@@ -599,6 +601,7 @@ function normalize(raw: unknown, p: Profile): Account {
     disputes: list<Dispute>(r.disputes) ?? base.disputes,
     sessions: list<SecuritySession>(r.sessions) ?? base.sessions,
     scoutApplied: list<string>(r.scoutApplied) ?? [],
+    accountStatus: r.accountStatus === "restricted" ? "restricted" : "active",
     kyc: {
       status: kyc.status === "not_started" || kyc.status === "requested" || kyc.status === "in_review" || kyc.status === "approved" || kyc.status === "needs_attention" ? kyc.status : base.kyc.status,
       completeness: num(kyc.completeness, base.kyc.completeness),
@@ -793,6 +796,210 @@ export function resolveKycForUser(
 }
 
 /* ============================================================
+   Platform oversight (Super Admin console)
+   Aggregates every member's stored account — no duplicate data
+   system: the per-user stores remain the single source of truth.
+   ============================================================ */
+
+/** Summary of one member's account for the Accounts module. */
+export type PlatformAccount = {
+  userId: string;
+  name: string;
+  email: string;
+  business: string;
+  accountType: "personal" | "business";
+  hasAccount: boolean;
+  balance: number;
+  pendingBalance: number;
+  rewards: number;
+  cards: number;
+  frozenCards: number;
+  txnCount: number;
+  pendingTxns: number;
+  kycStatus: KycStatus;
+  accountStatus: "active" | "restricted";
+  lastActivity: number;
+};
+
+const memberProfile = (u: { name: string; business: string; email: string; accountType: string }): Profile => ({
+  name: u.name,
+  business: u.business || "",
+  email: u.email,
+  accountType: u.accountType === "personal" ? "personal" : "business",
+});
+
+/** Every member (non-staff) with their stored account summary. */
+export function listAllAccounts(): PlatformAccount[] {
+  return getUsers()
+    .filter(u => u.role === "user" || (!u.role && u.email !== "admin@veyra.com"))
+    .map(u => {
+      const account = readStoredAccount(u.id);
+      return {
+        userId: u.id,
+        name: u.name,
+        email: u.email,
+        business: u.business || "",
+        accountType: u.accountType === "personal" ? "personal" : "business",
+        hasAccount: Boolean(account),
+        balance: typeof account?.balance === "number" ? account.balance : 0,
+        pendingBalance: typeof account?.pendingBalance === "number" ? account.pendingBalance : 0,
+        rewards: typeof account?.rewards === "number" ? account.rewards : 0,
+        cards: Array.isArray(account?.cards) ? account.cards.length : 0,
+        frozenCards: Array.isArray(account?.cards) ? account.cards.filter(c => (c as { frozen?: boolean }).frozen).length : 0,
+        txnCount: Array.isArray(account?.transactions) ? account.transactions.length : 0,
+        pendingTxns: Array.isArray(account?.transactions)
+          ? account.transactions.filter(t => (t as { status?: string }).status === "pending").length
+          : 0,
+        kycStatus: (account?.kyc as { status?: KycStatus } | undefined)?.status ?? "not_started",
+        accountStatus: account?.accountStatus === "restricted" ? "restricted" : "active",
+        lastActivity: Array.isArray(account?.transactions)
+          ? account.transactions.reduce((m, t) => Math.max(m, (t as { date?: number }).date ?? 0), 0)
+          : 0,
+      };
+    });
+}
+
+/** Platform-wide transaction ledger across every stored member account. */
+export function listAllTransactions(limit = 400): Array<Txn & { userId: string; memberName: string }> {
+  const all: Array<Txn & { userId: string; memberName: string }> = [];
+  for (const u of getUsers()) {
+    const account = readStoredAccount(u.id);
+    if (!Array.isArray(account?.transactions)) continue;
+    for (const t of account.transactions) {
+      if (!t || typeof t !== "object") continue;
+      all.push({ ...(t as Txn), userId: u.id, memberName: u.name });
+    }
+  }
+  return all.sort((a, b) => b.date - a.date).slice(0, limit);
+}
+
+/** Every dispute across stored member accounts. */
+export function listAllDisputes(): Array<Dispute & { userId: string; memberName: string }> {
+  const all: Array<Dispute & { userId: string; memberName: string }> = [];
+  for (const u of getUsers()) {
+    const account = readStoredAccount(u.id);
+    if (!Array.isArray(account?.disputes)) continue;
+    for (const d of account.disputes) {
+      if (!d || typeof d !== "object") continue;
+      all.push({ ...(d as Dispute), userId: u.id, memberName: u.name });
+    }
+  }
+  return all;
+}
+
+/**
+ * Credits or debits a member's stored account (cross-account treasury
+ * adjustment). This is the real target-user adjustment used by the Super
+ * Admin console — with a ledger transaction, member notification, and
+ * before/after values returned for the audit trail.
+ */
+export function adminAdjustUserBalance(
+  userId: string,
+  profile: Profile,
+  amount: number,
+  direction: "credit" | "debit",
+  memo: string,
+): { before: number; after: number; reference: string } {
+  const account = load(userId, profile);
+  const before = account.balance;
+  const delta = direction === "credit" ? r2(amount) : -r2(amount);
+  const after = r2(before + delta);
+  const reference = makeReference();
+  const next: Account = {
+    ...account,
+    balance: after,
+    transactions: [
+      {
+        id: rid("txn"),
+        merchant: `Treasury adjustment (${direction === "credit" ? "Credit" : "Debit"})`,
+        category: "Operations",
+        amount: delta,
+        reward: 0,
+        scout: 0,
+        date: Date.now(),
+        note: memo,
+        method: "Internal",
+        reference,
+        status: "cleared",
+      },
+      ...account.transactions,
+    ],
+    notifications: pushNote(account, {
+      title: direction === "credit" ? "Funds credited by Veyra" : "Adjustment applied to your account",
+      detail: `${direction === "credit" ? "+" : "−"}${money(Math.abs(delta))} · ${memo}. New balance ${money(after)}.`,
+      type: direction === "credit" ? "transfer" : "security",
+    }),
+  };
+  save(userId, next);
+  return { before, after, reference };
+}
+
+/** Restricts or restores a member's account (restriction blocks outgoing sends). */
+export function setAccountStatus(
+  userId: string,
+  profile: Profile,
+  status: "active" | "restricted",
+  reason: string,
+): void {
+  const account = load(userId, profile);
+  const next: Account = {
+    ...account,
+    accountStatus: status,
+    notifications: pushNote(account, status === "restricted"
+      ? { title: "Your account is restricted", detail: `${reason} Outgoing transfers are paused while we review.`, type: "security" }
+      : { title: "Your account is fully active", detail: "Restrictions were lifted — all features are available again.", type: "info" }),
+  };
+  save(userId, next);
+}
+
+/** Advances a dispute on a member's stored account (admin arbitration). */
+export function advanceDisputeForUser(
+  userId: string,
+  profile: Profile,
+  disputeId: string,
+): { status: Dispute["status"]; merchant: string; amount: number } | null {
+  const account = load(userId, profile);
+  const dispute = account.disputes.find(d => d.id === disputeId);
+  if (!dispute || dispute.status === "resolved" || dispute.status === "denied") return null;
+  const status: Dispute["status"] = dispute.status === "submitted" ? "reviewing" : "resolved";
+  save(userId, {
+    ...account,
+    balance: status === "resolved" ? r2(account.balance + dispute.amount) : account.balance,
+    disputes: account.disputes.map(d => d.id === disputeId ? { ...d, status, updatedAt: Date.now() } : d),
+    transactions: status === "resolved"
+      ? [{ id: rid("txn"), merchant: `Dispute credit · ${dispute.merchant}`, category: "Operations", amount: dispute.amount, reward: 0, scout: 0, date: Date.now(), note: `Resolved dispute ${dispute.id}`, method: "Adjustment", reference: makeReference(), status: "cleared" }, ...account.transactions]
+      : account.transactions,
+    notifications: pushNote(account, status === "resolved"
+      ? { title: "Dispute resolved", detail: `${money(dispute.amount)} was returned to your account.`, type: "security" }
+      : { title: "Dispute under review", detail: `We're reviewing your ${dispute.merchant} claim.`, type: "security" }),
+  });
+  return { status, merchant: dispute.merchant, amount: dispute.amount };
+}
+
+/** Broadcasts an in-app notification to every member (or a segment). */
+export function broadcastNotification(
+  input: { title: string; detail: string; audience: "all" | "business" | "personal" | "unverified" },
+): { delivered: number } {
+  let delivered = 0;
+  for (const u of getUsers()) {
+    if (u.role && u.role !== "user") continue; // staff are not broadcast targets
+    if (input.audience === "business" && u.accountType !== "business") continue;
+    if (input.audience === "personal" && u.accountType !== "personal") continue;
+    if (input.audience === "unverified") {
+      const kyc = readStoredAccount(u.id)?.kyc;
+      if (kyc?.status === "approved") continue;
+    }
+    const account = load(u.id, memberProfile(u));
+    save(u.id, {
+      ...account,
+      notifications: pushNote(account, { title: input.title, detail: input.detail, type: "info" }),
+    });
+    delivered++;
+  }
+  return { delivered };
+}
+
+/* ============================================================
    Shared account state (one source of truth for every page)
    ============================================================ */
 type SendInput = { counterparty: string; amount: number; category: string; method: string; cardId?: string; note?: string };
@@ -947,6 +1154,9 @@ function useAccountState() {
   const sendPayment = useCallback(
     (input: SendInput): MoveResult => {
       const current = ref.current;
+      if (current?.accountStatus === "restricted") {
+        throw new Error("Your account is restricted. Outgoing transfers are paused — contact support.");
+      }
       const before = current?.balance ?? 0;
       const value = r2(input.amount);
       const reward = r2(value * rewardRate(input.category));

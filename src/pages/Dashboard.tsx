@@ -172,10 +172,10 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
 ];
 
 const NOTE_ROUTES: Record<NotificationItem["type"], string> = {
-  scout: "/app/scout", card: "/app/cards", transfer: "/app/transactions", security: "/app/security", invoice: "/app/invoices",
+  scout: "/app/scout", card: "/app/cards", transfer: "/app/transactions", security: "/app/security", invoice: "/app/invoices", info: "/app",
 };
 const NOTE_ICONS: Record<NotificationItem["type"], ReactNode> = {
-  scout: <Sparkles size={14} />, card: <CreditCard size={14} />, transfer: <Zap size={14} />, security: <ShieldCheck size={14} />, invoice: <ReceiptText size={14} />,
+  scout: <Sparkles size={14} />, card: <CreditCard size={14} />, transfer: <Zap size={14} />, security: <ShieldCheck size={14} />, invoice: <ReceiptText size={14} />, info: <Bell size={14} />,
 };
 
 function PageHeader({ eyebrow, title, children }: { eyebrow: ReactNode; title: ReactNode; children?: ReactNode }) {
@@ -698,7 +698,7 @@ export function DashboardLayout() {
           </div>
         </div>
 
-        {user.role === "superadmin" && (
+        {user.role && user.role !== "user" && (
           <div className="admin-shortcut-box">
             <Link to="/app/superadmin" className="admin-shortcut-link">
               <ShieldCheck size={14} /> Master Super Admin Console →

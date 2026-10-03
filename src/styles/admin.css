@@ -1379,3 +1379,69 @@
 .kyc-doc-review-item > svg { color: var(--violet); }
 .kyc-doc-review-item span { overflow: hidden; font-size: 12.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .kyc-doc-review-item small { max-width: 180px; overflow: hidden; font-size: 11px; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+
+/* ==========================================================================
+   Super Admin Control Center — module chrome, activity, matrix, exports
+   ========================================================================== */
+.admin-head-controls { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.admin-role-chip { display: inline-flex; align-items: center; padding: 4px 11px; border-radius: 999px; background: #ece7fb; color: var(--violet-dark); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.admin-identity { font-size: 12px; color: var(--muted); }
+.admin-tab-count { min-width: 18px; height: 18px; display: grid; place-items: center; padding: 0 5px; border-radius: 999px; background: rgba(117,88,220,.12); color: var(--violet-dark); font-size: 10.5px; font-weight: 700; }
+.admin-tab-btn.on .admin-tab-count { background: rgba(255,255,255,.18); color: #fff; }
+
+.admin-activity-list { display: flex; flex-direction: column; }
+.admin-activity-row { display: flex; align-items: center; gap: 12px; padding: 11px 2px; }
+.admin-activity-row + .admin-activity-row { border-top: 1px solid var(--line); }
+.admin-activity-cat { flex: none; min-width: 66px; text-align: center; padding: 4px 8px; border-radius: 7px; background: #e6effa; color: #3a6ea5; font-size: 10px; font-weight: 700; letter-spacing: .05em; }
+.admin-activity-cat.t-out { background: #f9e5e5; color: #9d4040; }
+.admin-activity-cat.t-in { background: #e3f3e9; color: #2f7a4c; }
+.admin-activity-row strong { display: block; font-size: 13px; line-height: 1.35; }
+.admin-activity-row small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); }
+
+.admin-export-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.admin-export-card { display: grid; gap: 6px; align-content: start; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); text-align: left; cursor: pointer; transition: border-color .2s, background .2s, transform .2s; }
+.admin-export-card:hover { border-color: var(--violet); background: #f6f2fe; transform: translateY(-2px); }
+.admin-export-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; background: #ece7fb; color: var(--violet); }
+.admin-export-card strong { font: 600 14px var(--display); color: var(--ink); }
+.admin-export-card small { font-size: 12px; line-height: 1.5; color: var(--muted); }
+.admin-export-cta { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; font-weight: 700; color: var(--violet-dark); }
+
+.perm-matrix td.ta-c, .perm-matrix th.ta-c { text-align: center; }
+.perm-toggle { display: inline-grid; place-items: center; cursor: pointer; }
+.perm-toggle input { width: 17px; height: 17px; accent-color: var(--violet); cursor: pointer; }
+.role-desc-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 16px; }
+.role-desc-list > div { padding: 13px 15px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.role-desc-list strong { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 600 12.5px var(--display); }
+.role-desc-list span { display: block; margin-top: 5px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+
+.admin-profile { display: flex; gap: 18px; align-items: flex-start; }
+.admin-profile-main { min-width: 0; }
+.admin-profile-main h2 { margin: 0 0 4px; font: 600 20px var(--display); letter-spacing: -.02em; }
+.admin-profile-main > p { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
+.admin-role-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.admin-role-line small { font-size: 12px; color: var(--muted); }
+.admin-perm-chips { display: flex; flex-wrap: wrap; gap: 6px; max-width: 560px; }
+.admin-perm-chip { padding: 4px 10px; border-radius: 999px; background: #ecebe7; color: #5f5c66; font-size: 11px; font-weight: 600; }
+.admin-perm-chip.all { background: #e3f3e9; color: #2f7a4c; }
+
+.admin-before-after { margin: 2px 0 6px; font-size: 12.5px; color: var(--muted); }
+.admin-before-after strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.emergency-action.t-danger > svg:first-child { background: #9d4040; color: #fff; }
+
+/* Mobile — tables scroll inside their wrap, headers stack, modals fit */
+@media (max-width: 900px) {
+  .admin-head { flex-direction: column; align-items: flex-start !important; gap: 12px; }
+  .admin-head-controls { margin-top: 8px; }
+  .admin-table { min-width: 760px; }
+  .admin-tabs-nav { padding-bottom: 6px; scrollbar-width: none; }
+  .admin-tabs-nav::-webkit-scrollbar { display: none; }
+  .admin-tab-btn { flex: none; }
+  .admin-grid-split { gap: 14px; }
+}
+@media (max-width: 640px) {
+  .admin-table { min-width: 640px; }
+  .admin-activity-row { flex-wrap: wrap; }
+  .admin-profile { flex-direction: column; }
+  .modal { width: 94vw; max-width: 94vw; max-height: 92vh; overflow-y: auto; }
+  .admin-tab-btn span { font-size: 12px; }
+}

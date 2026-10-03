@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
-export type UserRole = "user" | "superadmin";
+export type UserRole = "user" | "support" | "compliance" | "admin" | "superadmin";
 
 export type User = {
   id: string;
@@ -55,12 +55,29 @@ export function getUsers(): StoredUser[] {
       accountType: raw.accountType === "personal" ? "personal" : "business",
       email: raw.email,
       avatarUrl: raw.avatarUrl || "/images/avatar-3d-default.svg",
-      role: (raw.role === "superadmin" || raw.email === "admin@veyra.com") ? "superadmin" : "user",
+      role: (raw.role === "superadmin" || raw.email === "admin@veyra.com") ? "superadmin"
+        : raw.role === "admin" || raw.role === "compliance" || raw.role === "support" ? raw.role
+        : "user",
       plan: raw.plan === "Starter" ? "Starter" : "Pro",
       createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
       hash: raw.hash,
     }];
   });
+}
+
+/**
+ * Grants or revokes staff access on an existing user (no second account
+ * system). The acting admin's id is required so nobody can change their own
+ * role, and the master superadmin account can never be demoted.
+ */
+export function setUserRole(targetUserId: string, role: UserRole, actorId: string): void {
+  if (targetUserId === actorId) throw new Error("You cannot change your own role.");
+  const users = getUsers();
+  const target = users.find(u => u.id === targetUserId);
+  if (!target) throw new Error("That member no longer exists.");
+  if (target.role === "superadmin" && role !== "superadmin") throw new Error("A Super Admin cannot be demoted from here.");
+  const next = users.map(u => (u.id === targetUserId ? { ...u, role } : u));
+  write(USERS_KEY, next);
 }
 
 /** Seeds a demo login so the product can be explored without signing up. */
@@ -80,6 +97,16 @@ export async function ensureDemoUser() {
     id: "superadmin-master", name: "Chief System Admin", phone: "+1 (800) 555-0199", business: "Veyra Financial HQ", accountType: "business", email: "admin@veyra.com", role: "superadmin",
     avatarUrl: "/images/avatar-3d-default.svg",
     plan: "Pro", createdAt: Date.now(), hash: await digest("admin123"),
+  });
+  if (!users.some(u => u.email === "compliance@veyra.com")) users.push({
+    id: "compliance", name: "Mira Osei", phone: "+1 (555) 204-7781", business: "Veyra Financial HQ", accountType: "business", email: "compliance@veyra.com", role: "compliance",
+    avatarUrl: "/images/avatar-3d-default.svg",
+    plan: "Pro", createdAt: Date.now(), hash: await digest("veyra123"),
+  });
+  if (!users.some(u => u.email === "support@veyra.com")) users.push({
+    id: "support-desk", name: "Theo Park", phone: "+1 (555) 204-7782", business: "Veyra Financial HQ", accountType: "business", email: "support@veyra.com", role: "support",
+    avatarUrl: "/images/avatar-3d-default.svg",
+    plan: "Pro", createdAt: Date.now(), hash: await digest("veyra123"),
   });
   write(USERS_KEY, users);
 }

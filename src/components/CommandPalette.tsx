@@ -272,7 +272,7 @@ export function CommandPalette({
       );
     }
 
-    if (user?.role === "superadmin" || user?.email === "admin@veyra.com") {
+    if (user?.role && user.role !== "user") {
       list.unshift({
         id: "nav-superadmin",
         category: "Quick Action",

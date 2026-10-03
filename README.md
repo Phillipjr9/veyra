@@ -23,13 +23,32 @@ npm run dev        # http://localhost:5173
 
 ### Demo logins (password: `123456`)
 
-| Account | Email | What it shows |
-|---|---|---|
-| Business | `demo@veyra.com` | Full business dashboard: cards, invoices, team, statements |
-| Personal | `personal@veyra.com` | Personal banking: everyday debit, savings pockets |
-| Super Admin | `admin@veyra.com` | `/app/superadmin` console: users, ledger, KYC requests, email studio |
+| Account | Email | Password | What it shows |
+|---|---|---|---|
+| Business | `demo@veyra.com` | `veyra123` | Full business dashboard: cards, invoices, team, statements |
+| Personal | `personal@veyra.com` | `veyra123` | Personal banking: everyday debit, savings pockets |
+| Super Admin | `admin@veyra.com` | `admin123` | `/app/superadmin` control center — everything below |
+| Compliance | `compliance@veyra.com` | `veyra123` | Admin console limited to KYC + risk queues (RBAC demo) |
+| Support | `support@veyra.com` | `veyra123` | Admin console limited to read-only views + broadcasts |
 
-The login screen has one-tap buttons that fill any of these.
+The login screen's demo buttons fill the business/personal/admin credentials.
+
+## Super Admin control center
+
+`/app/superadmin` — permission-gated modules (RBAC in `src/lib/permissions.ts`):
+
+**Dashboard** (live platform KPIs + recent activity) · **Customers** (deposits/withdrawals
+with before→after preview, KYC requests, restrict/restore) · **Accounts** (balances, cards,
+status) · **Transactions** (platform-wide ledger with deposits / withdrawals / pending
+filters) · **KYC** (request + review queue) · **Risk & Fraud** (disputes arbitration +
+derived risk signals) · **Staff** (promote/revoke on the existing auth system) ·
+**Roles & Permissions** (editable permission matrix) · **Reports** (CSV exports) ·
+**Notifications** (member broadcasts) · **Audit Logs** (append-only, filterable) ·
+**Banking Settings** (params + emergency halt, confirmed & logged) · **Admin Profile**.
+
+Every mutating action checks permissions via `assertCan()`, writes an audit entry
+(admin, action, target, before/after) and notifies the affected member. Account
+restriction blocks the member's outgoing sends at the store layer.
 
 ## Design system
 
@@ -114,5 +133,10 @@ the request cross-account with an in-app notification.
 npm run dev            # dev server
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
-npm test               # KYC flow tests + email link/tag validation
+npm test               # KYC flow (18) + admin control center (39) + email validation (25)
 ```
+
+> **Demo limitation:** there is no backend or database — auth, accounts and the
+> audit trail persist to localStorage. Permission checks run in the store/action
+> layer (the closest analog to server-side enforcement); production needs the
+> same checks on a real server.

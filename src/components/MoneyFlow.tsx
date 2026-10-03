@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowDownLeft, ArrowRight, Building2, Check, Download, Landmark, Lock, ShieldCheck, Sparkles, X, Zap } from "lucide-react";
 import { downloadFile, longDate, money, rewardRate, useAcct, type MoveResult } from "../lib/store";
+import { useToast } from "./Toast";
 import { ease, useCountUp } from "./common";
 import { VeyraMark } from "./VeyraMark";
 
@@ -421,6 +422,7 @@ export function useMoneyFlow() {
 
 export function MoneyFlowProvider({ children }: { children: ReactNode }) {
   const { account, deposit, sendPayment } = useAcct();
+  const toast = useToast();
   const [flow, setFlow] = useState<FlowState | null>(null);
   const [result, setResult] = useState<MoveResult | null>(null);
   const onComplete = useRef<((r: MoveResult) => void) | undefined>(undefined);
@@ -446,15 +448,21 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
     if (!flow || committed.current) return;
     committed.current = true;
     let r: MoveResult;
-    if (flow.kind === "deposit") {
-      r = deposit(flow.amount, sourceById(flow.sourceId).label);
-    } else {
-      r = sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
-      onComplete.current?.(r);
+    try {
+      if (flow.kind === "deposit") {
+        r = deposit(flow.amount, sourceById(flow.sourceId).label);
+      } else {
+        r = sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
+        onComplete.current?.(r);
+      }
+      setResult(r);
+      setFlow({ ...flow, stage: "success" });
+    } catch (err) {
+      committed.current = false;
+      toast({ tone: "error", title: "Transfer blocked", description: err instanceof Error ? err.message : "Something went wrong." });
+      setFlow(null);
     }
-    setResult(r);
-    setFlow({ ...flow, stage: "success" });
-  }, [flow, deposit, sendPayment]);
+  }, [flow, deposit, sendPayment, toast]);
 
   const open = flow !== null;
   const stage = flow?.stage;

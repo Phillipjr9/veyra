@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:emails": "tsx scripts/build-emails.ts",
-    "test": "tsx scripts/test-kyc.ts && node scripts/check-emails.mjs"
+    "test": "tsx scripts/test-kyc.ts && tsx scripts/test-admin.ts && node scripts/check-emails.mjs"
   },
   "dependencies": {
     "clsx": "2.1.1",
