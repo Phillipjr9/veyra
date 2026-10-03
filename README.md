@@ -40,9 +40,9 @@ balance, no cards, no history).
 
 ### Demo accounts (one-click sign-in)
 
-Run `npm run server` and `npm run demo:seed` once, then the login page shows a
-**Demo accounts** panel that signs you straight into each of the three
-dashboards — no typing:
+Start `npm run server` — it seeds the demo accounts on boot — and the login page
+shows a **Demo accounts** panel that signs you straight into each of the three
+dashboards, no typing:
 
 | Button | Account | What it opens |
 |---|---|---|
@@ -50,10 +50,18 @@ dashboards — no typing:
 | Business | `demo.business@veyra.dev` / `veyra-demo-2026` | Business dashboard (treasury, invoices, team) |
 | Super Admin | `admin@veyra.dev` / `veyra-admin-2026` | Admin console (from `ADMIN_EMAIL`/`ADMIN_PASSWORD`) |
 
-`demo:seed` creates the two members through the public API and gives each one
-history for its dashboard; the Super Admin is bootstrapped by the server from
-`.env`. Re-running is safe — an account with activity is left alone, and the
-script warns if the admin password no longer matches the panel.
+The **dev server seeds these accounts on boot**: `server/veyra.db` is gitignored
+and disposable, so a fresh database would otherwise leave you with no way in. It
+creates the two members through the public API (so every number the dashboards
+show comes from the backend), gives each one history for its dashboard, and
+falls back to the panel's admin credentials when `ADMIN_EMAIL`/`ADMIN_PASSWORD`
+aren't set. Set `DEMO_SEED=0` to opt out. `npm run demo:seed` does the same
+against a running API at any time — re-running is safe, an account with activity
+is left alone, and it warns if the admin password no longer matches the panel.
+
+If a stored session goes stale (expired token, or a browser that blocks web
+storage), the app clears it and returns to the login page with a notice instead
+of a dead-end error screen.
 
 The panel is **dev-only**: it renders when `import.meta.env.DEV` is true (any
 `npm run dev` session) or when a build is opened with `?demo=1`. Production
