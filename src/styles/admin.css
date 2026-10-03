@@ -1356,3 +1356,16 @@
   }
 }
 
+
+/* ==========================================================================
+   KYC verification request modal (Super Admin)
+   ========================================================================== */
+.kyc-req-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.kyc-req-chip { position: relative; display: grid; gap: 4px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); cursor: pointer; transition: border-color .2s, background .2s, box-shadow .2s; }
+.kyc-req-chip.on { border-color: var(--violet); background: #f4f0fd; box-shadow: 0 0 0 3px rgba(117,88,220,.12); }
+.kyc-req-chip input { position: absolute; opacity: 0; pointer-events: none; }
+.kyc-req-chip strong { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink); }
+.kyc-req-chip strong::before { content: ""; width: 16px; height: 16px; flex: none; border: 1.5px solid #c9c3d4; border-radius: 5px; background: #fff; transition: background .2s, border-color .2s; }
+.kyc-req-chip.on strong::before { border-color: var(--violet); background: var(--violet) center/10px no-repeat; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12l6 6L20 6'/%3E%3C/svg%3E"); }
+.kyc-req-chip small { font-size: 11px; line-height: 1.45; color: var(--muted); }
+@media (max-width: 600px) { .kyc-req-grid { grid-template-columns: 1fr; } }

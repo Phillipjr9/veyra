@@ -11,7 +11,7 @@
  * these builders, swap the sample values for real data, and send.
  */
 import {
-  T, emailShell, eyebrow, h1, p, amount, pill, details, btn, textLink, note, progress,
+  emailShell, eyebrow, h1, p, amount, pill, details, btn, textLink, note, progress,
 } from "./design";
 
 export type EmailCategory = "security" | "transfers" | "cards" | "invoices" | "scout" | "account";
@@ -602,25 +602,26 @@ const kycAction: EmailTemplate = {
   id: "kyc-action",
   name: "Verification action needed",
   category: "account",
-  subject: "Action needed · verify your business address",
-  preheader: "You're 72% verified — one document stands between you and full access.",
+  subject: "Action needed · verify your identity",
+  preheader: "Our compliance team requested identity verification — complete it in about five minutes.",
   html: emailShell({
-    subject: "Action needed · verify your business address",
-    preheader: "You're 72% verified — one document stands between you and full access.",
+    subject: "Action needed · verify your identity",
+    preheader: "Our compliance team requested identity verification — complete it in about five minutes.",
     content: `
       ${eyebrow("Account verification")}
-      ${h1("One step left to verify your account")}
-      ${p("We just need proof of your business address — a utility bill, lease or bank statement dated within the last 3 months works perfectly.")}
+      ${h1("Verification was requested for your account")}
+      ${p("The Veyra compliance team has asked you to verify your identity. Until then, your account keeps reduced limits. Completing verification takes about five minutes — your details, a few documents, and you're done.")}
       ${pill("Action needed", "amber")}
       ${details([
-        ["Completed steps", "Identity · business registration"],
-        ["Remaining", "Address verification"],
+        ["Requested by", "Veyra compliance team"],
+        ["Documents needed", "Photo ID · Proof of address"],
+        ["Your progress", "72% complete"],
         ["Started", "Sep 30, 2026"],
-        ["Review time", "Usually under 2 hours"],
+        ["Review time", "1–2 business days after submit"],
       ])}
       ${progress(72, "Verification · 72% complete")}
       ${btn("Continue verification", `${APP}/kyc`)}
-      ${note("Unverified accounts keep a $10,000 monthly send limit. Verifying lifts all limits.")}
+      ${note("Unverified accounts keep a $10,000 monthly send limit. Verifying lifts all limits — including outgoing wires and unlimited card issuance.")}
     `,
   }),
 };

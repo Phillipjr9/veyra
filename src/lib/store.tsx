@@ -135,7 +135,9 @@ export type SecuritySession = {
   trusted: boolean;
 };
 
-export type KycStatus = "not_started" | "in_review" | "approved" | "needs_attention";
+export type KycStatus = "not_started" | "requested" | "in_review" | "approved" | "needs_attention";
+/** Document categories a compliance review can ask a member for. */
+export type KycRequirement = "identity" | "address" | "selfie" | "funds";
 export type KycRecord = {
   status: KycStatus;
   completeness: number;
@@ -143,6 +145,19 @@ export type KycRecord = {
   nextStep: string;
   documentType: string;
   country: string;
+  /** Set when an admin requests verification: who asked, when and why. */
+  requestedAt?: number;
+  requestedBy?: string;
+  requestReason?: string;
+  /** Which document categories the admin asked for. */
+  requirements?: KycRequirement[];
+};
+/** Admin-initiated verification request payload. */
+export type KycRequest = {
+  requestedBy: string;
+  reason: string;
+  requirements: KycRequirement[];
+  documentType?: string;
 };
 
 export type Account = {
@@ -570,12 +585,18 @@ function normalize(raw: unknown, p: Profile): Account {
     sessions: list<SecuritySession>(r.sessions) ?? base.sessions,
     scoutApplied: list<string>(r.scoutApplied) ?? [],
     kyc: {
-      status: kyc.status === "not_started" || kyc.status === "in_review" || kyc.status === "approved" || kyc.status === "needs_attention" ? kyc.status : base.kyc.status,
+      status: kyc.status === "not_started" || kyc.status === "requested" || kyc.status === "in_review" || kyc.status === "approved" || kyc.status === "needs_attention" ? kyc.status : base.kyc.status,
       completeness: num(kyc.completeness, base.kyc.completeness),
       lastUpdated: num(kyc.lastUpdated, base.kyc.lastUpdated),
       nextStep: typeof kyc.nextStep === "string" ? kyc.nextStep : base.kyc.nextStep,
       documentType: typeof kyc.documentType === "string" ? kyc.documentType : base.kyc.documentType,
       country: typeof kyc.country === "string" ? kyc.country : base.kyc.country,
+      requestedAt: typeof kyc.requestedAt === "number" ? kyc.requestedAt : undefined,
+      requestedBy: typeof kyc.requestedBy === "string" ? kyc.requestedBy : undefined,
+      requestReason: typeof kyc.requestReason === "string" ? kyc.requestReason : undefined,
+      requirements: Array.isArray(kyc.requirements)
+        ? kyc.requirements.filter((q): q is KycRequirement => q === "identity" || q === "address" || q === "selfie" || q === "funds")
+        : undefined,
     },
   };
 }
@@ -623,6 +644,60 @@ function load(userId: string, p: Profile): Account {
 
 const pushNote = (a: Account, note: Omit<NotificationItem, "id" | "time" | "read">): NotificationItem[] =>
   [{ ...note, id: rid("n"), time: Date.now(), read: false }, ...a.notifications].slice(0, 40);
+
+/* ============================================================
+   Admin-initiated KYC requests (cross-account)
+   ============================================================ */
+
+/**
+ * Places a verification request on a member's account (used by the Super Admin
+ * console). The member sees a pop-up alert at the top of their dashboard until
+ * they complete verification. Seeds the member's store if they have never
+ * signed in on this device so the request is never lost.
+ */
+export function requestKycForUser(userId: string, profile: Profile, req: KycRequest): void {
+  const account = load(userId, profile);
+  const requirements = req.requirements.length > 0 ? req.requirements : (["identity", "address"] as KycRequirement[]);
+  const next: Account = {
+    ...account,
+    kyc: {
+      ...account.kyc,
+      status: account.kyc.status === "approved" ? account.kyc.status : "requested",
+      requestedAt: Date.now(),
+      requestedBy: req.requestedBy,
+      requestReason: req.reason,
+      requirements,
+      documentType: req.documentType ?? account.kyc.documentType,
+      lastUpdated: Date.now(),
+      nextStep: `Compliance requested ${requirements.length} document${requirements.length === 1 ? "" : "s"} — upload them to lift your account limits.`,
+    },
+    notifications: pushNote(account, {
+      title: "Identity verification requested",
+      detail: `${req.requestedBy} asked you to verify your identity. ${req.reason}`,
+      type: "security",
+    }),
+  };
+  save(userId, next);
+}
+
+/** Reads a member's KYC status without seeding or mutating their store. */
+export function peekKycForUser(userId: string): Pick<KycRecord, "status" | "completeness" | "requestedAt"> {
+  try {
+    const raw = localStorage.getItem(storageKey(userId));
+    if (!raw) return { status: "not_started", completeness: 0 };
+    const parsed = JSON.parse(raw) as Partial<Account>;
+    const kyc = parsed.kyc;
+    if (!kyc || typeof kyc !== "object") return { status: "not_started", completeness: 0 };
+    const allowed: KycStatus[] = ["not_started", "requested", "in_review", "approved", "needs_attention"];
+    return {
+      status: allowed.includes(kyc.status as KycStatus) ? (kyc.status as KycStatus) : "not_started",
+      completeness: typeof kyc.completeness === "number" ? kyc.completeness : 0,
+      requestedAt: typeof kyc.requestedAt === "number" ? kyc.requestedAt : undefined,
+    };
+  } catch {
+    return { status: "not_started", completeness: 0 };
+  }
+}
 
 /* ============================================================
    Shared account state (one source of truth for every page)

@@ -6,7 +6,7 @@ import {
   FileText, Activity, AlertOctagon, UserCheck, Mail
 } from "lucide-react";
 import { useAuth, getUsers } from "../lib/auth";
-import { useAcct, money, longDate } from "../lib/store";
+import { useAcct, money, longDate, requestKycForUser, peekKycForUser, type KycRequirement } from "../lib/store";
 import { useToast } from "../components/Toast";
 
 export function SuperAdminPage() {
@@ -23,6 +23,10 @@ export function SuperAdminPage() {
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustType, setAdjustType] = useState<"credit" | "debit">("credit");
   const [adjustMemo, setAdjustMemo] = useState("");
+  const [kycModal, setKycModal] = useState(false);
+  const [kycReqs, setKycReqs] = useState<KycRequirement[]>(["identity", "address"]);
+  const [kycReason, setKycReason] = useState("");
+  const [kycTick, setKycTick] = useState(0);
 
   // Protect route
   if (user?.role !== "superadmin" && user?.email !== "admin@veyra.com") {
@@ -67,6 +71,30 @@ export function SuperAdminPage() {
       tone: "success",
       title: `Ledger Adjustment Succeeded`,
       description: `${adjustType === "credit" ? "+" : "−"}${money(val)} recorded for ${targetUser?.name || "Account"}.`,
+    });
+  };
+
+  /** Places a verification request on the selected member's account. */
+  const handleRequestKyc = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetUser) return;
+    requestKycForUser(targetUser.id, {
+      name: targetUser.name,
+      business: targetUser.business || "",
+      email: targetUser.email,
+      accountType: targetUser.accountType === "personal" ? "personal" : "business",
+    }, {
+      requestedBy: user?.name || "Veyra compliance",
+      reason: kycReason.trim() || "Identity verification is required to lift your account limits.",
+      requirements: kycReqs,
+    });
+    setKycModal(false);
+    setKycReason("");
+    setKycTick(t => t + 1);
+    toast({
+      tone: "success",
+      title: "Verification request sent",
+      description: `${targetUser.name} will see an identity verification alert on their dashboard and receive an email.`,
     });
   };
 
@@ -255,11 +283,14 @@ export function SuperAdminPage() {
                     <th>Company / Entity</th>
                     <th>Role</th>
                     <th>Membership</th>
+                    <th>KYC</th>
                     <th className="ta-r">Admin Action</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {filteredUsers.map(u => (
+                <tbody key={kycTick}>
+                  {filteredUsers.map(u => {
+                    const kyc = peekKycForUser(u.id);
+                    return (
                     <tr key={u.id}>
                       <td><code>{u.id}</code></td>
                       <td><strong>{u.name}</strong></td>
@@ -279,20 +310,39 @@ export function SuperAdminPage() {
                         )}
                       </td>
                       <td><strong>{u.plan}</strong></td>
-                      <td className="ta-r">
-                        <button
-                          type="button"
-                          className="solid-btn sm"
-                          onClick={() => {
-                            setTargetUser(u);
-                            setAdjustModal(true);
-                          }}
+                      <td>
+                        <span
+                          className={`status-pill ${kyc.status === "approved" ? "paid" : kyc.status === "in_review" ? "active" : kyc.status === "requested" || kyc.status === "needs_attention" ? "overdue" : "open"}`}
+                          title={kyc.status === "not_started" ? "No verification on file" : `Completeness ${kyc.completeness}%`}
                         >
-                          Adjust Balance
-                        </button>
+                          <span className="dot" />
+                          {kyc.status === "not_started" ? "unverified" : kyc.status.replace("_", " ")}
+                        </span>
+                      </td>
+                      <td className="ta-r">
+                        <div style={{ display: "inline-flex", gap: "6px" }}>
+                          <button
+                            type="button"
+                            className="ghost-btn sm"
+                            onClick={() => { setTargetUser(u); setKycReqs(["identity", "address"]); setKycModal(true); }}
+                          >
+                            <UserCheck size={13} /> Request KYC
+                          </button>
+                          <button
+                            type="button"
+                            className="solid-btn sm"
+                            onClick={() => {
+                              setTargetUser(u);
+                              setAdjustModal(true);
+                            }}
+                          >
+                            Adjust Balance
+                          </button>
+                        </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -563,6 +613,56 @@ export function SuperAdminPage() {
               <Mail size={14} /> Open email template studio
             </a>
           </section>
+        </div>
+      )}
+
+      {/* KYC Verification Request Modal */}
+      {kycModal && (
+        <div className="modal-scrim" onClick={() => setKycModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Request identity verification: {targetUser?.name}</h3>
+            </div>
+            <form onSubmit={handleRequestKyc} className="dash-form">
+              <label>Documents to request</label>
+              <div className="kyc-req-grid">
+                {([
+                  ["identity", "Photo ID", "Government-issued identity document"],
+                  ["address", "Proof of address", "Utility bill, lease or bank statement"],
+                  ["selfie", "Selfie / liveness", "Selfie matched against the ID"],
+                  ["funds", "Source of funds", "Payslip, invoice or income statement"],
+                ] as Array<[KycRequirement, string, string]>).map(([id, label, note]) => (
+                  <label key={id} className={`kyc-req-chip ${kycReqs.includes(id) ? "on" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={kycReqs.includes(id)}
+                      onChange={e => setKycReqs(reqs => e.target.checked ? [...reqs, id] : reqs.filter(r => r !== id))}
+                    />
+                    <strong>{label}</strong>
+                    <small>{note}</small>
+                  </label>
+                ))}
+              </div>
+
+              <label htmlFor="adm-kyc-reason">Reason shown to the member</label>
+              <textarea
+                id="adm-kyc-reason"
+                rows={3}
+                placeholder="e.g. Annual compliance review — verification is required to lift your account limits."
+                value={kycReason}
+                onChange={e => setKycReason(e.target.value)}
+              />
+
+              <div className="modal-actions">
+                <button type="button" className="ghost-btn" onClick={() => setKycModal(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="solid-btn" disabled={kycReqs.length === 0}>
+                  <UserCheck size={14} /> Send verification request
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

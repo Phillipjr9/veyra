@@ -63,6 +63,7 @@ function Shell() {
         <Route path="/help-center" element={<SiteLayout><HelpCenterPage /></SiteLayout>} />
         <Route path="/concierge" element={<SiteLayout><ConciergePage /></SiteLayout>} />
         <Route path="/perks" element={<SiteLayout><PerksMarketingPage /></SiteLayout>} />
+        <Route path="/email-templates" element={<SiteLayout><EmailTemplatesPage /></SiteLayout>} />
         <Route path="/contact" element={<SiteLayout><ContactPage /></SiteLayout>} />
         <Route path="/about" element={<SiteLayout><AboutPage /></SiteLayout>} />
         <Route path="/careers" element={<SiteLayout><CareersPage /></SiteLayout>} />
