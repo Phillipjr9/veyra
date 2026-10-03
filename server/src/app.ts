@@ -19,6 +19,7 @@ import {
 } from "./rbac.js";
 import { logAdminAction } from "./audit.js";
 import { seed } from "./seed.js";
+import { buildMemberState, seedMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -70,6 +71,20 @@ export function createApp(dbPath?: string) {
     ).get(userId) as (AuthedUser & { account_type: string }) | undefined;
     if (!row) return null;
     return { ...row, accountType: row.account_type as "personal" | "business" };
+  }
+
+  /** Full user shape — mirrors the frontend User model (used by /api/auth/me). */
+  function fullUser(userId: string) {
+    const row = db.prepare(
+      "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at FROM users WHERE id = ?",
+    ).get(userId) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      id: String(row.id), name: String(row.name), email: String(row.email), phone: String(row.phone ?? ""),
+      business: String(row.business ?? ""), accountType: row.account_type as "personal" | "business",
+      avatarUrl: String(row.avatar_url ?? "/images/avatar-3d-default.svg"),
+      role: row.role as string, plan: row.plan as "Starter" | "Pro", createdAt: row.created_at as number,
+    };
   }
 
   function requireAuth(req: Request, res: Response, next: NextFunction): void {
@@ -137,7 +152,7 @@ export function createApp(dbPath?: string) {
   }));
 
   app.post("/api/auth/register", wrap((req, res) => {
-    const { name, email, password, accountType, business } = req.body ?? {};
+    const { name, email, password, accountType, business, phone, plan } = req.body ?? {};
     if (typeof name !== "string" || !name.trim()) return void res.status(400).json({ error: "Name is required." });
     if (typeof email !== "string" || !/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "A valid email is required." });
     if (typeof password !== "string" || password.length < 8) return void res.status(400).json({ error: "Use at least 8 characters for your password." });
@@ -149,23 +164,21 @@ export function createApp(dbPath?: string) {
       return void res.status(400).json({ error: "Business name is required for a business account." });
     }
     const id = rid("u");
-    const accountNumber = Array.from({ length: 12 }, () => Math.floor(Math.random() * 10)).join("");
     inTransaction(db, () => {
       db.prepare(
         `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
-         VALUES (?, ?, ?, '', ?, ?, 'user', 'Pro', ?, 'active', ?)`,
-      ).run(id, name.trim(), email, typeof business === "string" ? business : "", type, hashPassword(password), now());
-      db.prepare(
-        `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
-         VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
-      ).run(id, accountNumber, now(), now());
-      db.prepare("INSERT INTO kyc_records (user_id, status, completeness, updated_at) VALUES (?, 'not_started', 0, ?)").run(id, now());
+         VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?, 'active', ?)`,
+      ).run(id, name.trim(), email, typeof phone === "string" ? phone.trim() : "", typeof business === "string" ? business : "", type,
+        plan === "Starter" ? "Starter" : "Pro", hashPassword(password), now());
+    });
+    // New members start with the same demo dataset the standalone frontend generates.
+    seedMemberState(db, id, {
+      name: name.trim(), business: typeof business === "string" ? business : "", email, accountType: type,
     });
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
-    const user = loadUser(id)!;
-    res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: user.role }), user: publicUser(user) });
+    res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
   }));
 
   app.post("/api/auth/logout", requireAuth, wrap((req, res) => {
@@ -176,7 +189,28 @@ export function createApp(dbPath?: string) {
   }));
 
   app.get("/api/auth/me", requireAuth, wrap((req, res) => {
-    res.json({ user: publicUser(req.user!) });
+    res.json({ user: fullUser(req.user!.id) });
+  }));
+
+  app.post("/api/auth/change-password", requireAuth, wrap(async (req, res) => {
+    const current = String(req.body?.current ?? "");
+    const next = String(req.body?.next ?? "");
+    if (next.length < 8) return void res.status(400).json({ error: "Use at least 8 characters." });
+    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(req.user!.id) as { password_hash: string };
+    if (!verifyPassword(current, row.password_hash)) return void res.status(400).json({ error: "Your current password is incorrect." });
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(next), req.user!.id);
+    res.json({ ok: true });
+  }));
+
+  // Demo password reset: issues a temporary password (a real deployment would
+  // email a one-time link instead of returning the password in the response).
+  app.post("/api/auth/reset-password", wrap((req, res) => {
+    const email = String(req.body?.email ?? "").trim().toLowerCase();
+    const row = db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string } | undefined;
+    if (!row) return void res.status(404).json({ error: "We couldn't find an account with that email." });
+    const temp = `veyra-${Math.random().toString(36).slice(2, 8)}`;
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(temp), row.id);
+    res.json({ tempPassword: temp });
   }));
 
   /* ============================== member routes ============================== */
@@ -209,25 +243,37 @@ export function createApp(dbPath?: string) {
     const cents = dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_DEPOSIT_CENTS) return void res.status(400).json({ error: "Deposits are limited to $100,000 per transaction." });
-    const source = String(req.body?.source ?? "External transfer");
-    const result = inTransaction(db, () => {
-      const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
-        | { id: number; balance_cents: number }
-        | undefined;
-      if (!account) throw new Error("No account found.");
-      const after = account.balance_cents + cents;
-      db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(after, now(), account.id);
-      const txn = {
-        id: rid("txn"), accountId: account.id, merchant: source, category: "Operations",
-        method: "ACH", cents, reference: rid("VYR").toUpperCase().replace("_", "-"),
-      };
-      db.prepare(
-        `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
-         VALUES (?, ?, ?, ?, 'Operations', 'ACH', ?, 'cleared', ?, 'External deposit', ?)`,
-      ).run(txn.id, account.id, req.user!.id, txn.merchant, cents, txn.reference, now());
-      return { ...txn, balanceAfter: after };
-    });
-    res.status(201).json({ transaction: { id: result.id, merchant: result.merchant, amount: money(result.cents), reference: result.reference, status: "cleared" }, balance: money(result.balanceAfter) });
+    const isCheck = typeof req.body?.checkNumber === "string" && String(req.body.checkNumber).trim() !== "";
+    const merchant = isCheck
+      ? `Check #${String(req.body.checkNumber).trim()} · ${String(req.body?.issuer ?? "Issuer")}`
+      : String(req.body?.source ?? "External transfer");
+    const method = isCheck ? "Mobile Check" : "ACH";
+    const note = isCheck ? (String(req.body?.memo ?? "") || `Mobile check deposit from ${String(req.body?.issuer ?? "issuer")}`) : "Incoming ACH deposit";
+    try {
+      const result = inTransaction(db, () => {
+        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
+          | { id: number; balance_cents: number }
+          | undefined;
+        if (!account) throw new Error("No account found.");
+        const before = account.balance_cents;
+        const after = before + cents;
+        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(after, now(), account.id);
+        const txn = { id: rid("txn"), reference: makeReference() };
+        db.prepare(
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+           VALUES (?, ?, ?, ?, 'Operations', ?, ?, 'cleared', ?, ?, ?)`,
+        ).run(txn.id, account.id, req.user!.id, merchant, method, cents, txn.reference, note, now());
+        notify(req.user!.id, "transfer", "Deposit received", `+${centsToDecimal(cents)} from ${merchant} is available now.`);
+        return { id: txn.id, reference: txn.reference, before, after };
+      });
+      res.status(201).json({
+        result: { reference: result.reference, date: now(), amount: cents / 100, balanceBefore: result.before / 100, balanceAfter: result.after / 100, reward: 0, scout: 0 },
+        transaction: { id: result.id, merchant, amount: money(cents), reference: result.reference, status: "cleared" },
+        balance: money(result.after),
+      });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Deposit failed." });
+    }
   }));
 
   app.post("/api/me/transfers", requireAuth, wrap((req, res) => {
@@ -242,26 +288,41 @@ export function createApp(dbPath?: string) {
     if (getSetting(db, "payment_rails") === "halted") {
       return void res.status(503).json({ error: "Payment rails are temporarily halted. Please try again shortly." });
     }
+    const category = String(req.body?.category ?? "Operations");
+    const method = String(req.body?.method ?? "ACH");
+    const note = String(req.body?.note ?? `${method} payment`);
+    const cardId = typeof req.body?.cardId === "string" ? req.body.cardId : null;
+    const reward = Math.round(cents * rewardRate(category));
+    const prefs = db.prepare("SELECT scout_auto FROM preferences WHERE user_id = ?").get(req.user!.id) as { scout_auto: number } | undefined;
+    const scoutOn = prefs?.scout_auto !== 0;
+    const scout = scoutOn && Math.random() < 0.65 ? Math.round(cents * (0.03 + Math.random() * 0.07)) : 0;
     try {
       const result = inTransaction(db, () => {
-        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
-          | { id: number; balance_cents: number }
+        const account = db.prepare("SELECT id, balance_cents, rewards_cents, lifetime_rewards_cents, scout_saved_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
+          | { id: number; balance_cents: number; rewards_cents: number; lifetime_rewards_cents: number; scout_saved_cents: number }
           | undefined;
         if (!account) throw new Error("No account found.");
         if (account.balance_cents < cents) throw new Error("Insufficient funds for this transfer.");
-        const after = account.balance_cents - cents;
-        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(after, now(), account.id);
-        const txn = {
-          id: rid("txn"), accountId: account.id, reference: rid("VYR").toUpperCase().replace("_", "-"),
-        };
+        const before = account.balance_cents;
+        const after = before - cents + scout; // Scout savings are credited immediately
+        if (after < 0) throw new Error("Insufficient funds for this transfer.");
+        db.prepare("UPDATE accounts SET balance_cents = ?, rewards_cents = ?, lifetime_rewards_cents = ?, scout_saved_cents = ?, updated_at = ? WHERE id = ?")
+          .run(after, account.rewards_cents + reward, account.lifetime_rewards_cents + reward, account.scout_saved_cents + scout, now(), account.id);
+        const txn = { id: rid("txn"), reference: makeReference() };
         db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, '', ?)`,
-        ).run(txn.id, account.id, req.user!.id, counterparty,
-          String(req.body?.category ?? "Operations"), String(req.body?.method ?? "ACH"), -cents, txn.reference, now());
-        return { ...txn, balanceAfter: after };
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, reward_cents, scout_cents, card_id, status, reference, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?)`,
+        ).run(txn.id, account.id, req.user!.id, counterparty, category, method, -cents, reward, scout, cardId, txn.reference, note, now());
+        if (cardId) db.prepare("UPDATE cards SET spent_cents = spent_cents + ? WHERE id = ? AND user_id = ?").run(cents, cardId, req.user!.id);
+        if (scout > 0) notify(req.user!.id, "scout", `Scout saved ${(scout / 100).toFixed(2)}`, `Found a better rate on your ${counterparty} payment.`);
+        notify(req.user!.id, "transfer", `Sent ${(cents / 100).toFixed(2)} to ${counterparty}`, `${method} · +${(reward / 100).toFixed(2)} rewards earned.`);
+        return { id: txn.id, reference: txn.reference, before, after };
       });
-      res.status(201).json({ transaction: { id: result.id, merchant: counterparty, amount: money(-cents), reference: result.reference, status: "cleared" }, balance: money(result.balanceAfter) });
+      res.status(201).json({
+        result: { reference: result.reference, date: now(), amount: cents / 100, balanceBefore: result.before / 100, balanceAfter: result.after / 100, reward: reward / 100, scout: scout / 100 },
+        transaction: { id: result.id, merchant: counterparty, amount: money(-cents), reference: result.reference, status: "cleared" },
+        balance: money(result.after),
+      });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Transfer failed." });
     }
@@ -319,6 +380,522 @@ export function createApp(dbPath?: string) {
     ).run(id, req.user!.id, txnId, txn ? (txn.merchant as string) : String(req.body?.merchant ?? "Unknown merchant"),
       cents, reason, String(req.body?.detail ?? ""), now(), now());
     res.status(201).json({ dispute: { id, status: "submitted" } });
+  }));
+
+  /* ============================== member: full state ============================== */
+
+  // One round trip: the complete Account snapshot in the exact shape the
+  // frontend consumes (see src/lib/store.tsx → Account).
+  app.get("/api/me/state", requireAuth, wrap((req, res) => {
+    const state = buildMemberState(db, req.user!.id);
+    if (!state) return void res.status(404).json({ error: "No account found." });
+    res.json({ account: state });
+  }));
+
+  // Demo data reset (Settings → Reset demo data)
+  app.post("/api/me/reset", requireAuth, wrap((req, res) => {
+    const u = db.prepare("SELECT name, business, email, account_type FROM users WHERE id = ?").get(req.user!.id) as Record<string, unknown>;
+    inTransaction(db, () => {
+      seedMemberState(db, req.user!.id, {
+        name: String(u.name), business: String(u.business ?? ""), email: String(u.email),
+        accountType: u.account_type === "personal" ? "personal" : "business",
+      });
+    });
+    res.json({ account: buildMemberState(db, req.user!.id) });
+  }));
+
+  /* ---------- profile & preferences ---------- */
+
+  app.patch("/api/me/profile", requireAuth, wrap((req, res) => {
+    const patch = req.body ?? {};
+    const sets: string[] = [];
+    const vals: Array<string | number> = [];
+    if (typeof patch.name === "string" && patch.name.trim()) { sets.push("name = ?"); vals.push(patch.name.trim()); }
+    if (typeof patch.phone === "string") { sets.push("phone = ?"); vals.push(patch.phone.trim()); }
+    if (typeof patch.business === "string" && req.user!.accountType === "business") { sets.push("business = ?"); vals.push(patch.business.trim()); }
+    if (typeof patch.avatarUrl === "string" && patch.avatarUrl.length < 1_500_000) { sets.push("avatar_url = ?"); vals.push(patch.avatarUrl); }
+    if (patch.plan === "Starter" || patch.plan === "Pro") { sets.push("plan = ?"); vals.push(patch.plan); }
+    if (!sets.length) return void res.status(400).json({ error: "Nothing to update." });
+    db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...vals, req.user!.id);
+    res.json({ user: fullUser(req.user!.id) });
+  }));
+
+  app.put("/api/me/preferences", requireAuth, wrap((req, res) => {
+    const key = String(req.body?.key ?? "");
+    const value = req.body?.value === true;
+    const map: Record<string, string> = { twoFactor: "two_factor", loginAlerts: "login_alerts", scoutAuto: "scout_auto", weeklyDigest: "weekly_digest" };
+    const col = map[key];
+    if (!col) return void res.status(400).json({ error: "Unknown preference." });
+    db.prepare(`INSERT INTO preferences (user_id, ${col}) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET ${col} = excluded.${col}`)
+      .run(req.user!.id, value ? 1 : 0);
+    res.json({ ok: true });
+  }));
+
+  /* ---------- cards ---------- */
+
+  const cardRow = (id: string, userId: string) =>
+    db.prepare("SELECT * FROM cards WHERE id = ? AND user_id = ?").get(id, userId) as Record<string, unknown> | undefined;
+
+  app.post("/api/me/cards", requireAuth, wrap((req, res) => {
+    const label = String(req.body?.label ?? "").trim();
+    const type = req.body?.type === "physical" ? "physical" : "virtual";
+    const limit = dollarsToCents(req.body?.limit ?? 0);
+    const cardholder = String(req.body?.cardholder ?? req.user!.name);
+    if (!label) return void res.status(400).json({ error: "A label is required." });
+    if (limit <= 0) return void res.status(400).json({ error: "A monthly limit is required." });
+    const id = rid("card");
+    const nums = cardNumbers();
+    const controls = { online: true, contactless: true, atm: type === "physical", international: false, magstripe: type === "physical" };
+    const shipping = type === "physical"
+      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: String(req.body?.shippingAddress ?? "125 Market Street · San Francisco, CA 94105") }
+      : { status: "not_applicable" };
+    db.prepare(
+      `INSERT INTO cards (id, user_id, label, last4, full_number, expiry, cvv, type, cardholder, merchant_lock, category_lock,
+         limit_cents, spent_cents, single_txn_limit_cents, daily_atm_limit_cents, pin, frozen, wallet_status, controls_json, shipping_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, 'not_added', ?, ?, ?)`,
+    ).run(id, req.user!.id, label, nums.last4, nums.fullNumber, nums.exp, nums.cvv, type, cardholder,
+      typeof req.body?.merchantLock === "string" && req.body.merchantLock.trim() ? req.body.merchantLock.trim() : null, null,
+      limit, Math.min(limit, 500_000), type === "physical" ? 100_000 : 0, String(Math.floor(1000 + Math.random() * 9000)),
+      JSON.stringify(controls), JSON.stringify(shipping), now());
+    notify(req.user!.id, "card", `${type === "virtual" ? "Virtual" : "Physical"} card issued`, `${label} •••• ${nums.last4} · ${centsToDecimal(limit)} monthly limit.`);
+    res.status(201).json({ card: { id, last4: nums.last4, fullNumber: nums.fullNumber, exp: nums.exp, cvv: nums.cvv } });
+  }));
+
+  app.patch("/api/me/cards/:id", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const card = cardRow(id, req.user!.id);
+    if (!card) return void res.status(404).json({ error: "Card not found." });
+    const patch = req.body ?? {};
+    const sets: string[] = [];
+    const vals: Array<string | number> = [];
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v * 100) : null);
+    if (typeof patch.label === "string" && patch.label.trim()) { sets.push("label = ?"); vals.push(patch.label.trim()); }
+    if (typeof patch.frozen === "boolean") { sets.push("frozen = ?"); vals.push(patch.frozen ? 1 : 0); }
+    if (patch.limit != null) { const c = num(patch.limit); if (c == null || c < 0) return void res.status(400).json({ error: "Invalid limit." }); sets.push("limit_cents = ?"); vals.push(c); }
+    if (patch.singleTransactionLimit != null) { const c = num(patch.singleTransactionLimit); if (c == null || c < 0) return void res.status(400).json({ error: "Invalid limit." }); sets.push("single_txn_limit_cents = ?"); vals.push(c); }
+    if (patch.dailyAtmLimit != null) { const c = num(patch.dailyAtmLimit); if (c == null || c < 0) return void res.status(400).json({ error: "Invalid limit." }); sets.push("daily_atm_limit_cents = ?"); vals.push(c); }
+    if (typeof patch.pin === "string") { if (!/^\d{4}$/.test(patch.pin)) return void res.status(400).json({ error: "PIN must be 4 digits." }); sets.push("pin = ?"); vals.push(patch.pin); }
+    if (patch.walletStatus === "added" || patch.walletStatus === "not_added") { sets.push("wallet_status = ?"); vals.push(patch.walletStatus); }
+    if ("merchantLock" in patch) { sets.push("merchant_lock = ?"); vals.push(typeof patch.merchantLock === "string" && patch.merchantLock.trim() ? patch.merchantLock.trim() : null); }
+    if ("categoryLock" in patch) { sets.push("category_lock = ?"); vals.push(typeof patch.categoryLock === "string" && patch.categoryLock.trim() ? patch.categoryLock.trim() : null); }
+    if (patch.controls && typeof patch.controls === "object") {
+      const current = JSON.parse(String(card.controls_json ?? "{}"));
+      sets.push("controls_json = ?"); vals.push(JSON.stringify({ ...current, ...patch.controls }));
+    }
+    if (!sets.length) return void res.status(400).json({ error: "Nothing to update." });
+    db.prepare(`UPDATE cards SET ${sets.join(", ")} WHERE id = ? AND user_id = ?`).run(...vals, id, req.user!.id);
+    res.json({ ok: true });
+  }));
+
+  app.delete("/api/me/cards/:id", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const info = db.prepare("DELETE FROM cards WHERE id = ? AND user_id = ?").run(id, req.user!.id);
+    if (info.changes === 0) return void res.status(404).json({ error: "Card not found." });
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/me/cards/freeze-all", requireAuth, wrap((req, res) => {
+    db.prepare("UPDATE cards SET frozen = 1 WHERE user_id = ?").run(req.user!.id);
+    notify(req.user!.id, "security", "All cards frozen", "New card purchases will be declined until you unfreeze a card.");
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/me/cards/:id/replace", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const card = cardRow(id, req.user!.id);
+    if (!card) return void res.status(404).json({ error: "Card not found." });
+    const reason = String(req.body?.reason ?? "Replacement requested");
+    const newId = rid("card");
+    const nums = cardNumbers();
+    const shipping = card.type === "physical"
+      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: "125 Market Street · San Francisco, CA 94105" }
+      : { status: "not_applicable" };
+    inTransaction(db, () => {
+      db.prepare(
+        `INSERT INTO cards (id, user_id, label, last4, full_number, expiry, cvv, type, cardholder, merchant_lock, category_lock,
+           limit_cents, spent_cents, single_txn_limit_cents, daily_atm_limit_cents, pin, frozen, wallet_status, controls_json, shipping_json, created_at)
+         SELECT ?, user_id, ?, ?, ?, ?, ?, type, cardholder, merchant_lock, category_lock,
+           limit_cents, 0, single_txn_limit_cents, daily_atm_limit_cents, ?, 0, 'not_added', controls_json, ?, ? FROM cards WHERE id = ?`,
+      ).run(newId, `${String(card.label)} replacement`, nums.last4, nums.fullNumber, nums.exp, nums.cvv,
+        String(Math.floor(1000 + Math.random() * 9000)), JSON.stringify(shipping), now(), id);
+      db.prepare("UPDATE cards SET frozen = 1 WHERE id = ?").run(id);
+    });
+    notify(req.user!.id, "card", `${String(card.label)} replacement issued`, `${reason}. The old card is frozen and •••• ${nums.last4} is ready.`);
+    res.status(201).json({ card: { id: newId, last4: nums.last4, fullNumber: nums.fullNumber, exp: nums.exp, cvv: nums.cvv } });
+  }));
+
+  app.post("/api/me/cards/:id/shipping/advance", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const card = cardRow(id, req.user!.id);
+    if (!card) return void res.status(404).json({ error: "Card not found." });
+    if (card.type !== "physical") return void res.status(400).json({ error: "Virtual cards have no shipment." });
+    const order = ["processing", "printing", "shipped", "in_transit", "delivered"] as const;
+    const shipping = JSON.parse(String(card.shipping_json ?? "{}"));
+    const index = Math.max(0, order.indexOf(shipping.status ?? "processing"));
+    const status = order[Math.min(index + 1, order.length - 1)];
+    const nextShipping = { ...shipping, status, deliveredAt: status === "delivered" ? now() : shipping.deliveredAt };
+    db.prepare("UPDATE cards SET shipping_json = ? WHERE id = ?").run(JSON.stringify(nextShipping), id);
+    notify(req.user!.id, "card", `${String(card.label)} shipment updated`, status === "delivered" ? "Your card was delivered." : `Card status: ${status.replace("_", " ")}.`);
+    res.json({ status });
+  }));
+
+  /* ---------- invoices ---------- */
+
+  app.post("/api/me/invoices", requireAuth, wrap((req, res) => {
+    const client = String(req.body?.client ?? "").trim();
+    const clientEmail = String(req.body?.clientEmail ?? "").trim();
+    const cents = dollarsToCents(req.body?.amount ?? 0);
+    const dueDays = Math.round(Number(req.body?.dueDays ?? 0));
+    if (!client) return void res.status(400).json({ error: "A client is required." });
+    if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
+    if (!Number.isFinite(dueDays) || dueDays < 0) return void res.status(400).json({ error: "A due date is required." });
+    const maxRow = db.prepare("SELECT MAX(CAST(id AS INTEGER)) AS n FROM invoices WHERE user_id = ?").get(req.user!.id) as { n: number | null };
+    const id = String((maxRow.n ?? 1047) + 1);
+    db.prepare(
+      `INSERT INTO invoices (id, user_id, client, client_email, amount_cents, status, due_at, description, created_at)
+       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)`,
+    ).run(id, req.user!.id, client, clientEmail, cents, now() + dueDays * 86_400_000, String(req.body?.description ?? ""), now());
+    notify(req.user!.id, "invoice", `Invoice #${id} sent`, `${centsToDecimal(cents)} to ${client} · due in ${dueDays} days.`);
+    res.status(201).json({ invoice: { id, client, amount: cents / 100, status: "open", due: now() + dueDays * 86_400_000 } });
+  }));
+
+  app.post("/api/me/invoices/:id/paid", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const inv = db.prepare("SELECT * FROM invoices WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
+    if (!inv) return void res.status(404).json({ error: "Invoice not found." });
+    if (inv.status === "paid") return void res.status(409).json({ error: "Invoice is already paid." });
+    const cents = inv.amount_cents as number;
+    try {
+      inTransaction(db, () => {
+        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as { id: number; balance_cents: number };
+        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents + cents, now(), account.id);
+        db.prepare("UPDATE invoices SET status = 'paid' WHERE id = ?").run(id);
+        db.prepare(
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+           VALUES (?, ?, ?, ?, 'Operations', 'ACH', ?, 'cleared', ?, ?, ?)`,
+        ).run(rid("txn"), account.id, req.user!.id, String(inv.client), cents, makeReference(), `Invoice #${id} payment`, now());
+        notify(req.user!.id, "invoice", `${String(inv.client)} paid ${centsToDecimal(cents)}`, `Invoice #${id} is settled and the funds are available.`);
+      });
+      res.json({ ok: true, status: "paid" });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Failed to mark paid." });
+    }
+  }));
+
+  app.post("/api/me/invoices/:id/remind", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const inv = db.prepare("SELECT * FROM invoices WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
+    if (!inv) return void res.status(404).json({ error: "Invoice not found." });
+    notify(req.user!.id, "invoice", `Reminder sent to ${String(inv.client)}`, `We emailed ${String(inv.client_email)} about invoice #${id}.`);
+    res.json({ ok: true });
+  }));
+
+  /* ---------- team ---------- */
+
+  app.post("/api/me/team", requireAuth, wrap((req, res) => {
+    const name = String(req.body?.name ?? "").trim();
+    const email = String(req.body?.email ?? "").trim();
+    const role = String(req.body?.role ?? "Member");
+    const monthlyLimit = dollarsToCents(req.body?.monthlyLimit ?? 0);
+    if (!name || !email) return void res.status(400).json({ error: "Name and email are required." });
+    if (!["Admin", "Member", "Bookkeeper"].includes(role)) return void res.status(400).json({ error: "Invalid role." });
+    const id = rid("tm");
+    db.prepare(
+      `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'invited')`,
+    ).run(id, req.user!.id, name, email, role, role === "Bookkeeper" ? 0 : 1, monthlyLimit);
+    notify(req.user!.id, "security", `Invite sent to ${name}`, `${role} · ${monthlyLimit ? `${centsToDecimal(monthlyLimit)} monthly limit` : "view-only access"}.`);
+    res.status(201).json({ member: { id, name, email, role, cardCount: role === "Bookkeeper" ? 0 : 1, monthlyLimit: monthlyLimit / 100, status: "invited" } });
+  }));
+
+  app.delete("/api/me/team/:id", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const member = db.prepare("SELECT role FROM team_members WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { role: string } | undefined;
+    if (!member) return void res.status(404).json({ error: "Team member not found." });
+    if (member.role === "Owner") return void res.status(400).json({ error: "The account owner cannot be removed." });
+    db.prepare("DELETE FROM team_members WHERE id = ? AND user_id = ?").run(id, req.user!.id);
+    res.json({ ok: true });
+  }));
+
+  /* ---------- savings pockets (money ops) ---------- */
+
+  app.post("/api/me/pockets", requireAuth, wrap((req, res) => {
+    const name = String(req.body?.name ?? "").trim();
+    const target = dollarsToCents(req.body?.target ?? 0);
+    if (!name) return void res.status(400).json({ error: "A name is required." });
+    const id = rid("pocket");
+    db.prepare(
+      `INSERT INTO savings_pockets (id, user_id, name, balance_cents, target_cents, color, icon, created_at) VALUES (?, ?, ?, 0, ?, ?, ?, ?)`,
+    ).run(id, req.user!.id, name, target, String(req.body?.color ?? "#7558dc"), String(req.body?.icon ?? "general"), now());
+    res.status(201).json({ pocket: { id, name, balance: 0, target: target / 100 } });
+  }));
+
+  app.post("/api/me/pockets/:id/move", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const cents = dollarsToCents(req.body?.amount ?? 0);
+    const direction = req.body?.direction === "to_checking" ? "to_checking" : "to_pocket";
+    if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
+    try {
+      inTransaction(db, () => {
+        const pocket = db.prepare("SELECT * FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
+        if (!pocket) throw new Error("Pocket not found.");
+        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as { id: number; balance_cents: number };
+        if (direction === "to_pocket") {
+          if (account.balance_cents < cents) throw new Error("Insufficient funds in checking.");
+          db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents - cents, now(), account.id);
+          db.prepare("UPDATE savings_pockets SET balance_cents = balance_cents + ? WHERE id = ?").run(cents, id);
+          db.prepare(
+            `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+             VALUES (?, ?, ?, ?, 'Operations', 'Internal', ?, 'cleared', ?, 'Moved to savings pocket', ?)`,
+          ).run(rid("txn"), account.id, req.user!.id, String(pocket.name), -cents, makeReference(), now());
+        } else {
+          if ((pocket.balance_cents as number) < cents) throw new Error("Insufficient funds in the pocket.");
+          db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents + cents, now(), account.id);
+          db.prepare("UPDATE savings_pockets SET balance_cents = balance_cents - ? WHERE id = ?").run(cents, id);
+          db.prepare(
+            `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+             VALUES (?, ?, ?, ?, 'Operations', 'Internal', ?, 'cleared', ?, 'Moved from savings pocket', ?)`,
+          ).run(rid("txn"), account.id, req.user!.id, String(pocket.name), cents, makeReference(), now());
+        }
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Transfer failed." });
+    }
+  }));
+
+  app.delete("/api/me/pockets/:id", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    try {
+      inTransaction(db, () => {
+        const pocket = db.prepare("SELECT * FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
+        if (!pocket) throw new Error("Pocket not found.");
+        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as { id: number; balance_cents: number };
+        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents + (pocket.balance_cents as number), now(), account.id);
+        db.prepare("DELETE FROM savings_pockets WHERE id = ?").run(id);
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Failed to delete pocket." });
+    }
+  }));
+
+  /* ---------- payees & scheduled payments ---------- */
+
+  app.post("/api/me/payees", requireAuth, wrap((req, res) => {
+    const name = String(req.body?.name ?? "").trim();
+    const bankName = String(req.body?.bankName ?? "").trim();
+    const routingNumber = String(req.body?.routingNumber ?? "").trim();
+    const accountLast4 = String(req.body?.accountLast4 ?? "").trim();
+    if (!name || !bankName || !/^\d{9}$/.test(routingNumber) || !/^\d{4}$/.test(accountLast4)) {
+      return void res.status(400).json({ error: "Complete bank details are required." });
+    }
+    const id = rid("payee");
+    db.prepare(
+      `INSERT INTO payees (id, user_id, name, nickname, bank_name, routing_number, account_last4, account_type, verified, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    ).run(id, req.user!.id, name, String(req.body?.nickname ?? "").trim(), bankName, routingNumber, accountLast4,
+      req.body?.accountType === "Savings" ? "Savings" : "Checking", now());
+    res.status(201).json({ payee: { id, name } });
+  }));
+
+  app.delete("/api/me/payees/:id", requireAuth, wrap((req, res) => {
+    const info = db.prepare("DELETE FROM payees WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
+    if (info.changes === 0) return void res.status(404).json({ error: "Payee not found." });
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/me/scheduled", requireAuth, wrap((req, res) => {
+    const payeeName = String(req.body?.payeeName ?? "").trim();
+    const cents = dollarsToCents(req.body?.amount ?? 0);
+    const nextDate = Number(req.body?.nextDate ?? 0);
+    if (!payeeName) return void res.status(400).json({ error: "A payee is required." });
+    if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
+    if (!Number.isFinite(nextDate) || nextDate <= 0) return void res.status(400).json({ error: "A next payment date is required." });
+    const frequency = ["once", "weekly", "monthly"].includes(String(req.body?.frequency)) ? String(req.body?.frequency) : "monthly";
+    const id = rid("bill");
+    db.prepare(
+      `INSERT INTO scheduled_payments (id, user_id, payee_id, payee_name, amount_cents, category, frequency, next_date, status, autopay, memo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+    ).run(id, req.user!.id, typeof req.body?.payeeId === "string" ? req.body.payeeId : null, payeeName, cents,
+      String(req.body?.category ?? "Operations"), frequency, nextDate, req.body?.autopay === true ? 1 : 0, String(req.body?.memo ?? ""));
+    res.status(201).json({ payment: { id, payeeName, amount: cents / 100, status: "active" } });
+  }));
+
+  app.patch("/api/me/scheduled/:id", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    const payment = db.prepare("SELECT status FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { status: string } | undefined;
+    if (!payment) return void res.status(404).json({ error: "Payment not found." });
+    if (payment.status === "completed") return void res.status(400).json({ error: "Completed payments cannot be changed." });
+    const next = payment.status === "paused" ? "active" : "paused";
+    db.prepare("UPDATE scheduled_payments SET status = ? WHERE id = ?").run(next, id);
+    res.json({ status: next });
+  }));
+
+  app.delete("/api/me/scheduled/:id", requireAuth, wrap((req, res) => {
+    const info = db.prepare("DELETE FROM scheduled_payments WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
+    if (info.changes === 0) return void res.status(404).json({ error: "Payment not found." });
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/me/scheduled/:id/pay", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    try {
+      inTransaction(db, () => {
+        const payment = db.prepare("SELECT * FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
+        if (!payment) throw new Error("Payment not found.");
+        if (payment.status === "completed") throw new Error("This payment is already completed.");
+        const cents = payment.amount_cents as number;
+        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as { id: number; balance_cents: number };
+        if (account.balance_cents < cents) throw new Error("Insufficient funds for this payment.");
+        const base = Number(payment.next_date);
+        const nextDate = payment.frequency === "weekly"
+          ? base + 7 * 86_400_000
+          : payment.frequency === "monthly"
+            ? new Date(base).setMonth(new Date(base).getMonth() + 1)
+            : base;
+        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents - cents, now(), account.id);
+        db.prepare("UPDATE scheduled_payments SET next_date = ?, status = ? WHERE id = ?")
+          .run(nextDate, payment.frequency === "once" ? "completed" : String(payment.status), id);
+        db.prepare(
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+           VALUES (?, ?, ?, ?, ?, 'ACH', ?, 'cleared', ?, ?, ?)`,
+        ).run(rid("txn"), account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
+          makeReference(), String(payment.memo ?? "Scheduled payment"), now());
+        notify(req.user!.id, "transfer", `${centsToDecimal(cents)} paid to ${String(payment.payee_name)}`,
+          payment.frequency === "once" ? "One-time payment completed." : "Next payment scheduled.");
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Payment failed." });
+    }
+  }));
+
+  /* ---------- rewards, Scout, perks, sessions, notifications ---------- */
+
+  app.post("/api/me/rewards/redeem", requireAuth, wrap((req, res) => {
+    try {
+      const amount = inTransaction(db, () => {
+        const account = db.prepare("SELECT id, balance_cents, rewards_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
+          | { id: number; balance_cents: number; rewards_cents: number }
+          | undefined;
+        if (!account) throw new Error("No account found.");
+        if (account.rewards_cents <= 0) return 0;
+        db.prepare("UPDATE accounts SET balance_cents = ?, rewards_cents = 0, updated_at = ? WHERE id = ?")
+          .run(account.balance_cents + account.rewards_cents, now(), account.id);
+        db.prepare(
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+           VALUES (?, ?, ?, 'Rewards redemption', 'Operations', 'Internal', ?, 'cleared', ?, 'Cash back redeemed 1:1', ?)`,
+        ).run(rid("txn"), account.id, req.user!.id, account.rewards_cents, makeReference(), now());
+        notify(req.user!.id, "transfer", `Redeemed ${centsToDecimal(account.rewards_cents)}`, "Cash back moved to your available balance.");
+        return account.rewards_cents;
+      });
+      res.json({ amount: amount / 100 });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Redemption failed." });
+    }
+  }));
+
+  app.post("/api/me/scout/apply", requireAuth, wrap((req, res) => {
+    const opportunityId = String(req.body?.opportunityId ?? "");
+    const merchant = String(req.body?.merchant ?? "merchant");
+    const note = String(req.body?.note ?? "");
+    if (!opportunityId) return void res.status(400).json({ error: "An opportunity id is required." });
+    try {
+      const applied = inTransaction(db, () => {
+        const account = db.prepare("SELECT id, balance_cents, scout_saved_cents, scout_applied_json FROM accounts WHERE user_id = ?").get(req.user!.id) as
+          | { id: number; balance_cents: number; scout_saved_cents: number; scout_applied_json: string }
+          | undefined;
+        if (!account) throw new Error("No account found.");
+        const already = JSON.parse(account.scout_applied_json ?? "[]") as string[];
+        if (already.includes(opportunityId)) return false;
+        const cents = dollarsToCents(req.body?.amount ?? 0);
+        if (cents <= 0) return false;
+        db.prepare("UPDATE accounts SET balance_cents = ?, scout_saved_cents = ?, scout_applied_json = ?, updated_at = ? WHERE id = ?")
+          .run(account.balance_cents + cents, account.scout_saved_cents + cents, JSON.stringify([...already, opportunityId]), now(), account.id);
+        db.prepare(
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, reward_cents, scout_cents, status, reference, note, created_at)
+           VALUES (?, ?, ?, ?, 'Operations', 'Scout credit', ?, 0, ?, 'cleared', ?, ?, ?)`,
+        ).run(rid("txn"), account.id, req.user!.id, `Scout savings · ${merchant}`, cents, cents, makeReference(), note, now());
+        notify(req.user!.id, "scout", `Scout credited ${centsToDecimal(cents)}`, `Savings from ${merchant} were credited to checking.`);
+        return true;
+      });
+      res.json({ applied });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Failed to apply savings." });
+    }
+  }));
+
+  app.post("/api/me/perks/:id/redeem", requireAuth, wrap((req, res) => {
+    const info = db.prepare("UPDATE perks SET status = 'redeemed' WHERE id = ? AND user_id = ? AND status = 'available'")
+      .run(String(req.params.id), req.user!.id);
+    if (info.changes === 0) return void res.status(404).json({ error: "Perk not available." });
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/me/notifications/:id/read", requireAuth, wrap((req, res) => {
+    db.prepare("UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/me/sessions/:id/revoke", requireAuth, wrap((req, res) => {
+    db.prepare("DELETE FROM security_sessions WHERE id = ? AND user_id = ? AND current = 0").run(String(req.params.id), req.user!.id);
+    res.json({ ok: true });
+  }));
+
+  app.patch("/api/me/sessions/:id", requireAuth, wrap((req, res) => {
+    if (typeof req.body?.trusted !== "boolean") return void res.status(400).json({ error: "Nothing to update." });
+    db.prepare("UPDATE security_sessions SET trusted = ? WHERE id = ? AND user_id = ?").run(req.body.trusted ? 1 : 0, String(req.params.id), req.user!.id);
+    res.json({ ok: true });
+  }));
+
+  /* ---------- KYC wizard progress + member dispute tracking ---------- */
+
+  app.patch("/api/me/kyc", requireAuth, wrap((req, res) => {
+    const patch = req.body ?? {};
+    const sets: string[] = [];
+    const vals: Array<string | number> = [];
+    if (typeof patch.nextStep === "string") { sets.push("next_step = ?"); vals.push(patch.nextStep); }
+    if (typeof patch.documentType === "string") { sets.push("document_type = ?"); vals.push(patch.documentType); }
+    if (typeof patch.country === "string") { sets.push("country = ?"); vals.push(patch.country); }
+    if (typeof patch.completeness === "number" && patch.completeness >= 0 && patch.completeness <= 100) { sets.push("completeness = ?"); vals.push(Math.round(patch.completeness)); }
+    if (!sets.length) return void res.status(400).json({ error: "Nothing to update." });
+    db.prepare(
+      `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, next_step, updated_at)
+       VALUES (?, 'not_started', 0, ?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET ${sets.join(", ")}, updated_at = excluded.updated_at`,
+    ).run(req.user!.id, String(patch.documentType ?? ""), String(patch.country ?? ""), String(patch.nextStep ?? ""), now(), ...vals);
+    res.json({ ok: true });
+  }));
+
+  // Member-side dispute tracking (Security Center). Demo parity: the member
+  // can nudge their own claim forward; resolution credits their balance.
+  app.post("/api/me/disputes/:id/advance", requireAuth, wrap((req, res) => {
+    const id = String(req.params.id);
+    try {
+      const status = inTransaction(db, () => {
+        const dispute = db.prepare("SELECT * FROM disputes WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
+        if (!dispute) throw new Error("Dispute not found.");
+        if (dispute.status === "resolved" || dispute.status === "denied") return String(dispute.status);
+        const next = dispute.status === "submitted" ? "reviewing" : "resolved";
+        db.prepare("UPDATE disputes SET status = ?, updated_at = ? WHERE id = ?").run(next, now(), id);
+        if (next === "resolved") {
+          const cents = dispute.amount_cents as number;
+          const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as { id: number; balance_cents: number };
+          db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents + cents, now(), account.id);
+          db.prepare(
+            `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+             VALUES (?, ?, ?, ?, 'Operations', 'Adjustment', ?, 'cleared', ?, ?, ?)`,
+          ).run(rid("txn"), account.id, req.user!.id, `Dispute credit · ${String(dispute.merchant)}`, cents,
+            makeReference(), `Resolved dispute ${id}`, now());
+        }
+        notify(req.user!.id, "security", next === "resolved" ? "Dispute resolved" : "Dispute under review",
+          next === "resolved" ? `${centsToDecimal(dispute.amount_cents as number)} was returned to checking.` : `We're reviewing your ${String(dispute.merchant)} claim.`);
+        return next;
+      });
+      res.json({ status });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Failed to advance dispute." });
+    }
   }));
 
   /* ============================== admin: overview & members ============================== */
@@ -462,11 +1039,12 @@ export function createApp(dbPath?: string) {
     if (before === "approved") return void res.status(409).json({ error: "This member is already verified." });
     inTransaction(db, () => {
       db.prepare(
-        `INSERT INTO kyc_records (user_id, status, completeness, updated_at, requested_by, requested_at, request_reason)
-         VALUES (?, 'requested', 72, ?, ?, ?, ?)
+        `INSERT INTO kyc_records (user_id, status, completeness, updated_at, requested_by, requested_at, request_reason, request_reqs_json)
+         VALUES (?, 'requested', 72, ?, ?, ?, ?, ?)
          ON CONFLICT(user_id) DO UPDATE SET status = 'requested', requested_by = excluded.requested_by,
-           requested_at = excluded.requested_at, request_reason = excluded.request_reason, updated_at = excluded.updated_at`,
-      ).run(targetId, now(), req.user!.name, now(), reason);
+           requested_at = excluded.requested_at, request_reason = excluded.request_reason,
+           request_reqs_json = excluded.request_reqs_json, updated_at = excluded.updated_at`,
+      ).run(targetId, now(), req.user!.id, now(), reason, JSON.stringify(requirements));
     });
     audit(req, "kyc.request", "KYC", `user:${targetId} · ${target.name}`,
       `Requested verification (${requirements.join(", ")}).`, before, "requested");
@@ -740,6 +1318,111 @@ export function createApp(dbPath?: string) {
         "System", "platform", `Updated ${key} to ${value}.`, before, value);
     }
     res.json({ settings: Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map((r: any) => [r.key, r.value])) });
+  }));
+
+  /* ============================== admin: aggregate state ============================== */
+
+  // One round trip for the Super Admin console: users, account summaries,
+  // platform ledger, disputes, KYC queue, audit trail, role matrix and
+  // settings — in the exact shapes src/pages/SuperAdmin.tsx consumes.
+  app.get("/api/admin/state", requireAuth, requirePerm("dashboard.view"), wrap((_req, res) => {
+    const users = (db.prepare(
+      "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at FROM users ORDER BY created_at",
+    ).all() as Array<Record<string, unknown>>).map(u => ({
+      id: String(u.id), name: String(u.name), email: String(u.email), phone: String(u.phone ?? ""),
+      business: String(u.business ?? ""), accountType: u.account_type as "personal" | "business",
+      avatarUrl: String(u.avatar_url ?? "/images/avatar-3d-default.svg"), role: u.role as string,
+      plan: u.plan as "Starter" | "Pro", createdAt: u.created_at as number,
+    }));
+
+    const accounts = (db.prepare(`
+      SELECT u.id, u.name, u.email, u.business, u.account_type, u.status,
+             a.balance_cents, a.pending_cents, a.rewards_cents,
+             (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
+             (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.frozen = 1) AS frozen_count,
+             (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
+             (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id AND t.status = 'pending') AS pending_txn_count,
+             (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity,
+             (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status
+      FROM users u LEFT JOIN accounts a ON a.user_id = u.id
+      WHERE u.role = 'user' OR u.role IS NULL
+      ORDER BY u.created_at
+    `).all() as Array<Record<string, unknown>>).map(a => ({
+      userId: String(a.id), name: String(a.name), email: String(a.email), business: String(a.business ?? ""),
+      accountType: a.account_type as "personal" | "business",
+      hasAccount: a.balance_cents != null,
+      balance: Math.round((a.balance_cents as number ?? 0)) / 100,
+      pendingBalance: Math.round((a.pending_cents as number ?? 0)) / 100,
+      rewards: Math.round((a.rewards_cents as number ?? 0)) / 100,
+      cards: a.card_count as number,
+      frozenCards: a.frozen_count as number,
+      txnCount: a.txn_count as number,
+      pendingTxns: a.pending_txn_count as number,
+      kycStatus: (a.kyc_status as string) ?? "not_started",
+      accountStatus: a.status === "restricted" ? "restricted" : "active",
+      lastActivity: (a.last_activity as number) ?? 0,
+    }));
+
+    const transactions = (db.prepare(`
+      SELECT t.*, u.name AS member_name FROM transactions t JOIN users u ON u.id = t.user_id
+      ORDER BY t.created_at DESC LIMIT 400
+    `).all() as Array<Record<string, unknown>>).map(t => ({
+      id: String(t.id), merchant: String(t.merchant), category: String(t.category),
+      amount: Math.round(t.amount_cents as number) / 100,
+      reward: Math.round((t.reward_cents as number ?? 0)) / 100,
+      scout: Math.round((t.scout_cents as number ?? 0)) / 100,
+      date: t.created_at as number, cardId: t.card_id ? String(t.card_id) : undefined,
+      note: String(t.note ?? ""), method: String(t.method ?? ""), reference: String(t.reference ?? ""),
+      status: t.status as string, userId: String(t.user_id), memberName: String(t.member_name),
+    }));
+
+    const disputes = (db.prepare(`
+      SELECT d.*, u.name AS member_name FROM disputes d JOIN users u ON u.id = d.user_id
+      ORDER BY d.opened_at DESC
+    `).all() as Array<Record<string, unknown>>).map(d => ({
+      id: String(d.id), transactionId: d.transaction_id ? String(d.transaction_id) : undefined,
+      merchant: String(d.merchant), amount: Math.round(d.amount_cents as number) / 100,
+      reason: String(d.reason), detail: String(d.detail ?? ""), status: d.status as string,
+      openedAt: d.opened_at as number, updatedAt: d.updated_at as number,
+      userId: String(d.user_id), memberName: String(d.member_name),
+    }));
+
+    const kycQueue = (db.prepare(`
+      SELECT u.id, u.name, u.email, u.business, u.account_type, k.*
+      FROM users u JOIN kyc_records k ON k.user_id = u.id
+      WHERE k.status = 'in_review' AND u.role = 'user'
+      ORDER BY k.updated_at
+    `).all() as Array<Record<string, unknown>>).map(r => {
+      const requester = r.requested_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(r.requested_by)) as { name: string } | undefined) : undefined;
+      return {
+        userId: String(r.id), name: String(r.name), email: String(r.email), business: String(r.business ?? ""),
+        accountType: r.account_type as "personal" | "business",
+        kyc: {
+          status: r.status, completeness: r.completeness, lastUpdated: r.updated_at,
+          nextStep: String(r.next_step ?? ""), documentType: String(r.document_type ?? ""),
+          country: String(r.country ?? ""), requestedAt: r.requested_at as number | undefined,
+          requestedBy: requester?.name, requestReason: r.request_reason ? String(r.request_reason) : undefined,
+          requirements: JSON.parse(String(r.request_reqs_json ?? "[]")),
+          submission: r.submission_json ? JSON.parse(String(r.submission_json)) : undefined,
+        },
+      };
+    });
+
+    const auditEntries = (db.prepare("SELECT * FROM audit_log ORDER BY at DESC LIMIT 500").all() as Array<Record<string, unknown>>).map(e => ({
+      id: String(e.id), at: e.at as number, adminId: String(e.admin_id), adminName: String(e.admin_name),
+      action: String(e.action), category: e.category as string, target: String(e.target),
+      summary: String(e.summary), before: e.before_value ? String(e.before_value) : undefined,
+      after: e.after_value ? String(e.after_value) : undefined,
+    }));
+
+    const roles = Object.fromEntries(
+      (["support", "compliance", "admin", "superadmin"] as const).map(r => [r, rolePermissions(db, r)]),
+    );
+
+    const settingsRows = db.prepare("SELECT key, value FROM settings").all() as Array<{ key: string; value: string }>;
+    const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
+
+    res.json({ users, accounts, transactions, disputes, kycQueue, audit: auditEntries, roles, settings });
   }));
 
   /* ============================== errors ============================== */

@@ -118,8 +118,27 @@ function writeOverrides(overrides: Partial<Record<StaffRole, Permission[]>>) {
   }
 }
 
-/** Effective permission list for a staff role (defaults + stored overrides). */
+/**
+ * Server-authoritative matrix (API mode). When the backend is reachable the
+ * Super Admin console loads the live role matrix from /api/admin/state and
+ * installs it here; can()/assertCan() then enforce exactly what the server
+ * enforces on every admin route.
+ */
+let serverMatrix: Partial<Record<StaffRole, Permission[]>> | null = null;
+
+export function setServerRoleMatrix(matrix: Partial<Record<StaffRole, Permission[]>> | null): void {
+  serverMatrix = matrix
+    ? Object.fromEntries(Object.entries(matrix).map(([role, list]) => [
+        role,
+        Array.isArray(list) ? (list as string[]).filter((p): p is Permission => (PERMISSIONS as readonly string[]).includes(p)) : [],
+      ]))
+    : null;
+  if (serverMatrix) serverMatrix.superadmin = [...PERMISSIONS];
+}
+
+/** Effective permission list for a staff role (server matrix → stored overrides → defaults). */
 export function rolePermissions(role: StaffRole): Permission[] {
+  if (serverMatrix) return serverMatrix[role] ?? [];
   const overrides = readOverrides();
   return overrides[role] ?? ROLE_DEFAULTS[role];
 }

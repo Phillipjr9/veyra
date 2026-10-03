@@ -203,6 +203,147 @@ CREATE TABLE sessions (
 CREATE INDEX idx_sessions_user ON sessions(user_id);
 `,
   },
+  {
+    version: 2,
+    sql: `
+-- v2: full member-banking surface so the frontend runs entirely on the API.
+-- cards in v1 was a stub column set; recreate it with the real card model.
+DROP TABLE IF EXISTS cards;
+CREATE TABLE cards (
+  id                      TEXT PRIMARY KEY,
+  user_id                 TEXT NOT NULL REFERENCES users(id),
+  label                   TEXT NOT NULL,
+  last4                   TEXT NOT NULL,
+  full_number             TEXT NOT NULL DEFAULT '',
+  expiry                  TEXT NOT NULL DEFAULT '',
+  cvv                     TEXT NOT NULL DEFAULT '',
+  type                    TEXT NOT NULL CHECK (type IN ('virtual','physical')),
+  cardholder              TEXT NOT NULL DEFAULT '',
+  merchant_lock           TEXT,
+  category_lock           TEXT,
+  limit_cents             INTEGER NOT NULL DEFAULT 0,
+  spent_cents             INTEGER NOT NULL DEFAULT 0,
+  single_txn_limit_cents  INTEGER NOT NULL DEFAULT 0,
+  daily_atm_limit_cents   INTEGER NOT NULL DEFAULT 0,
+  pin                     TEXT NOT NULL DEFAULT '',
+  frozen                  INTEGER NOT NULL DEFAULT 0,
+  wallet_status           TEXT NOT NULL DEFAULT 'not_added' CHECK (wallet_status IN ('not_added','added')),
+  controls_json           TEXT NOT NULL DEFAULT '{}',
+  shipping_json           TEXT NOT NULL DEFAULT '{}',
+  created_at              INTEGER NOT NULL
+);
+CREATE INDEX idx_cards_user_v2 ON cards(user_id);
+
+CREATE TABLE invoices (
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  id          TEXT NOT NULL,
+  client      TEXT NOT NULL,
+  client_email TEXT NOT NULL DEFAULT '',
+  amount_cents INTEGER NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','overdue','paid')),
+  due_at      INTEGER NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, id)
+);
+CREATE INDEX idx_invoices_user ON invoices(user_id);
+
+CREATE TABLE team_members (
+  id                 TEXT PRIMARY KEY,
+  user_id            TEXT NOT NULL REFERENCES users(id),
+  name               TEXT NOT NULL,
+  email              TEXT NOT NULL,
+  role               TEXT NOT NULL CHECK (role IN ('Owner','Admin','Member','Bookkeeper')),
+  card_count         INTEGER NOT NULL DEFAULT 0,
+  monthly_limit_cents INTEGER NOT NULL DEFAULT 0,
+  status             TEXT NOT NULL DEFAULT 'invited' CHECK (status IN ('active','invited'))
+);
+CREATE INDEX idx_team_user ON team_members(user_id);
+
+CREATE TABLE savings_pockets (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id),
+  name         TEXT NOT NULL,
+  balance_cents INTEGER NOT NULL DEFAULT 0,
+  target_cents INTEGER NOT NULL DEFAULT 0,
+  color        TEXT NOT NULL DEFAULT '#7558dc',
+  icon         TEXT NOT NULL DEFAULT 'shield',
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX idx_pockets_user ON savings_pockets(user_id);
+
+CREATE TABLE payees (
+  id             TEXT PRIMARY KEY,
+  user_id        TEXT NOT NULL REFERENCES users(id),
+  name           TEXT NOT NULL,
+  nickname       TEXT NOT NULL DEFAULT '',
+  bank_name      TEXT NOT NULL,
+  routing_number TEXT NOT NULL,
+  account_last4  TEXT NOT NULL,
+  account_type   TEXT NOT NULL DEFAULT 'Checking',
+  verified       INTEGER NOT NULL DEFAULT 1,
+  created_at     INTEGER NOT NULL
+);
+CREATE INDEX idx_payees_user ON payees(user_id);
+
+CREATE TABLE scheduled_payments (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  payee_id    TEXT,
+  payee_name  TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  category    TEXT NOT NULL DEFAULT 'Operations',
+  frequency   TEXT NOT NULL DEFAULT 'monthly' CHECK (frequency IN ('once','weekly','monthly')),
+  next_date   INTEGER NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','completed')),
+  autopay     INTEGER NOT NULL DEFAULT 1,
+  memo        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_scheduled_user ON scheduled_payments(user_id);
+
+CREATE TABLE perks (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  partner     TEXT NOT NULL,
+  category    TEXT NOT NULL,
+  value       TEXT NOT NULL,
+  description TEXT NOT NULL,
+  code        TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available','redeemed'))
+);
+CREATE INDEX idx_perks_user ON perks(user_id);
+
+CREATE TABLE security_sessions (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  device      TEXT NOT NULL,
+  browser     TEXT NOT NULL,
+  location    TEXT NOT NULL DEFAULT '',
+  last_active INTEGER NOT NULL,
+  current     INTEGER NOT NULL DEFAULT 0,
+  trusted     INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX idx_sec_sessions_user ON security_sessions(user_id);
+
+CREATE TABLE preferences (
+  user_id       TEXT PRIMARY KEY REFERENCES users(id),
+  two_factor    INTEGER NOT NULL DEFAULT 1,
+  login_alerts  INTEGER NOT NULL DEFAULT 1,
+  scout_auto    INTEGER NOT NULL DEFAULT 1,
+  weekly_digest INTEGER NOT NULL DEFAULT 0
+);
+
+ALTER TABLE accounts ADD COLUMN lifetime_rewards_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN scout_saved_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN scout_applied_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE transactions ADD COLUMN reward_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE transactions ADD COLUMN scout_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE transactions ADD COLUMN card_id TEXT;
+ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT '/images/avatar-3d-default.svg';
+ALTER TABLE kyc_records ADD COLUMN next_step TEXT NOT NULL DEFAULT '';
+ALTER TABLE kyc_records ADD COLUMN request_reqs_json TEXT NOT NULL DEFAULT '[]';
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

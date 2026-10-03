@@ -127,8 +127,9 @@ try {
   expect("5 concurrent credits apply exactly once each (atomicity)", concurrentEnd === concurrentStart + 5 * 1000);
 
   /* ---------- member transfers & restrictions ---------- */
+  await api("PUT", "/api/me/preferences", hana, { key: "scoutAuto", value: false });
   const transfer = await api("POST", "/api/me/transfers", hana, { counterparty: "Harbor Studio", amount: 100, category: "Operations", method: "ACH" });
-  expect("member transfer succeeds and debits balance", transfer.status === 201 && transfer.json.balance.amount === ((concurrentEnd - 10000) / 100).toFixed(2));
+  expect("member transfer succeeds and debits balance (+rewards)", transfer.status === 201 && transfer.json.balance.amount === ((concurrentEnd - 10000) / 100).toFixed(2) && transfer.json.result.reward === 2.5);
 
   const overdraftTransfer = await api("POST", "/api/me/transfers", hana, { counterparty: "X", amount: 99_999_999 });
   expect("transfer beyond balance rejected", overdraftTransfer.status === 400);
@@ -273,6 +274,145 @@ try {
   expect("registration creates a member + account + token", register.status === 201 && register.json.token);
   const dupe = await api("POST", "/api/auth/register", undefined, { name: "X", email: "june@parkandco.com", password: "supersafe123" });
   expect("duplicate email rejected (409)", dupe.status === 409);
+
+  /* ---------- v2: full member state surface ---------- */
+  const juneToken = register.json.token;
+  const juneState = await api("GET", "/api/me/state", juneToken);
+  const js = juneState.json.account;
+  expect("new member gets the seeded demo state", juneState.status === 200 &&
+    js.balance === 84290.42 && js.cards.length === 3 && js.transactions.length === 14 &&
+    js.invoices.length === 4 && js.team.length === 3 && js.savingsPockets.length === 2 &&
+    js.payees.length === 3 && js.scheduledPayments.length === 2 && js.perks.length === 6 &&
+    js.sessions.length === 3 && js.bankDetails.accountNumber.length === 12 && js.kyc.status === "approved");
+
+  const hanaState = await api("GET", "/api/me/state", hana);
+  expect("demo member state matches frontend seed", hanaState.status === 200 &&
+    hanaState.json.account.cards.some((c: any) => c.last4 === "2903") &&
+    hanaState.json.account.invoices.some((i: any) => i.id === "1050" && i.status === "overdue") &&
+    hanaState.json.account.team.some((m: any) => m.name === "Marcus Vance") &&
+    hanaState.json.account.savingsPockets.some((p: any) => p.name === "Tax reserve" && p.balance === 12400) &&
+    hanaState.json.account.payees.some((p: any) => p.name === "Harbor Studio"));
+
+  // Cards: issue → patch → controls → freeze-all → replace → shipping → delete
+  const newCard = await api("POST", "/api/me/cards", hana, { label: "Test card", type: "virtual", limit: 800, cardholder: "Hana Park" });
+  expect("card issued with generated numbers", newCard.status === 201 && newCard.json.card.last4.length === 4 && newCard.json.card.fullNumber.startsWith("9"));
+  const cardId = newCard.json.card.id;
+  const cardPatch = await api("PATCH", `/api/me/cards/${cardId}`, hana, { frozen: true, limit: 1500, pin: "9876", controls: { international: true } });
+  expect("card patch updates fields", cardPatch.status === 200 &&
+    (await api("GET", "/api/me/state", hana)).json.account.cards.some((c: any) => c.id === cardId && c.frozen === true && c.limit === 1500 && c.pin === "9876" && c.controls.international === true));
+  const badPin = await api("PATCH", `/api/me/cards/${cardId}`, hana, { pin: "12" });
+  expect("invalid PIN rejected (400)", badPin.status === 400);
+  const foreignCard = await api("PATCH", `/api/me/cards/${cardId}`, alex, { frozen: false });
+  expect("cannot patch another member's card (404)", foreignCard.status === 404);
+  const freezeAll = await api("POST", "/api/me/cards/freeze-all", hana);
+  expect("freeze-all freezes every card", freezeAll.status === 200 &&
+    (await api("GET", "/api/me/state", hana)).json.account.cards.every((c: any) => c.frozen === true));
+  const replaced = await api("POST", `/api/me/cards/${cardId}/replace`, hana, { reason: "Compromised" });
+  expect("card replacement issues a new card + freezes old", replaced.status === 201 &&
+    (await api("GET", "/api/me/state", hana)).json.account.cards.some((c: any) => c.id === replaced.json.card.id && c.label === "Test card replacement"));
+  const physical = await api("POST", "/api/me/cards", hana, { label: "Ship me", type: "physical", limit: 2000 });
+  const ship = await api("POST", `/api/me/cards/${physical.json.card.id}/shipping/advance`, hana);
+  expect("shipping advances processing → printing", ship.status === 200 && ship.json.status === "printing");
+  const deleted = await api("DELETE", `/api/me/cards/${physical.json.card.id}`, hana);
+  expect("card deleted", deleted.status === 200);
+
+  // Invoices: create → remind → mark paid credits balance
+  const inv = await api("POST", "/api/me/invoices", hana, { client: "Test Client", clientEmail: "t@c.example", amount: 500, dueDays: 14, description: "Integration test" });
+  expect("invoice created with next sequential id", inv.status === 201 && Number(inv.json.invoice.id) > 1051);
+  const remind = await api("POST", `/api/me/invoices/${inv.json.invoice.id}/remind`, hana);
+  expect("invoice reminder recorded", remind.status === 200);
+  const balanceBeforeInv = (await api("GET", "/api/me/state", hana)).json.account.balance;
+  const markPaid = await api("POST", `/api/me/invoices/${inv.json.invoice.id}/paid`, hana);
+  expect("invoice payment credits balance", markPaid.status === 200 &&
+    (await api("GET", "/api/me/state", hana)).json.account.balance === balanceBeforeInv + 500);
+  const paidAgain = await api("POST", `/api/me/invoices/${inv.json.invoice.id}/paid`, hana);
+  expect("double payment rejected (409)", paidAgain.status === 409);
+
+  // Savings pockets: create → fund → withdraw → delete refunds
+  const pocket = await api("POST", "/api/me/pockets", hana, { name: "Integration fund", target: 1000, color: "#7558dc", icon: "general" });
+  const pocketId = pocket.json.pocket.id;
+  const balPrePocket = (await api("GET", "/api/me/state", hana)).json.account.balance;
+  await api("POST", `/api/me/pockets/${pocketId}/move`, hana, { amount: 300, direction: "to_pocket" });
+  let state = (await api("GET", "/api/me/state", hana)).json.account;
+  expect("pocket funding moves money out of checking", state.balance === balPrePocket - 300 &&
+    state.savingsPockets.find((p: any) => p.id === pocketId).balance === 300);
+  const overPocket = await api("POST", `/api/me/pockets/${pocketId}/move`, hana, { amount: 99999, direction: "to_pocket" });
+  expect("pocket funding beyond balance rejected", overPocket.status === 400);
+  await api("POST", `/api/me/pockets/${pocketId}/move`, hana, { amount: 100, direction: "to_checking" });
+  await api("DELETE", `/api/me/pockets/${pocketId}`, hana);
+  state = (await api("GET", "/api/me/state", hana)).json.account;
+  expect("pocket withdrawal + delete refunds remainder", state.balance === balPrePocket && !state.savingsPockets.some((p: any) => p.id === pocketId));
+
+  // Payees & scheduled payments: add → schedule → pay debits
+  const payee = await api("POST", "/api/me/payees", hana, { name: "Integration Vendor", bankName: "Civic Bank", routingNumber: "071000288", accountLast4: "9090", accountType: "Checking" });
+  expect("payee added", payee.status === 201);
+  const badPayee = await api("POST", "/api/me/payees", hana, { name: "Bad", bankName: "X", routingNumber: "123", accountLast4: "12" });
+  expect("payee validation enforced (400)", badPayee.status === 400);
+  const sched = await api("POST", "/api/me/scheduled", hana, { payeeId: payee.json.payee.id, payeeName: "Integration Vendor", amount: 250, category: "Operations", frequency: "monthly", nextDate: Date.now() + 86_400_000, autopay: true, memo: "Integration" });
+  expect("scheduled payment created", sched.status === 201);
+  const balPreSched = (await api("GET", "/api/me/state", hana)).json.account.balance;
+  const payNow = await api("POST", `/api/me/scheduled/${sched.json.payment.id}/pay`, hana);
+  expect("pay-now debits and advances next date", payNow.status === 200 &&
+    (await api("GET", "/api/me/state", hana)).json.account.balance === balPreSched - 250);
+  const paused = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, hana);
+  expect("scheduled payment pause/resume toggle", paused.status === 200 && paused.json.status === "paused");
+
+  // Rewards redemption
+  const rewardsPre = (await api("GET", "/api/me/state", hana)).json.account;
+  const redeem = await api("POST", "/api/me/rewards/redeem", hana);
+  state = (await api("GET", "/api/me/state", hana)).json.account;
+  expect("rewards redeem 1:1 into checking", redeem.status === 200 && Math.abs(state.balance - (rewardsPre.balance + rewardsPre.rewards)) < 0.001 && state.rewards === 0);
+
+  // Scout idempotency
+  const scout1 = await api("POST", "/api/me/scout/apply", hana, { opportunityId: "opp-test-1", merchant: "Fable Cloud", amount: 42.5, note: "Annual plan" });
+  const scout2 = await api("POST", "/api/me/scout/apply", hana, { opportunityId: "opp-test-1", merchant: "Fable Cloud", amount: 42.5, note: "Annual plan" });
+  expect("scout savings apply exactly once", scout1.json.applied === true && scout2.json.applied === false);
+
+  // Preferences + profile + KYC patch
+  const pref = await api("PUT", "/api/me/preferences", hana, { key: "weeklyDigest", value: true });
+  expect("preference updated", pref.status === 200 &&
+    (await api("GET", "/api/me/state", hana)).json.account.preferences.weeklyDigest === true);
+  const profile = await api("PATCH", "/api/me/profile", hana, { name: "Hana Park", phone: "+1 (555) 000-0001" });
+  expect("profile patch persists", profile.status === 200 && profile.json.user.phone === "+1 (555) 000-0001");
+  const kycPatch = await api("PATCH", "/api/me/kyc", hana, { nextStep: "Final review", completeness: 95 });
+  expect("kyc wizard progress saved", kycPatch.status === 200);
+
+  // Team invite + owner protection
+  const invite = await api("POST", "/api/me/team", hana, { name: "Ada Lovelace", email: "ada@parkandco.com", role: "Admin", monthlyLimit: 3000 });
+  expect("team invite recorded as invited", invite.status === 201 && invite.json.member.status === "invited");
+  const ownerRow = (await api("GET", "/api/me/state", hana)).json.account.team.find((m: any) => m.role === "Owner");
+  const ownerRemove = await api("DELETE", `/api/me/team/${ownerRow.id}`, hana);
+  expect("account owner cannot be removed (400)", ownerRemove.status === 400);
+
+  // Member-side dispute tracking
+  const myDispute = (await api("GET", "/api/me/state", alex)).json.account.disputes[0];
+  const adv1 = await api("POST", `/api/me/disputes/${myDispute.id}/advance`, alex);
+  const alexBalPre = (await api("GET", "/api/me/state", alex)).json.account.balance;
+  const adv2 = await api("POST", `/api/me/disputes/${myDispute.id}/advance`, alex);
+  expect("member dispute advance credits balance on resolve", adv1.json.status === "reviewing" && adv2.json.status === "resolved" &&
+    (await api("GET", "/api/me/state", alex)).json.account.balance === alexBalPre + myDispute.amount);
+
+  // Demo data reset
+  const resetState = await api("POST", "/api/me/reset", hana);
+  expect("demo data reset restores seeded state", resetState.status === 200 && resetState.json.account.balance === 84290.42);
+
+  // Change password + reset password
+  const changePw = await api("POST", "/api/auth/change-password", juneToken, { current: "supersafe123", next: "even safer 99" });
+  expect("change password works", changePw.status === 200 &&
+    (await api("POST", "/api/auth/login", undefined, { email: "june@parkandco.com", password: "even safer 99" })).status === 200);
+  const resetPw = await api("POST", "/api/auth/reset-password", undefined, { email: "june@parkandco.com" });
+  expect("reset password issues a temp password", resetPw.status === 200 && resetPw.json.tempPassword.startsWith("veyra-"));
+
+  /* ---------- v2: admin aggregate state ---------- */
+  const adminState = await api("GET", "/api/admin/state", admin);
+  const as = adminState.json;
+  expect("admin state aggregates the console", adminState.status === 200 &&
+    as.users.length >= 6 && as.accounts.length >= 3 && as.transactions.length >= 40 &&
+    Array.isArray(as.disputes) && Array.isArray(as.kycQueue) && as.audit.length > 0 &&
+    as.roles.support.length > 0 && as.settings.payment_rails === "operational");
+  expect("admin state mirrors member shapes", as.accounts.some((a: any) => a.userId === "demo" && a.balance === 84290.42 && a.kycStatus === "approved" && a.cards === 3));
+  const memberState = await api("GET", "/api/admin/state", hana);
+  expect("admin state blocked for members (403)", memberState.status === 403);
 
   console.log(failures === 0 ? "\nALL API INTEGRATION TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 } finally {

@@ -2,8 +2,8 @@
 
 A high-fidelity demo banking product: marketing site, personal & business dashboards,
 cards, transfers, invoicing, Scout AI savings, statements, a Super Admin console,
-a 25-template transactional email system — and a real Express + SQLite backend —
-built on one design system.
+a 25-template transactional email system — and a real Express + SQLite backend the
+frontend runs on — built on one design system.
 
 > **Fictional product.** No real accounts, cards or payments. Banking copy is
 > illustrative only.
@@ -25,9 +25,16 @@ npm run dev        # frontend → http://localhost:5173
 npm run server     # API      → http://localhost:8787 (in a second terminal)
 ```
 
-The frontend runs standalone on its localStorage demo; start `npm run server`
-too and it transparently uses the real API (`/api` is proxied in dev, and the
-Super Admin console shows live backend health in **System Status**).
+**Two modes, zero configuration:**
+
+- **Backend online** — start `npm run server` and the app detects it (`GET /api/health`):
+  login, accounts, money movement, KYC, disputes, admin console and the audit trail all
+  run against the real API (`/api` is proxied in dev). Actions apply optimistically in the
+  UI, then reconcile with the server's authoritative snapshot; if the server rejects an
+  action (insufficient funds, restricted account, halted rails, RBAC) the UI rolls back
+  and surfaces the server's error.
+- **Backend offline** — the same app falls back to the original localStorage demo, so the
+  standalone experience keeps working with zero setup.
 
 ### Demo logins (password: `123456`)
 
@@ -154,7 +161,7 @@ server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 69-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 105-check integration suite (fresh DB, ephemeral port)
 npm run typecheck:server  # strict NodeNext typecheck
 ```
 
@@ -176,10 +183,15 @@ npm run typecheck:server  # strict NodeNext typecheck
 ### API surface (summary)
 
 - **Auth** — `POST /api/auth/login · register · logout`, `GET /api/auth/me`, `GET /api/health`
-- **Member** — `GET /api/me/account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes`
-- **Admin** — `GET /api/admin/overview · members · staff · roles · audit`, member detail/adjust/status,
-  KYC request/queue/decision, risk dispute queue + advance, role matrix get/put/reset,
-  broadcasts, CSV reports (customers/accounts/transactions/kyc/audit), settings (incl. emergency halt)
+- **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
+  cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
+  savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
+  rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications
+- **Admin** — `GET /api/admin/state` (console aggregate: users, accounts, ledger, disputes,
+  KYC queue, audit, role matrix, settings) `· overview · members · staff · roles · audit`,
+  member detail/adjust/status, KYC request/queue/decision, risk dispute queue + advance,
+  role matrix get/put/reset, broadcasts, CSV reports (customers/accounts/transactions/kyc/audit),
+  settings (incl. emergency halt)
 
 ### Environment variables
 
@@ -191,8 +203,13 @@ npm run typecheck:server  # strict NodeNext typecheck
 | `CORS_ORIGIN` | — | Allow a non-proxied browser origin |
 
 The database schema is created by versioned migrations in `server/src/db.ts`
-(`users`, `accounts`, `transactions`, `cards`, `kyc_records`, `disputes`,
-`notifications`, `audit_log`, `sessions`, `role_permissions`, `settings`).
+(v1: `users`, `accounts`, `transactions`, `cards`, `kyc_records`, `disputes`,
+`notifications`, `audit_log`, `sessions`, `role_permissions`, `settings`;
+v2 adds `invoices`, `team_members`, `savings_pockets`, `payees`,
+`scheduled_payments`, `perks`, `security_sessions`, `preferences` and the full
+card model, so every member feature is server-backed). Demo members are seeded
+with the exact dataset the standalone frontend generates (`server/src/state.ts`),
+and every new signup starts with the same demo state.
 
 ## Scripts
 
@@ -202,11 +219,12 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # KYC (18) + admin console (39) + emails (25) + API integration (69) = 151 checks
+npm test               # KYC (18) + admin console (39) + emails (25) + API integration (105) = 187 checks
 ```
 
-> **Note:** the frontend still persists its own demo state to localStorage when
-> running standalone, so the marketing/demo experience works with zero setup.
-> The real backend (`npm run server`) exposes the same surface — auth, accounts,
-> RBAC, audit, reports — with server-side enforcement; wiring the frontend's
-> data layer to it fully is the remaining integration step.
+> **Note:** with the backend running, the frontend is fully wired to the API —
+> auth (login/signup/logout/password), every member action (money, cards,
+> invoices, team, pockets, payees, scheduled payments, Scout, preferences) and
+> the whole Super Admin console (including the role matrix, which is loaded
+> from the server so `can()` mirrors server-side enforcement). localStorage
+> remains only as the offline fallback when no backend is reachable.

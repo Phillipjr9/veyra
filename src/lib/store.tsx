@@ -1,4 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete, probeApi, apiOnline, getToken } from "./api";
+import { useToast } from "../components/Toast";
 import { useAuth, getUsers } from "./auth";
 
 /* ============================================================
@@ -1013,6 +1015,7 @@ type DisputeInput = { transactionId: string; reason: string; detail?: string };
 
 function useAccountState() {
   const { user } = useAuth();
+  const toast = useToast();
   const userId = user?.id;
   const name = user?.name ?? "";
   const business = user?.business ?? "";
@@ -1027,9 +1030,24 @@ function useAccountState() {
       setAccount(null);
       return;
     }
-    const loaded = load(userId, { name, business, email, accountType });
-    ref.current = loaded;
-    setAccount(loaded);
+    let cancelled = false;
+    (async () => {
+      // API mode: the backend is the system of record — load the server snapshot.
+      if (await probeApi()) {
+        if (cancelled) return;
+        try {
+          const { account: raw } = await apiGet<{ account: unknown }>("/api/me/state");
+          if (cancelled) return;
+          const loaded = normalize(raw, { name, business, email, accountType });
+          ref.current = loaded;
+          setAccount(loaded);
+          return;
+        } catch { /* server rejected the session — fall back to the local demo */ }
+      }
+      const loaded = load(userId, { name, business, email, accountType });
+      ref.current = loaded;
+      setAccount(loaded);
+    })();
     // Reload only when the signed-in user changes; profile edits sync below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
@@ -1040,11 +1058,45 @@ function useAccountState() {
       if (!current || !userId) return;
       const next = fn(current);
       ref.current = next;
-      save(userId, next);
+      // API mode: the server owns the data (optimistic apply only — the sync
+      // layer below reconciles with the server snapshot). Local mode: persist.
+      if (!apiOnline()) save(userId, next);
       setAccount(next);
     },
     [userId],
   );
+
+  /* ------------------------------------------------------------------
+     Backend sync (API mode).
+     Every action applies optimistically to the local state above (instant
+     UI, works offline), then replays against the server. The server is
+     authoritative: after each mutation the account snapshot is re-fetched,
+     and if the server rejects an action (insufficient funds, restricted
+     account, rails halted, …) the optimistic change is rolled back to the
+     server's truth and the member sees the server's error.
+     ------------------------------------------------------------------ */
+  const syncQueue = useRef<Promise<void>>(Promise.resolve());
+  const refreshFromServer = useCallback(async () => {
+    const { account: raw } = await apiGet<{ account: unknown }>("/api/me/state");
+    const next = normalize(raw, { name, business, email, accountType });
+    ref.current = next;
+    setAccount(next);
+  }, [name, business, email, accountType]);
+  const enqueue = useCallback((run: () => Promise<unknown>) => {
+    syncQueue.current = syncQueue.current.then(async () => {
+      try {
+        await run();
+        await refreshFromServer();
+      } catch (err) {
+        toast({ tone: "error", title: "Action not saved", description: err instanceof Error ? err.message : "The backend rejected this action." });
+        try { await refreshFromServer(); } catch { /* offline — keep the local optimistic state */ }
+      }
+    });
+  }, [toast, refreshFromServer]);
+  const syncPost = useCallback((path: string, body?: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPost(path, body)); }, [enqueue]);
+  const syncPatch = useCallback((path: string, body: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPatch(path, body)); }, [enqueue]);
+  const syncPut = useCallback((path: string, body: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPut(path, body)); }, [enqueue]);
+  const syncDelete = useCallback((path: string) => { if (apiOnline() && getToken()) enqueue(() => apiDelete(path)); }, [enqueue]);
 
   // Keep account holder + owner row in sync with profile edits.
   useEffect(() => {
@@ -1075,9 +1127,10 @@ function useAccountState() {
         ],
         notifications: pushNote(a, { title: "Deposit received", detail: `+${money(value)} from ${source} is available now.`, type: "transfer" }),
       }));
+      syncPost("/api/me/deposits", { amount: value, source });
       return result;
     },
-    [commit],
+    [commit, syncPost],
   );
 
   const depositCheck = useCallback(
@@ -1110,9 +1163,10 @@ function useAccountState() {
           type: "transfer",
         }),
       }));
+      syncPost("/api/me/deposits", { amount: value, checkNumber, issuer, memo });
       return result;
     },
-    [commit],
+    [commit, syncPost],
   );
 
   const adminAdjustBalance = useCallback(
@@ -1182,9 +1236,10 @@ function useAccountState() {
           ...a.notifications,
         ].slice(0, 40),
       }));
+      syncPost("/api/me/transfers", { counterparty: input.counterparty, amount: value, category: input.category, method: input.method, cardId: input.cardId, note: input.note });
       return result;
     },
-    [commit],
+    [commit, syncPost],
   );
 
   const redeemRewards = useCallback(() => {
@@ -1200,8 +1255,9 @@ function useAccountState() {
       ],
       notifications: pushNote(a, { title: `Redeemed ${money(amount)}`, detail: "Cash back moved to your available balance.", type: "transfer" }),
     }));
+    syncPost("/api/me/rewards/redeem");
     return amount;
-  }, [commit]);
+  }, [commit, syncPost]);
 
   /** Records a demo-mode Scout rebate as a credited adjustment and prevents applying it twice. */
   const applyScoutSavings = useCallback(
@@ -1233,9 +1289,10 @@ function useAccountState() {
           type: "scout",
         }),
       }));
+      syncPost("/api/me/scout/apply", { opportunityId, merchant, amount: value, note });
       return true;
     },
-    [commit],
+    [commit, syncPost],
   );
 
   const createCard = useCallback(
@@ -1263,9 +1320,10 @@ function useAccountState() {
         cards: [card, ...a.cards],
         notifications: pushNote(a, { title: `${input.type === "virtual" ? "Virtual" : "Physical"} card issued`, detail: `${card.label} •••• ${card.last4} · ${money(card.limit, false)} monthly limit.`, type: "card" }),
       }));
+      syncPost("/api/me/cards", { label: input.label, limit: input.limit, type: input.type, merchantLock: input.merchantLock, cardholder: input.cardholder, shippingAddress: input.shippingAddress });
       return card;
     },
-    [commit],
+    [commit, syncPost],
   );
 
   const toggleFreeze = useCallback(
@@ -1282,55 +1340,73 @@ function useAccountState() {
           type: "card",
         }),
       }));
+      syncPatch(`/api/me/cards/${id}`, { frozen });
       return frozen;
     },
-    [commit],
+    [commit, syncPatch],
   );
 
-  const removeCard = useCallback((id: string) => commit(a => ({ ...a, cards: a.cards.filter(c => c.id !== id) })), [commit]);
+  const removeCard = useCallback((id: string) => {
+    commit(a => ({ ...a, cards: a.cards.filter(c => c.id !== id) }));
+    syncDelete(`/api/me/cards/${id}`);
+  }, [commit, syncDelete]);
 
   const setLimit = useCallback(
-    (id: string, limit: number) => commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, limit } : c)) })),
-    [commit],
+    (id: string, limit: number) => {
+      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, limit } : c)) }));
+      syncPatch(`/api/me/cards/${id}`, { limit });
+    },
+    [commit, syncPatch],
   );
 
   const setCardControl = useCallback(
-    (id: string, key: keyof CardControls, enabled: boolean) =>
-      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, controls: { ...c.controls, [key]: enabled } } : c)) })),
-    [commit],
+    (id: string, key: keyof CardControls, enabled: boolean) => {
+      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, controls: { ...c.controls, [key]: enabled } } : c)) }));
+      syncPatch(`/api/me/cards/${id}`, { controls: { [key]: enabled } });
+    },
+    [commit, syncPatch],
   );
 
   const setMerchantLock = useCallback(
-    (id: string, merchantLock?: string) =>
-      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, merchantLock: merchantLock?.trim() || undefined } : c)) })),
-    [commit],
+    (id: string, merchantLock?: string) => {
+      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, merchantLock: merchantLock?.trim() || undefined } : c)) }));
+      syncPatch(`/api/me/cards/${id}`, { merchantLock: merchantLock?.trim() || "" });
+    },
+    [commit, syncPatch],
   );
 
   const setCategoryLock = useCallback(
-    (id: string, categoryLock?: string) =>
-      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, categoryLock: categoryLock || undefined } : c)) })),
-    [commit],
+    (id: string, categoryLock?: string) => {
+      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, categoryLock: categoryLock || undefined } : c)) }));
+      syncPatch(`/api/me/cards/${id}`, { categoryLock: categoryLock || "" });
+    },
+    [commit, syncPatch],
   );
 
   const setTransactionLimit = useCallback(
-    (id: string, singleTransactionLimit: number) =>
-      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, singleTransactionLimit } : c)) })),
-    [commit],
+    (id: string, singleTransactionLimit: number) => {
+      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, singleTransactionLimit } : c)) }));
+      syncPatch(`/api/me/cards/${id}`, { singleTransactionLimit });
+    },
+    [commit, syncPatch],
   );
 
   const setAtmLimit = useCallback(
-    (id: string, dailyAtmLimit: number) =>
-      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, dailyAtmLimit } : c)) })),
-    [commit],
+    (id: string, dailyAtmLimit: number) => {
+      commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, dailyAtmLimit } : c)) }));
+      syncPatch(`/api/me/cards/${id}`, { dailyAtmLimit });
+    },
+    [commit, syncPatch],
   );
 
   const changeCardPin = useCallback(
     (id: string, pin: string) => {
       if (!/^\d{4}$/.test(pin)) return false;
       commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, pin } : c)) }));
+      syncPatch(`/api/me/cards/${id}`, { pin });
       return true;
     },
-    [commit],
+    [commit, syncPatch],
   );
 
   const toggleCardWallet = useCallback(
@@ -1339,9 +1415,10 @@ function useAccountState() {
       if (!card) return "not_added" as const;
       const walletStatus = card.walletStatus === "added" ? "not_added" : "added";
       commit(a => ({ ...a, cards: a.cards.map(c => (c.id === id ? { ...c, walletStatus } : c)) }));
+      syncPatch(`/api/me/cards/${id}`, { walletStatus });
       return walletStatus;
     },
-    [commit],
+    [commit, syncPatch],
   );
 
   const advanceCardShipping = useCallback(
@@ -1356,9 +1433,10 @@ function useAccountState() {
         cards: a.cards.map(c => c.id === id ? { ...c, shipping: { ...c.shipping, status, deliveredAt: status === "delivered" ? Date.now() : c.shipping.deliveredAt } } : c),
         notifications: pushNote(a, { title: `${card.label} shipment updated`, detail: status === "delivered" ? "Your card was delivered." : `Card status: ${status.replace("_", " ")}.`, type: "card" }),
       }));
+      syncPost(`/api/me/cards/${id}/shipping/advance`);
       return status;
     },
-    [commit],
+    [commit, syncPost],
   );
 
   const replaceCard = useCallback(
@@ -1382,9 +1460,10 @@ function useAccountState() {
         cards: [replacement, ...a.cards.map(c => c.id === id ? { ...c, frozen: true } : c)],
         notifications: pushNote(a, { title: `${old.label} replacement issued`, detail: `${reason}. The old card is frozen and •••• ${replacement.last4} is ready.`, type: "card" }),
       }));
+      syncPost(`/api/me/cards/${id}/replace`, { reason });
       return replacement;
     },
-    [commit],
+    [commit, syncPost],
   );
 
   const markInvoicePaid = useCallback(
@@ -1440,8 +1519,11 @@ function useAccountState() {
   );
 
   const redeemPerk = useCallback(
-    (perkId: string) => commit(a => ({ ...a, perks: a.perks.map(p => (p.id === perkId ? { ...p, status: "redeemed" } : p)) })),
-    [commit],
+    (perkId: string) => {
+      commit(a => ({ ...a, perks: a.perks.map(p => (p.id === perkId ? { ...p, status: "redeemed" } : p)) }));
+      syncPost(`/api/me/perks/${perkId}/redeem`);
+    },
+    [commit, syncPost],
   );
 
   const inviteTeamMember = useCallback(
@@ -1571,30 +1653,60 @@ function useAccountState() {
     [commit],
   );
 
-  const revokeSession = useCallback((id: string) => commit(a => ({ ...a, sessions: a.sessions.filter(s => s.id !== id || s.current) })), [commit]);
-  const toggleTrustedSession = useCallback((id: string) => commit(a => ({ ...a, sessions: a.sessions.map(s => s.id === id ? { ...s, trusted: !s.trusted } : s) })), [commit]);
-  const freezeAllCards = useCallback(() => commit(a => ({ ...a, cards: a.cards.map(c => ({ ...c, frozen: true })), notifications: pushNote(a, { title: "All cards frozen", detail: "New card purchases will be declined until you unfreeze a card.", type: "security" }) })), [commit]);
+  const revokeSession = useCallback((id: string) => {
+    commit(a => ({ ...a, sessions: a.sessions.filter(s => s.id !== id || s.current) }));
+    syncPost(`/api/me/sessions/${id}/revoke`);
+  }, [commit, syncPost]);
+  const toggleTrustedSession = useCallback((id: string) => {
+    const trusted = !(ref.current?.sessions.find(s => s.id === id)?.trusted ?? false);
+    commit(a => ({ ...a, sessions: a.sessions.map(s => s.id === id ? { ...s, trusted: !s.trusted } : s) }));
+    syncPatch(`/api/me/sessions/${id}`, { trusted });
+  }, [commit, syncPatch]);
+  const freezeAllCards = useCallback(() => {
+    commit(a => ({ ...a, cards: a.cards.map(c => ({ ...c, frozen: true })), notifications: pushNote(a, { title: "All cards frozen", detail: "New card purchases will be declined until you unfreeze a card.", type: "security" }) }));
+    syncPost("/api/me/cards/freeze-all");
+  }, [commit, syncPost]);
 
   const markNotificationRead = useCallback(
-    (id: string) => commit(a => ({ ...a, notifications: a.notifications.map(n => (n.id === id ? { ...n, read: true } : n)) })),
-    [commit],
+    (id: string) => {
+      commit(a => ({ ...a, notifications: a.notifications.map(n => (n.id === id ? { ...n, read: true } : n)) }));
+      syncPost(`/api/me/notifications/${id}/read`);
+    },
+    [commit, syncPost],
   );
 
   const updateKyc = useCallback(
     (update: Partial<KycRecord> | ((prev: KycRecord) => KycRecord)) => {
-      commit(a => ({
-        ...a,
-        kyc: typeof update === "function" ? update(a.kyc) : { ...a.kyc, ...update, lastUpdated: Date.now() },
-      }));
+      const current = ref.current;
+      const next = !current
+        ? undefined
+        : typeof update === "function" ? update(current.kyc) : { ...current.kyc, ...update, lastUpdated: Date.now() };
+      if (!next) return;
+      commit(a => ({ ...a, kyc: next }));
+      // A submission goes to the review queue; progress saves patch the record.
+      if (next.submission) {
+        syncPost("/api/me/kyc/submit", next.submission);
+      } else {
+        syncPatch("/api/me/kyc", {
+          nextStep: next.nextStep, documentType: next.documentType,
+          country: next.country, completeness: next.completeness,
+        });
+      }
     },
-    [commit],
+    [commit, syncPost, syncPatch],
   );
 
-  const markAllNotificationsRead = useCallback(() => commit(a => ({ ...a, notifications: a.notifications.map(n => ({ ...n, read: true })) })), [commit]);
+  const markAllNotificationsRead = useCallback(() => {
+    commit(a => ({ ...a, notifications: a.notifications.map(n => ({ ...n, read: true })) }));
+    syncPost("/api/me/notifications/read-all");
+  }, [commit, syncPost]);
 
   const setPreference = useCallback(
-    (key: keyof Preferences, value: boolean) => commit(a => ({ ...a, preferences: { ...a.preferences, [key]: value } })),
-    [commit],
+    (key: keyof Preferences, value: boolean) => {
+      commit(a => ({ ...a, preferences: { ...a.preferences, [key]: value } }));
+      syncPut("/api/me/preferences", { key, value });
+    },
+    [commit, syncPut],
   );
 
   const exportCSV = useCallback((txns?: Txn[], filename?: string) => {
@@ -1609,7 +1721,8 @@ function useAccountState() {
     ref.current = fresh;
     save(userId, fresh);
     setAccount(fresh);
-  }, [userId, name, business, email, accountType]);
+    syncPost("/api/me/reset");
+  }, [userId, name, business, email, accountType, syncPost]);
 
   return useMemo(
     () => ({

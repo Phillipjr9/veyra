@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { apiGet, apiPost, apiPatch, probeApi, apiOnline, getToken, setToken, clearToken, ApiError } from "./api";
 
 export type UserRole = "user" | "support" | "compliance" | "admin" | "superadmin";
 
@@ -133,6 +134,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     (async () => {
       await ensureDemoUser();
+      // API mode: restore the session from the server via the stored bearer token.
+      if (getToken()) {
+        const online = await probeApi();
+        if (online) {
+          try {
+            const { user } = await apiGet<{ user: User }>("/api/auth/me");
+            setUser(user);
+            setReady(true);
+            return;
+          } catch {
+            clearToken(); // revoked or expired — fall through to the local demo session
+          }
+        }
+      }
       const id = read<string | null>(SESSION_KEY, null);
       if (id) {
         const found = getUsers().find(u => u.id === id);
@@ -143,6 +158,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
+    if (await probeApi()) {
+      // Real backend: the server verifies the scrypt hash, enforces the rate
+      // limit and issues a revocable bearer token.
+      const { token, user } = await apiPost<{ token: string; user: User }>("/api/auth/login", { email: email.trim(), password });
+      setToken(token);
+      write(SESSION_KEY, user.id);
+      setUser(user);
+      return;
+    }
     const users = getUsers();
     const found = users.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
     if (!found) throw new Error("We couldn't find an account with that email.");
@@ -155,8 +179,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithGoogle = useCallback(async (accountType: User["accountType"] = "personal") => {
     // Authenticate with Google OAuth identity simulation
     await new Promise(r => setTimeout(r, 650));
-    const users = getUsers();
     const googleEmail = "alex.google@example.com";
+    if (await probeApi()) {
+      // API mode: back the simulated OAuth identity with a real server account.
+      try {
+        const { token, user } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
+          name: "Alex Rivera",
+          email: googleEmail,
+          password: "google-oauth-verified",
+          accountType,
+          business: accountType === "business" ? "Rivera Creative Labs" : "",
+        });
+        setToken(token);
+        write(SESSION_KEY, user.id);
+        setUser(user);
+        return;
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          const { token, user } = await apiPost<{ token: string; user: User }>("/api/auth/login", { email: googleEmail, password: "google-oauth-verified" });
+          setToken(token);
+          write(SESSION_KEY, user.id);
+          setUser(user);
+          return;
+        }
+        throw err;
+      }
+    }
+    const users = getUsers();
     let found = users.find(u => u.email.toLowerCase() === googleEmail);
     if (!found) {
       found = {
@@ -182,6 +231,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithPasskey = useCallback(async (emailHint?: string) => {
     // FIDO2 / WebAuthn passkey bio authentication simulation
     await new Promise(r => setTimeout(r, 800));
+    if (await probeApi()) {
+      // API mode: a passkey gesture can only unlock the DEMO member identities —
+      // never a staff account (that would bypass password authentication).
+      const hint = emailHint?.trim().toLowerCase();
+      const email = hint === "demo@veyra.com" ? "demo@veyra.com" : "personal@veyra.com";
+      if (hint && hint !== email) throw new Error("No passkey enrolled on this biometric device.");
+      const { token, user } = await apiPost<{ token: string; user: User }>("/api/auth/login", { email, password: "veyra123" });
+      setToken(token);
+      write(SESSION_KEY, user.id);
+      setUser(user);
+      return;
+    }
     const users = getUsers();
     // Match hinted user or default to demo account
     const target = emailHint
@@ -210,6 +271,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       createdAt: Date.now(),
       hash: await digest(password),
     };
+    if (await probeApi()) {
+      const { token, user } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
+        name: name.trim(), phone: phone.trim(), business: accountType === "business" ? business.trim() : "",
+        accountType, email: email.trim(), password, plan,
+      });
+      setToken(token);
+      write(SESSION_KEY, user.id);
+      setUser(user);
+      return;
+    }
     users.push(record);
     write(USERS_KEY, users);
     write(SESSION_KEY, record.id);
@@ -218,6 +289,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    if (apiOnline() && getToken()) {
+      // Revoke the server session (best-effort — local sign-out proceeds regardless).
+      apiPost("/api/auth/logout").catch(() => undefined);
+    }
+    clearToken();
     try { localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
     setUser(null);
   }, []);
@@ -230,10 +306,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       write(USERS_KEY, users);
       return next;
     });
+    if (apiOnline()) apiPatch("/api/me/profile", patch).catch(() => undefined);
   }, []);
 
   const changePassword = useCallback(async (current: string, next: string) => {
     if (!user) throw new Error("You need to be signed in.");
+    if (apiOnline()) {
+      await apiPost("/api/auth/change-password", { current, next });
+      return;
+    }
     const users = getUsers();
     const found = users.find(u => u.id === user.id);
     if (!found) throw new Error("Account not found.");
@@ -244,6 +325,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const resetPassword = useCallback(async (email: string) => {
+    if (apiOnline()) {
+      const { tempPassword } = await apiPost<{ tempPassword: string }>("/api/auth/reset-password", { email: email.trim() });
+      return tempPassword;
+    }
     const users = getUsers();
     const found = users.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
     if (!found) throw new Error("We couldn't find an account with that email.");

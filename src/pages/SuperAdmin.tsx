@@ -6,16 +6,17 @@ import {
   TrendingUp, UserCheck, UserRound, Users, Wallet,
 } from "lucide-react";
 import { useAuth, getUsers, setUserRole } from "../lib/auth";
+import { apiGet, apiPost, apiPut, apiOnline, getToken } from "../lib/api";
 import {
   money, longDate, downloadFile,
-  peekKycForUser, requestKycForUser, resolveKycForUser,
+  requestKycForUser, resolveKycForUser,
   listKycQueue, listAllAccounts, listAllTransactions, listAllDisputes,
   adminAdjustUserBalance, setAccountStatus, broadcastNotification, advanceDisputeForUser,
-  type KycQueueItem, type KycRequirement, type PlatformAccount,
+  type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
 } from "../lib/store";
 import {
   can, assertCan, isStaff, STAFF_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS,
-  rolePermissions, setRolePermissions, resetRolePermissions,
+  rolePermissions, setRolePermissions, resetRolePermissions, setServerRoleMatrix,
   PERMISSIONS, PERMISSION_LABELS, type Permission, type Role, type StaffRole,
 } from "../lib/permissions";
 import { logAdminAction, getAuditLogs, exportAuditLogs, ensureAuditSeed, type AuditAction, type AuditEntry } from "../lib/audit";
@@ -54,6 +55,18 @@ const ago = (ts: number) => {
 
 const csv = (rows: Array<Array<string | number>>) =>
   rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+
+/** Aggregate admin state served by GET /api/admin/state (API mode). */
+type AdminServerState = {
+  users: Array<{ id: string; name: string; email: string; phone: string; business: string; accountType: "personal" | "business"; avatarUrl: string; role: string; plan: "Starter" | "Pro"; createdAt: number }>;
+  accounts: PlatformAccount[];
+  transactions: Array<Txn & { userId: string; memberName: string }>;
+  disputes: Array<Dispute & { userId: string; memberName: string }>;
+  kycQueue: KycQueueItem[];
+  audit: AuditEntry[];
+  roles: Record<string, Permission[]>;
+  settings: Record<string, string>;
+};
 
 export function SuperAdminPage() {
   const { user, logout } = useAuth();
@@ -126,7 +139,27 @@ export function SuperAdminPage() {
   const [systemFrozen, setSystemFrozen] = useState(false);
   const [haltConfirm, setHaltConfirm] = useState(false);
 
-  useEffect(() => { ensureAuditSeed(); }, []);
+  // API mode: the backend is the system of record — load the aggregate admin
+  // state and install the server's role matrix so can() matches the server.
+  const [adminData, setAdminData] = useState<AdminServerState | null>(null);
+  const online = apiOnline() && !!getToken();
+  useEffect(() => {
+    if (!online) { setAdminData(null); setServerRoleMatrix(null); return; }
+    let cancelled = false;
+    apiGet<AdminServerState>("/api/admin/state")
+      .then(data => {
+        if (cancelled) return;
+        setAdminData(data);
+        setServerRoleMatrix(data.roles as Partial<Record<StaffRole, Permission[]>>);
+        setInterestRate(data.settings.core_apy ?? "4.25");
+        setSystemFrozen(data.settings.payment_rails === "halted");
+      })
+      .catch(() => undefined); // e.g. role lacks dashboard.view — local mode stays
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick, online]);
+
+  useEffect(() => { if (!online) ensureAuditSeed(); }, [online]);
 
   const role = (user?.role ?? "user") as Role;
   const allow = (perm: Permission) => can(role, perm);
@@ -137,17 +170,21 @@ export function SuperAdminPage() {
       return false;
     }
   };
-  const audit = (action: AuditAction, category: AuditEntry["category"], target: string, summary: string, before?: string, after?: string) =>
+  const audit = (action: AuditAction, category: AuditEntry["category"], target: string, summary: string, before?: string, after?: string) => {
+    // API mode: every admin route writes the audit trail server-side already.
+    if (online) return;
     logAdminAction({ adminId: user?.id ?? "unknown", adminName: user?.name ?? "Unknown admin", action, category, target, summary, before, after });
+  };
 
-  /* ---------------- platform data (single source of truth: member stores) ---------------- */
-  const members = useMemo(() => getUsers().filter(u => (u.role ?? "user") === "user"), [tick]);
-  const staff = useMemo(() => getUsers().filter(u => u.role && u.role !== "user"), [tick]);
-  const accounts = useMemo(() => listAllAccounts(), [tick]);
-  const allTxns = useMemo(() => listAllTransactions(), [tick]);
-  const disputes = useMemo(() => listAllDisputes(), [tick]);
-  const kycQueue = useMemo(() => listKycQueue(), [tick, activeTab]);
-  const auditLogs = useMemo(() => getAuditLogs(), [tick]);
+  /* ---------------- platform data (server snapshot in API mode, member stores locally) ---------------- */
+  const users: AdminUser[] = adminData ? (adminData.users as AdminUser[]) : getUsers();
+  const members = useMemo(() => users.filter(u => (u.role ?? "user") === "user"), [users]);
+  const staff = useMemo(() => users.filter(u => u.role && u.role !== "user"), [users]);
+  const accounts: PlatformAccount[] = adminData ? adminData.accounts : listAllAccounts();
+  const allTxns: Array<Txn & { userId: string; memberName: string }> = adminData ? adminData.transactions : listAllTransactions();
+  const disputes: Array<Dispute & { userId: string; memberName: string }> = adminData ? adminData.disputes : listAllDisputes();
+  const kycQueue: KycQueueItem[] = adminData ? adminData.kycQueue : listKycQueue();
+  const auditLogs: AuditEntry[] = adminData ? adminData.audit : getAuditLogs();
 
   const accountBy = (userId: string) => accounts.find(a => a.userId === userId);
   const openDisputes = disputes.filter(d => d.status !== "resolved" && d.status !== "denied");
@@ -179,6 +216,15 @@ export function SuperAdminPage() {
     if (!val || val <= 0 || !targetUser) return;
     if (!guard("customers.adjust_balance", "adjust balances")) return;
     const memo = adjustMemo || "Administrative adjustment";
+    if (online) {
+      apiPost<{ before: { amount: string }; after: { amount: string } }>(`/api/admin/members/${targetUser.id}/adjust`, { direction: adjustType, amount: val, memo })
+        .then(r => {
+          toast({ tone: "success", title: "Ledger adjustment committed", description: `${targetUser.name}: $${r.before.amount} → $${r.after.amount} · ref recorded on their statement.` });
+          setAdjustModal(false); setAdjustAmount(""); setAdjustMemo(""); refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Adjustment failed", description: err.message }));
+      return;
+    }
     try {
       const { before, after } = adminAdjustUserBalance(
         targetUser.id,
@@ -199,11 +245,21 @@ export function SuperAdminPage() {
     e.preventDefault();
     if (!targetUser) return;
     if (!guard("kyc.request", "request verification")) return;
+    if (online) {
+      apiPost(`/api/admin/kyc/request`, { userId: targetUser.id, requirements: kycReqs, reason: kycReason.trim() || "Identity verification is required to lift your account limits." })
+        .then(() => {
+          setKycModal(false); setKycReason("");
+          toast({ tone: "success", title: "Verification request sent", description: `${targetUser.name} will see the alert on their dashboard.` });
+          refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Request failed", description: err.message }));
+      return;
+    }
     requestKycForUser(targetUser.id,
       { name: targetUser.name, business: targetUser.business || "", email: targetUser.email, accountType: targetUser.accountType === "personal" ? "personal" : "business" },
       { requestedBy: user?.name || "Veyra compliance", reason: kycReason.trim() || "Identity verification is required to lift your account limits.", requirements: kycReqs });
     audit("kyc.request", "KYC", `user:${targetUser.id} · ${targetUser.name}`,
-      `Requested verification (${kycReqs.join(", ")}).`, peekKycForUser(targetUser.id).status, "requested");
+      `Requested verification (${kycReqs.join(", ")}).`, accountBy(targetUser.id)?.kycStatus ?? "not_started", "requested");
     setKycModal(false); setKycReason("");
     toast({ tone: "success", title: "Verification request sent", description: `${targetUser.name} will see the alert on their dashboard.` });
     refresh();
@@ -213,6 +269,15 @@ export function SuperAdminPage() {
     if (!kycReview) return;
     if (!guard("kyc.review", "review verification")) return;
     const before = kycReview.kyc.status;
+    if (online) {
+      apiPost(`/api/admin/kyc/${kycReview.userId}/decision`, { decision, note: kycDecisionNote.trim() })
+        .then(() => {
+          toast({ tone: decision === "approved" ? "success" : "info", title: decision === "approved" ? "Verification approved" : "Changes requested", description: `${kycReview.name} has been notified.` });
+          setKycReview(null); setKycDecisionNote(""); refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Decision failed", description: err.message }));
+      return;
+    }
     resolveKycForUser(kycReview.userId,
       { name: kycReview.name, business: kycReview.business, email: kycReview.email, accountType: kycReview.accountType },
       decision, kycDecisionNote.trim(), user?.name || "Veyra compliance");
@@ -229,6 +294,15 @@ export function SuperAdminPage() {
     if (!statusConfirm) return;
     if (!guard("accounts.set_status", "change account status")) return;
     const { target, status } = statusConfirm;
+    if (online) {
+      apiPost(`/api/admin/members/${target.userId}/status`, { status, reason: statusReason || "Reviewed by compliance." })
+        .then(() => {
+          toast({ tone: status === "restricted" ? "info" : "success", title: status === "restricted" ? "Account restricted" : "Account restored", description: `${target.name} has been notified.` });
+          setStatusConfirm(null); setStatusReason(""); refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Status change failed", description: err.message }));
+      return;
+    }
     setAccountStatus(target.userId,
       { name: target.name, business: target.business, email: target.email, accountType: target.accountType },
       status, statusReason || "Reviewed by compliance.");
@@ -242,6 +316,16 @@ export function SuperAdminPage() {
 
   const handleResolveDispute = (userId: string, name: string, profile: { name: string; business: string; email: string; accountType: "personal" | "business" }, disputeId: string, merchant: string) => {
     if (!guard("risk.resolve", "resolve disputes")) return;
+    if (online) {
+      apiPost<{ status: string }>(`/api/admin/risk/disputes/${disputeId}/advance`)
+        .then(r => {
+          const resolved = r.status === "resolved";
+          toast({ tone: resolved ? "success" : "info", title: resolved ? "Dispute resolved" : "Dispute under review", description: `${merchant} · ${name}` });
+          refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Action failed", description: err.message }));
+      return;
+    }
     try {
       const result = advanceDisputeForUser(userId, profile, disputeId);
       if (!result) return;
@@ -257,6 +341,15 @@ export function SuperAdminPage() {
   const handleStaffConfirm = () => {
     if (!staffConfirm) return;
     if (!guard("staff.manage", "manage staff")) return;
+    if (online) {
+      apiPost(`/api/admin/staff/${staffConfirm.userId}/role`, { role: staffConfirm.role })
+        .then(() => {
+          toast({ tone: "success", title: "Role updated", description: `${staffConfirm.name} is now ${ROLE_LABELS[staffConfirm.role]}.` });
+          setStaffConfirm(null); refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Role change failed", description: err.message }));
+      return;
+    }
     try {
       const before = staffListRole(staffConfirm.userId);
       setUserRole(staffConfirm.userId, staffConfirm.role, user?.id ?? "");
@@ -270,11 +363,23 @@ export function SuperAdminPage() {
       toast({ tone: "error", title: "Role change failed", description: err instanceof Error ? err.message : "Something went wrong." });
     }
   };
-  const staffListRole = (userId: string) => ROLE_LABELS[getUsers().find(u => u.id === userId)?.role ?? "user"];
+  const staffListRole = (userId: string) => ROLE_LABELS[(users.find(u => u.id === userId)?.role ?? "user") as Role];
 
   const handleSaveMatrix = () => {
     if (!guard("roles.manage", "edit the permission matrix")) return;
     if (!matrixDraft) return;
+    if (online) {
+      Promise.all(STAFF_ROLES.filter(r => r !== "superadmin")
+        .filter(r => (matrixDraft[r] ?? rolePermissions(r)).join() !== rolePermissions(r).join())
+        .map(r => apiPut("/api/admin/roles", { role: r, permissions: matrixDraft[r] ?? rolePermissions(r) })))
+        .then(() => {
+          setMatrixDraft(null);
+          toast({ tone: "success", title: "Permission matrix saved", description: "Role grants updated — the server enforces them immediately." });
+          refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Save failed", description: err.message }));
+      return;
+    }
     for (const r of STAFF_ROLES.filter(r => r !== "superadmin")) {
       const next = matrixDraft[r] ?? rolePermissions(r);
       const before = rolePermissions(r);
@@ -290,6 +395,16 @@ export function SuperAdminPage() {
 
   const handleResetRole = (r: StaffRole) => {
     if (!guard("roles.manage", "edit the permission matrix")) return;
+    if (online) {
+      apiPost("/api/admin/roles/reset", { role: r })
+        .then(() => {
+          setMatrixDraft(null);
+          toast({ tone: "info", title: `${ROLE_LABELS[r]} reset`, description: "Default permissions restored." });
+          refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Reset failed", description: err.message }));
+      return;
+    }
     const before = rolePermissions(r);
     const after = resetRolePermissions(r);
     audit("roles.reset", "Access", `role:${r}`, `Reset to default grants.`, `${before.length} granted`, `${after.length} granted`);
@@ -305,6 +420,15 @@ export function SuperAdminPage() {
   };
   const commitBroadcast = () => {
     if (!guard("notifications.broadcast", "send broadcasts")) return;
+    if (online) {
+      apiPost<{ delivered: number }>("/api/admin/broadcasts", { title: broadcast.title.trim(), detail: broadcast.detail.trim(), audience: broadcast.audience })
+        .then(r => {
+          toast({ tone: "success", title: "Broadcast sent", description: `Delivered to ${r.delivered} member${r.delivered === 1 ? "" : "s"} in-app.` });
+          setBroadcast({ title: "", detail: "", audience: "all" }); setBroadcastConfirm(false); refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Broadcast failed", description: err.message }));
+      return;
+    }
     const { delivered } = broadcastNotification({ title: broadcast.title.trim(), detail: broadcast.detail.trim(), audience: broadcast.audience });
     audit("notification.broadcast", "Comms", `platform · ${broadcast.audience}`,
       `Broadcast “${broadcast.title.trim()}” delivered to ${delivered} member${delivered === 1 ? "" : "s"}.`);
@@ -318,13 +442,19 @@ export function SuperAdminPage() {
     if (!guard("transactions.export", "export data")) return;
     const date = new Date().toISOString().slice(0, 10);
     if (kind === "customers") {
-      downloadFile(`veyra-customers-${date}.csv`, csv([["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Role"], ...getUsers().map(u => [u.id, u.name, u.email, u.phone || "", u.business || "", u.accountType, u.plan, u.role ?? "user"])]), "text/csv");
+      downloadFile(`veyra-customers-${date}.csv`, csv([["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Role"], ...users.map(u => [u.id, u.name, u.email, u.phone || "", u.business || "", u.accountType, u.plan, u.role ?? "user"])]), "text/csv");
     } else if (kind === "accounts") {
       downloadFile(`veyra-accounts-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "Balance", "Pending", "Cards", "Frozen cards", "KYC", "Status", "Last activity"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.balance.toFixed(2), a.pendingBalance.toFixed(2), a.cards, a.frozenCards, a.kycStatus, a.accountStatus, a.lastActivity ? longDate(a.lastActivity) : "Never"])]), "text/csv");
     } else if (kind === "transactions") {
       downloadFile(`veyra-ledger-${date}.csv`, csv([["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"], ...allTxns.map(t => [longDate(t.date), t.memberName, t.merchant, t.category, t.method ?? "", t.amount.toFixed(2), t.status ?? "cleared", t.reference ?? ""])]), "text/csv");
     } else if (kind === "kyc") {
       downloadFile(`veyra-kyc-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Requested at"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.kycStatus, `${a.kycStatus === "not_started" ? 0 : a.kycStatus === "approved" ? 100 : 72}%`, a.lastActivity ? longDate(a.lastActivity) : "—"])]), "text/csv");
+    } else if (online) {
+      // Server audit trail (append-only, DB-enforced) exported straight from the API.
+      fetch("/api/admin/audit/export.csv", { headers: { Authorization: `Bearer ${getToken()}` } })
+        .then(r => r.text())
+        .then(text => downloadFile(`veyra-audit-${date}.csv`, text, "text/csv"))
+        .catch(() => toast({ tone: "error", title: "Export failed", description: "The audit export couldn't be downloaded." }));
     } else {
       exportAuditLogs();
     }
@@ -334,6 +464,15 @@ export function SuperAdminPage() {
 
   const handleSaveSettings = () => {
     if (!guard("settings.manage", "change banking settings")) return;
+    if (online) {
+      apiPut("/api/admin/settings", { coreApy: interestRate })
+        .then(() => {
+          toast({ tone: "success", title: "System parameters saved", description: `Core treasury yield updated to ${interestRate}%.` });
+          refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Save failed", description: err.message }));
+      return;
+    }
     audit("settings.save", "System", "platform", `Updated core high-yield APY to ${interestRate}%.`, "4.10%", `${interestRate}%`);
     toast({ tone: "success", title: "System parameters saved", description: `Core treasury yield updated to ${interestRate}%.` });
     refresh();
@@ -342,6 +481,17 @@ export function SuperAdminPage() {
   const handleHaltToggle = () => {
     if (!guard("settings.manage", "change banking settings")) return;
     const next = !systemFrozen;
+    if (online) {
+      apiPut("/api/admin/settings", { paymentRails: next ? "halted" : "operational" })
+        .then(() => {
+          setSystemFrozen(next);
+          setHaltConfirm(false);
+          toast({ tone: next ? "error" : "success", title: next ? "EMERGENCY: Payment rails halted" : "Core payment gateway resumed", description: next ? "All outgoing wire and card authorizations paused." : "All transaction flows operational." });
+          refresh();
+        })
+        .catch((err: Error) => toast({ tone: "error", title: "Action failed", description: err.message }));
+      return;
+    }
     setSystemFrozen(next);
     setHaltConfirm(false);
     audit(next ? "system.halt" : "system.resume", "System", "platform",
