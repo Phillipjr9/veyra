@@ -15,6 +15,7 @@ import {
   Search, Send, ShieldCheck, Sparkles, Users, Wallet, X,
 } from "lucide-react";
 import { Logo, ease } from "../../components/common";
+import { BackButton } from "../../components/BackButton";
 import { money, shortDate, useAcct, type Invoice, type ScheduledPayment } from "../../lib/store";
 import { Delta, Sparkline, type NavGroup } from "./parts";
 
@@ -70,6 +71,7 @@ export function BusinessChrome({ user, accountNumber, nav, notifications, onOpen
           <button type="button" className="bshell-burger" onClick={() => setRailOpen(o => !o)} aria-label="Toggle navigation">
             {railOpen ? <X size={18} /> : <Menu size={18} />}
           </button>
+          <BackButton />
           <div className="bshell-org">
             <span className="bshell-org-icon"><Building2 size={15} /></span>
             <div>

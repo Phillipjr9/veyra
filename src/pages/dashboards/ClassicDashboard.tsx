@@ -19,6 +19,7 @@ import { ZelleHubModal } from "../../components/ZelleHubModal";
 import { InvoiceDetailModal } from "../../components/InvoiceDetailModal";
 import { Camera } from "lucide-react";
 import { useAuth } from "../../lib/auth";
+import { BackButton } from "../../components/BackButton";
 import { lockScroll } from "../../lib/scrollLock";
 import {
   categories, copyText, downloadFile, longDate, money, rewardRate, shortDate, useAcct,
@@ -777,6 +778,7 @@ export function DashboardLayout() {
         <header className="app-topbar">
           <div className="topbar-left">
             <button type="button" className="app-burger icon-btn" onClick={() => setNavOpen(true)} aria-label="Open menu"><Menu size={18} /></button>
+            <BackButton />
             <div className="topbar-balance">
               <span>Available balance</span>
               <div className="topbar-balance-value">

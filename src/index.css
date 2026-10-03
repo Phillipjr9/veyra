@@ -527,6 +527,14 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
 .contact-note { display: flex; align-items: center; gap: 10px; padding: 16px; border-radius: 13px; background: #e9e3fb; font-size: 13px; color: #4f4470; }
 .contact-note svg { width: 16px; height: 16px; color: var(--violet); }
 .form-success { display: flex; align-items: center; gap: 8px; margin: 18px 0 0; padding: 13px 15px; border-radius: 11px; background: #e4f3ea; font-size: 13px; color: #3f7a57; }
+
+/* Back button — every page has one, in the shell's own idiom */
+.back-btn { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 12px; border: 1px solid rgba(24,23,29,.1); border-radius: 11px; background: #fffdf9; color: #57525f; font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer; transition: background .2s, color .2s, border-color .2s, transform .2s; }
+.back-btn:hover { background: #f4efe7; color: var(--ink); }
+.back-btn:active { transform: scale(.97); }
+.back-btn:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+@media (max-width: 720px) { .back-btn { width: 38px; padding: 0; justify-content: center; } .back-btn span { display: none; } }
+
 .form-error { display: flex; flex-direction: column; gap: 4px; margin: 16px 0 0; padding: 12px 14px; border: 1px solid rgba(157,64,64,.28); border-radius: 11px; background: #fbe9e9; font-size: 13px; line-height: 1.45; color: #9d4040; }
 .form-error strong { font-size: 13.5px; }
 .form-error small { font-size: 12px; line-height: 1.5; color: #8a5454; }

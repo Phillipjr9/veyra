@@ -1694,6 +1694,9 @@
 .cr-body { min-width: 0; display: flex; flex-direction: column; }
 .cr-bar { position: sticky; top: 0; z-index: 70; height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 20px; border-bottom: 1px solid #1a2130; background: rgba(11,14,20,.92); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .cr-bar-left, .cr-bar-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* the back button lives in the console's own palette */
+.cr-bar .back-btn { background: #141b26; border-color: #26303f; color: #cfd6e2; }
+.cr-bar .back-btn:hover { background: #1b2432; color: #fff; }
 .cr-env { padding: 3px 6px; border: 1px solid #1f3a2c; border-radius: 4px; background: #0f1a14; color: #3ddc84; font: 700 10px var(--mono); letter-spacing: .14em; }
 .cr-sep { width: 1px; height: 18px; background: #1f2734; }
 .cr-bar-left strong { font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }

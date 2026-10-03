@@ -11,6 +11,7 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Activity, LogOut, Menu, Radio, X } from "lucide-react";
 import { Logo } from "../../components/common";
+import { BackButton } from "../../components/BackButton";
 
 export type AdminModule = { id: string; label: string; icon: ReactNode; perm?: string; count?: number };
 
@@ -72,6 +73,7 @@ export function AdminShell({
           <button type="button" className="cr-burger" onClick={() => setRailOpen(o => !o)} aria-expanded={railOpen} aria-label="Toggle modules">
             {railOpen ? <X size={18} /> : <Menu size={18} />}
           </button>
+          <BackButton />
           <div className="cr-bar-left">
             <span className="cr-env">PRODUCTION</span>
             <span className="cr-sep" />
