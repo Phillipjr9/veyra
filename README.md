@@ -110,7 +110,7 @@ server/
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   148-check integration suite (boots the real server)
+  scripts/test-api.ts   152-check integration suite (boots the real server)
   scripts/audit-routes.ts  69 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
@@ -155,7 +155,7 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 148-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 152-check integration suite (fresh DB, ephemeral port)
 npm run check:routes      # fails if a server route has no caller in the app
 npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
@@ -175,6 +175,7 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Account states | `restricted` members can deposit but not transfer; `payment_rails: halted` blocks all transfers with 503 |
 | Overdrafts | Rejected — balances can never go negative |
 | Card controls | Freeze, per-transaction and monthly limits, merchant/category locks and the online-payments switch are enforced server-side when a card spends |
+| Export scoping | The ledger export opens with `reports.view` or `transactions.export`; the directory, balances and KYC exports stay behind `reports.view` |
 | Secrets | `TOKEN_SECRET` env required in production (refuses to boot on the dev fallback) |
 | Password reset | Single-use SHA-256-hashed tokens, 30-minute expiry, reset revokes all sessions |
 | Bootstrap | First Super Admin created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` — no seeded accounts in production |
@@ -266,7 +267,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (148) = 189 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (152) = 193 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

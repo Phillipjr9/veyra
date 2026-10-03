@@ -287,6 +287,15 @@ try {
   expect("report export: audit (CSV)", auditCsv.status === 200 && auditCsv.text.includes(",") && (auditCsv.headers.get("content-type") ?? "").includes("text/csv"));
   const exportNoPerm = await api("GET", "/api/admin/reports/customers.csv", support);
   expect("support cannot export reports (403)", exportNoPerm.status === 403);
+  // `transactions.export` is the Transactions console's own permission: it
+  // opens the ledger file only — the directory, balances and KYC files stay
+  // behind reports.view.
+  await api("PUT", "/api/admin/roles", admin, { role: "support", permissions: ["dashboard.view", "transactions.export"] });
+  const ledgerByTxnExport = await api("GET", "/api/admin/reports/transactions.csv", support);
+  const directoryByTxnExport = await api("GET", "/api/admin/reports/customers.csv", support);
+  expect("transactions.export opens the ledger export (200)", ledgerByTxnExport.status === 200 && ledgerByTxnExport.text.includes(","));
+  expect("transactions.export does not open the other reports (403)", directoryByTxnExport.status === 403);
+  await api("POST", "/api/admin/roles/reset", admin, { role: "support" });
 
   /* ---------- audit trail ---------- */
   const auditList = await api("GET", "/api/admin/audit?category=Financial", admin);
@@ -409,6 +418,12 @@ try {
   const payNow = await api("POST", `/api/me/scheduled/${sched.json.payment.id}/pay`, rae);
   expect("pay-now debits and advances next date", payNow.status === 200 &&
     (await api("GET", "/api/me/state", rae)).json.account.balance === balPreSched - 250);
+  // The response carries the id of the ledger row the server just wrote, so a
+  // dispute filed before the snapshot refreshes still links to that row.
+  const paidTxnId = payNow.json.transaction?.id as string | undefined;
+  expect("pay-now returns the ledger row id", typeof paidTxnId === "string" && paidTxnId.startsWith("txn"));
+  const disputePaidTxn = await api("POST", "/api/me/disputes", rae, { transactionId: paidTxnId, reason: "Duplicate charge", detail: "Filed immediately after paying." });
+  expect("a dispute filed with that id links to the row (201)", disputePaidTxn.status === 201);
   const paused = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, rae);
   expect("scheduled payment pause/resume toggle", paused.status === 200 && paused.json.status === "paused");
   const resumed = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, rae, { status: "active" });

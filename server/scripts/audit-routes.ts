@@ -48,7 +48,7 @@ const rawRoutes = [...source.matchAll(ROUTE_RE)];
  * Every route must match exactly one entry; an unmatched route fails the audit
  * so new surface has to be classified deliberately.
  */
-type Policy = { method: string; path: string; auth: boolean; perm: string | null };
+type Policy = { method: string; path: string; auth: boolean; /** One permission, or any of several. */ perm: string | string[] | null };
 const BASELINE: Policy[] = [
   // Public surface: reachable without a session.
   { method: "GET", path: "/api/health", auth: false, perm: null },
@@ -121,7 +121,9 @@ const BASELINE: Policy[] = [
   { method: "GET", path: "/api/admin/audit", auth: true, perm: "audit.view" },
   { method: "GET", path: "/api/admin/audit/export.csv", auth: true, perm: "audit.view" },
   { method: "POST", path: "/api/admin/broadcasts", auth: true, perm: "notifications.broadcast" },
-  { method: "GET", path: "/api/admin/reports/:kind.csv", auth: true, perm: "reports.view" },
+  // The ledger file opens with either permission; every other report kind
+  // additionally requires reports.view inside the handler.
+  { method: "GET", path: "/api/admin/reports/:kind.csv", auth: true, perm: ["reports.view", "transactions.export"] },
   { method: "GET", path: "/api/admin/settings", auth: true, perm: "settings.manage" },
   { method: "PUT", path: "/api/admin/settings", auth: true, perm: "settings.manage" },
 ];
@@ -130,7 +132,7 @@ const samePath = (a: string, b: string) => a === b || (a.includes(":") && new Re
 const baselineFor = (method: string, path: string) =>
   BASELINE.find(p => p.method === method && samePath(p.path, path) && String(p.path).includes(":") === path.includes(":") );
 
-type Declared = { method: string; path: string; auth: boolean; perm: string | null; public: boolean; expects: string | null; contractProblems: string[] };
+type Declared = { method: string; path: string; auth: boolean; perm: string | null; public: boolean; expects: string[]; contractProblems: string[] };
 const declared: Declared[] = rawRoutes.map((match, index) => {
   const method = match[1];
   const path = match[2];
@@ -140,8 +142,13 @@ const declared: Declared[] = rawRoutes.map((match, index) => {
   const segment = source.slice(match.index, end);
   const bodyStart = segment.search(/\bwrap\(|\(\s*_?req\b/);
   const header = bodyStart === -1 ? segment.slice(0, 400) : segment.slice(0, bodyStart);
-  const perm = /requirePerm\("([^"]+)"\)/.exec(header);
-  const declaredPerm = perm ? perm[1] : null;
+  const anyPerm = /requireAnyPerm\(([^)]*)\)/.exec(header);
+  const declaredPerms = anyPerm
+    ? [...anyPerm[1].matchAll(/"([^"]+)"/g)].map(m => m[1])
+    : (() => {
+        const one = /requirePerm\("([^"]+)"\)/.exec(header);
+        return one ? [one[1]] : [];
+      })();
   const declaredAuth = /requireAuth/.test(header);
 
   // Compare the implementation against the independent contract. A mismatch is
@@ -154,18 +161,20 @@ const declared: Declared[] = rawRoutes.map((match, index) => {
     if (policy.auth !== declaredAuth) {
       contractProblems.push(policy.auth ? "baseline requires auth but the route declares none" : "baseline is public but the route declares requireAuth");
     }
-    if (policy.perm !== declaredPerm) {
-      contractProblems.push(`baseline requires ${policy.perm ?? "no permission"} but the route declares ${declaredPerm ?? "none"}`);
+    const wanted = (Array.isArray(policy.perm) ? policy.perm : [policy.perm]).filter(Boolean).sort().join(" | ");
+    const declaredList = [...declaredPerms].sort().join(" | ");
+    if (wanted !== declaredList) {
+      contractProblems.push(`baseline requires ${wanted || "no permission"} but the route declares ${declaredList || "none"}`);
     }
   }
   return {
     method: method.toUpperCase(),
     path,
     auth: declaredAuth,
-    perm: declaredPerm,
+    perm: declaredPerms.join(" | ") || null,
     // Expectations follow the contract, not the implementation.
     public: policy ? !policy.auth : !declaredAuth,
-    expects: policy?.perm ?? null,
+    expects: policy ? (Array.isArray(policy.perm) ? policy.perm : [policy.perm]).filter((p): p is string => Boolean(p)) : [],
     contractProblems,
   };
 });
@@ -260,7 +269,7 @@ const foreignIdFor = (path: string): string => {
   return "synthetic-id";
 };
 
-const fillPath = (path: string) => path.replace(/:kind/g, "customers").replace(/:[A-Za-z_]\w*/g, () => foreignIdFor(path));
+const fillPath = (path: string) => path.replace(/:kind/g, "transactions").replace(/:[A-Za-z_]\w*/g, () => foreignIdFor(path));
 
 /** Bodies differ per route; only the gate matters here. */
 const bodyFor = (route: Declared): unknown => {
@@ -339,11 +348,12 @@ for (const route of declared) {
     }
     const required = route.expects;
     const roleKey = label === "member" ? null : label;
-    const hasGrant = roleKey ? grants[roleKey]?.includes(required ?? "") : false;
+    const hasGrant = roleKey ? required.some(p => grants[roleKey]?.includes(p)) : false;
+    const wanted = required.join(" or ");
 
-    if (required) {
-      if (!hasGrant && res.status !== 403) problems.push({ route: key, role: label, status: res.status, note: `role lacks ${required} but got ${res.status}, expected 403` });
-      if (hasGrant && res.status === 403) problems.push({ route: key, role: label, status: res.status, note: `role has ${required} but got 403` });
+    if (required.length) {
+      if (!hasGrant && res.status !== 403) problems.push({ route: key, role: label, status: res.status, note: `role lacks ${wanted} but got ${res.status}, expected 403` });
+      if (hasGrant && res.status === 403) problems.push({ route: key, role: label, status: res.status, note: `role has ${wanted} but got 403` });
     } else if (label === "member" && res.status === 403) {
       problems.push({ route: key, role: label, status: res.status, note: "member surface returned 403 to a member" });
     }

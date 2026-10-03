@@ -128,6 +128,22 @@ export function createApp(dbPath?: string) {
     };
   }
 
+  /**
+   * A route reachable through any one of several permissions, for endpoints
+   * whose data is legitimately in more than one operator's remit — the
+   * transaction ledger export is both a report (`reports.view`) and the
+   * transactions console's export (`transactions.export`).
+   */
+  function requireAnyPerm(...permissions: Permission[]) {
+    return (req: Request, res: Response, next: NextFunction): void => {
+      if (!isStaffRole(req.user?.role ?? "")) return void res.status(403).json({ error: "Admin access required." });
+      if (!permissions.some(permission => can(db, req.user!.role, permission))) {
+        return void res.status(403).json({ error: `Access denied — your role does not permit you to ${permissions.join(" or ")}.` });
+      }
+      next();
+    };
+  }
+
   const audit = (req: Request, action: string, category: Parameters<typeof logAdminAction>[1]["category"], target: string, summary: string, before?: string, after?: string) =>
     logAdminAction(db, { adminId: req.user!.id, adminName: req.user!.name, action, category, target, summary, before, after });
 
@@ -856,7 +872,7 @@ export function createApp(dbPath?: string) {
       return void res.status(404).json({ error: "Payment not found." });
     }
     try {
-      inTransaction(db, () => {
+      const txnId = inTransaction(db, () => {
         const payment = db.prepare("SELECT * FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
         if (!payment) throw new Error("Payment not found.");
         if (payment.status === "completed") throw new Error("This payment is already completed.");
@@ -872,15 +888,19 @@ export function createApp(dbPath?: string) {
         db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents - cents, now(), account.id);
         db.prepare("UPDATE scheduled_payments SET next_date = ?, status = ? WHERE id = ?")
           .run(nextDate, payment.frequency === "once" ? "completed" : String(payment.status), id);
+        const txn = rid("txn");
         db.prepare(
           `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
            VALUES (?, ?, ?, ?, ?, 'ACH', ?, 'cleared', ?, ?, ?)`,
-        ).run(rid("txn"), account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
+        ).run(txn, account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
           makeReference(), String(payment.memo ?? "Scheduled payment"), now());
         notify(req.user!.id, "transfer", `${centsToDecimal(cents)} paid to ${String(payment.payee_name)}`,
           payment.frequency === "once" ? "One-time payment completed." : "Next payment scheduled.");
+        return txn;
       });
-      res.json({ ok: true });
+      // The ledger row's id, so the client can act on the payment the server
+      // just wrote (dispute it) before the refreshed snapshot lands.
+      res.json({ ok: true, transaction: { id: txnId } });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Payment failed." });
     }
@@ -1379,8 +1399,16 @@ export function createApp(dbPath?: string) {
     res.json({ delivered });
   }));
 
-  app.get("/api/admin/reports/:kind.csv", requireAuth, requirePerm("reports.view"), wrap((req, res) => {
+  // The ledger export serves the Reports tab and the Transactions console, so
+  // either of their permissions opens it (`transactions.export` gated only the
+  // button before this, and the button's holder was refused by the route).
+  app.get("/api/admin/reports/:kind.csv", requireAuth, requireAnyPerm("reports.view", "transactions.export"), wrap((req, res) => {
     const kind = String(req.params.kind);
+    // `transactions.export` is the ledger console's export permission: it opens
+    // the ledger file only, not the customer directory, balances or KYC status.
+    if (kind !== "transactions" && !can(db, req.user!.role, "reports.view")) {
+      return void res.status(403).json({ error: "Access denied — exporting reports requires the reports.view permission." });
+    }
     const stamp = new Date().toISOString().slice(0, 10);
     let rows: Array<Array<string | number>>;
     if (kind === "customers") {

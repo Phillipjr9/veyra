@@ -71,15 +71,16 @@ const clientCalls = new Set();
 const addCall = (method, path) => {
   const clean = path.split("?")[0];
   if (!clean.startsWith("/api/")) return;
-  // A GET-only call site (fetch) is recorded without a method so it matches
-  // any method on that path.
-  clientCalls.add(method ? `${method} ${clean}` : clean);
+  clientCalls.add(`${method} ${clean}`);
 };
-for (const [, verb, path] of client.matchAll(/(?:api|sync)(GetText|Get|Post|Put|Patch|Delete)\s*(?:<[^>]*>)?\s*\(\s*[`"]([^`"]+)[`"]/g))
+// A call is matched with its method so method drift can't hide behind a path
+// reference. `syncPost(() => \`/api/x/${id}\`)` (a path resolved at send time)
+// counts too, and a bare `fetch(url)` is a GET.
+for (const [, verb, path] of client.matchAll(/(?:api|sync)(GetText|Get|Post|Put|Patch|Delete)\s*(?:<[^>]*>)?\s*\(\s*(?:\(\s*\)\s*=>\s*)?[`"]([^`"]+)[`"]/g))
   addCall(VERB[verb], path);
 for (const [, method, path] of client.matchAll(/\bapi\s*\(\s*"(GET|POST|PUT|PATCH|DELETE)"\s*,\s*[`"]([^`"]+)[`"]/g))
   addCall(method, path);
-for (const [, path] of client.matchAll(/fetch\(\s*[`"](\/api\/[^`"]+)[`"]/g)) addCall(null, path);
+for (const [, path] of client.matchAll(/fetch\(\s*[`"](\/api\/[^`"]+)[`"]/g)) addCall("GET", path);
 
 /**
  * Paths that live in a lookup table (e.g. the Super Admin EXPORTS map) are
@@ -101,27 +102,28 @@ for (const [, path] of client.matchAll(/[`"](\/api\/[a-z0-9/:._${}-]+)[`"]/gi)) 
 const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const pattern = p => new RegExp(`^${escape(p).replace(/\\\*/g, "[^/]*")}$`);
 
-const clientPaths = new Set([
-  ...referenced,
-  ...[...clientCalls].map(entry => normalise(entry.includes(" ") ? entry.slice(entry.indexOf(" ") + 1) : entry)),
-]);
-const clientKeys = [...clientCalls].filter(c => c.includes(" ")).map(key);
+const clientKeys = [...clientCalls].map(key);
 const serverKeys = new Map(serverRoutes.map(route => [key(route), route]));
 
-// A route is wired when the app references a path it accepts — inline calls,
-// fetch() sites and lookup-table entries all count.
+// A route is wired when the app calls it with the same method. Lookup tables
+// (the Super Admin EXPORTS map) hold paths rather than calls — they are read
+// endpoints, so they only satisfy a GET route.
 const unwired = [...serverKeys]
   .filter(([k]) => {
-    const accepts = pattern(k.split(" ")[1]);
-    return ![...clientPaths].some(path => accepts.test(path));
+    const [method, routePath] = k.split(" ");
+    const accepts = pattern(routePath);
+    const called = clientKeys.some(entry => entry.startsWith(`${method} `) && accepts.test(entry.slice(entry.indexOf(" ") + 1)));
+    if (called) return false;
+    return !(method === "GET" && [...referenced].some(path => accepts.test(path)));
   })
   .map(([, route]) => route)
   .filter(route => !SUPERSEDED_BY_SNAPSHOT.has(route));
 
-// Client calls that don't correspond to any route (typos, removed endpoints).
-const serverPatterns = [...serverKeys.keys()].map(k => pattern(k.split(" ")[1]));
+// Client calls that don't correspond to any route (typos, removed endpoints,
+// or a method the route doesn't accept).
+const serverPatterns = [...serverKeys.keys()].map(k => ({ method: k.split(" ")[0], accepts: pattern(k.split(" ")[1]) }));
 const dead = [...new Set(clientKeys)]
-  .filter(k => !serverPatterns.some(accepts => accepts.test(k.split(" ")[1])))
+  .filter(k => !serverPatterns.some(sp => sp.method === k.split(" ")[0] && sp.accepts.test(k.split(" ")[1])))
   .filter(k => ![...SUPERSEDED_BY_SNAPSHOT.keys()].map(key).includes(k));
 
 let failed = false;

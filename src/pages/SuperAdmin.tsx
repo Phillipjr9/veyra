@@ -373,16 +373,22 @@ export function SuperAdminPage() {
    * the permission its route enforces, so the guard below mirrors the API.
    */
   const EXPORTS = {
-    customers: { permission: "reports.view", path: "/api/admin/reports/customers.csv", file: "veyra-customers" },
-    accounts: { permission: "reports.view", path: "/api/admin/reports/accounts.csv", file: "veyra-accounts" },
-    transactions: { permission: "reports.view", path: "/api/admin/reports/transactions.csv", file: "veyra-ledger" },
-    kyc: { permission: "reports.view", path: "/api/admin/reports/kyc.csv", file: "veyra-kyc" },
-    audit: { permission: "audit.view", path: "/api/admin/audit/export.csv", file: "veyra-audit" },
-  } as const satisfies Record<string, { permission: Permission; path: string; file: string }>;
+    customers: { permissions: ["reports.view"], path: "/api/admin/reports/customers.csv", file: "veyra-customers" },
+    accounts: { permissions: ["reports.view"], path: "/api/admin/reports/accounts.csv", file: "veyra-accounts" },
+    // The ledger export serves the Reports tab and the Transactions console,
+    // and the route accepts either permission (transactions.export opens only
+    // this file — the directory, balances and KYC exports stay reports.view).
+    transactions: { permissions: ["reports.view", "transactions.export"], path: "/api/admin/reports/transactions.csv", file: "veyra-ledger" },
+    kyc: { permissions: ["reports.view"], path: "/api/admin/reports/kyc.csv", file: "veyra-kyc" },
+    audit: { permissions: ["audit.view"], path: "/api/admin/audit/export.csv", file: "veyra-audit" },
+  } as const satisfies Record<string, { permissions: readonly Permission[]; path: string; file: string }>;
 
   const handleExport = async (kind: keyof typeof EXPORTS) => {
     const spec = EXPORTS[kind];
-    if (!guard(spec.permission, "export data")) return;
+    if (!spec.permissions.some(allow)) {
+      toast({ tone: "error", title: "Permission denied", description: `Exporting this data requires the ${spec.permissions.join(" or ")} permission.` });
+      return;
+    }
     const date = new Date().toISOString().slice(0, 10);
     try {
       const csvText = await apiGetText(spec.path);
