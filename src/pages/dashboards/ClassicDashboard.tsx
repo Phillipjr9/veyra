@@ -807,8 +807,6 @@ export function DashboardLayout() {
               <span>Ask Scout</span>
             </button>
 
-            <button type="button" className="topbar-btn" onClick={() => openDeposit()} aria-label="Add funds"><Plus size={15} /><span>Add funds</span></button>
-            <Link to="/app/transfers" className="topbar-btn solid" aria-label="Send money"><Send size={14} /><span>Send</span></Link>
             <div className="notif-wrap" ref={notifRef}>
               <button type="button" className={`icon-btn ${ringing ? "is-ringing" : ""}`} onClick={() => setNotifOpen(o => !o)}
                 aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`} aria-expanded={notifOpen}>
