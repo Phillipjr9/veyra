@@ -3,7 +3,7 @@ import { Navigate } from "react-router-dom";
 import {
   Users, CreditCard, ShieldAlert,
   RefreshCw, Check, Search, Lock,
-  FileText, Activity, AlertOctagon, UserCheck
+  FileText, Activity, AlertOctagon, UserCheck, Mail
 } from "lucide-react";
 import { useAuth, getUsers } from "../lib/auth";
 import { useAcct, money, longDate } from "../lib/store";
@@ -538,6 +538,30 @@ export function SuperAdminPage() {
                 Save Global Config
               </button>
             </div>
+          </section>
+
+          <section className="panel admin-panel">
+            <div className="panel-head">
+              <div>
+                <h2>Customer Notification Emails</h2>
+                <span className="panel-sub">Transactional templates built on the product design system</span>
+              </div>
+              <Mail size={18} style={{ color: "var(--violet)" }} />
+            </div>
+
+            <p style={{ margin: "0 0 16px", fontSize: "13.5px", lineHeight: 1.65, color: "var(--muted)" }}>
+              Every notification email — security alerts, deposits and transfers, cards, invoicing, Scout insights and
+              account lifecycle — uses the same fonts (Manrope &amp; DM Sans) and palette as the app. Preview all
+              rendered templates or copy the HTML for your sending provider.
+            </p>
+
+            <a
+              className="solid-btn"
+              href="#/email-templates"
+              style={{ display: "inline-flex", textDecoration: "none" }}
+            >
+              <Mail size={14} /> Open email template studio
+            </a>
           </section>
         </div>
       )}

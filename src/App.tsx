@@ -21,6 +21,7 @@ import {
 } from "./pages/Dashboard";
 import { SuperAdminPage } from "./pages/SuperAdmin";
 import { SupportCenterPage } from "./pages/SupportCenter";
+import { EmailTemplatesPage } from "./pages/EmailTemplates";
 
 /** Public marketing pages share the site chrome. Auth and app layouts add the footer themselves. */
 function SiteLayout({ children }: { children: React.ReactNode }) {
