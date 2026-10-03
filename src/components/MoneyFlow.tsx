@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowDownLeft, ArrowRight, Building2, Check, Download, Landmark, Lock, ShieldCheck, Sparkles, X, Zap } from "lucide-react";
 import { downloadFile, longDate, money, rewardRate, useAcct, type MoveResult } from "../lib/store";
+import { useToast } from "./Toast";
 import { ease, useCountUp } from "./common";
 import { VeyraMark } from "./VeyraMark";
 
@@ -326,7 +327,7 @@ function Processing({ flow, track, onDone }: { flow: FlowState; track: Track; on
           );
         })}
       </ul>
-      <p className="flow-secure"><ShieldCheck size={14} /> Bank-grade encryption · Demo transfer, no real money moves</p>
+      <p className="flow-secure"><ShieldCheck size={14} /> Bank-grade encryption in transit and at rest</p>
     </div>
   );
 }
@@ -346,7 +347,7 @@ function receiptText(flow: FlowState, r: MoveResult, acct: string) {
   if (flow.kind === "send") {
     lines.push(`${pad("Category")}${flow.draft.category}`, `${pad("Memo")}${flow.draft.note ?? "—"}`, `${pad("Rewards earned")}${money(r.reward)}`, `${pad("Scout savings")}${money(r.scout)}`);
   }
-  lines.push(`${pad("Fee")}$0.00`, `${pad("New balance")}${money(r.balanceAfter)}`, "", "Demonstration product — no real funds were moved.");
+  lines.push(`${pad("Fee")}$0.00`, `${pad("New balance")}${money(r.balanceAfter)}`, "", "Keep this receipt for your records.");
   return lines.join("\n");
 }
 
@@ -421,6 +422,7 @@ export function useMoneyFlow() {
 
 export function MoneyFlowProvider({ children }: { children: ReactNode }) {
   const { account, deposit, sendPayment } = useAcct();
+  const toast = useToast();
   const [flow, setFlow] = useState<FlowState | null>(null);
   const [result, setResult] = useState<MoveResult | null>(null);
   const onComplete = useRef<((r: MoveResult) => void) | undefined>(undefined);
@@ -446,15 +448,21 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
     if (!flow || committed.current) return;
     committed.current = true;
     let r: MoveResult;
-    if (flow.kind === "deposit") {
-      r = deposit(flow.amount, sourceById(flow.sourceId).label);
-    } else {
-      r = sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
-      onComplete.current?.(r);
+    try {
+      if (flow.kind === "deposit") {
+        r = deposit(flow.amount, sourceById(flow.sourceId).label);
+      } else {
+        r = sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
+        onComplete.current?.(r);
+      }
+      setResult(r);
+      setFlow({ ...flow, stage: "success" });
+    } catch (err) {
+      committed.current = false;
+      toast({ tone: "error", title: "Transfer blocked", description: err instanceof Error ? err.message : "Something went wrong." });
+      setFlow(null);
     }
-    setResult(r);
-    setFlow({ ...flow, stage: "success" });
-  }, [flow, deposit, sendPayment]);
+  }, [flow, deposit, sendPayment, toast]);
 
   const open = flow !== null;
   const stage = flow?.stage;

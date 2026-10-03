@@ -3,10 +3,9 @@ import { createPortal } from "react-dom";
 import { Link, NavLink, Navigate, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
-  AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
+  AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
   Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, RotateCcw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2,
-  TrendingUp, Truck, UserPlus, UserRound, Users, WalletCards, X, Zap,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../components/common";
 import { Footer } from "../components/Chrome";
@@ -22,7 +21,7 @@ import { Camera } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import {
   categories, copyText, downloadFile, longDate, money, rewardRate, shortDate, useAcct,
-  type Card, type CardControls, type Dispute, type Invoice, type NotificationItem, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
+  type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type NotificationItem, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
 } from "../lib/store";
 
 /* ============================================================
@@ -134,7 +133,6 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/statements", label: "Statements", icon: <FileText size={18} /> },
       { to: "/app/disputes", label: "Disputes", icon: <ShieldAlert size={18} /> },
       { to: "/app/support-desk", label: "Support & Chat", icon: <MessageSquare size={18} />, badge: "LIVE" },
-      { to: "/app/kyc", label: "KYC", icon: <ShieldCheck size={18} /> },
       { to: "/app/security", label: "Security", icon: <ShieldCheck size={18} /> },
       { to: "/app/settings", label: "Settings", icon: <SettingsIcon size={18} /> },
     ],
@@ -167,7 +165,6 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/statements", label: "Statements", icon: <FileText size={18} /> },
       { to: "/app/disputes", label: "Disputes", icon: <ShieldAlert size={18} /> },
       { to: "/app/support-desk", label: "Support & Chat", icon: <MessageSquare size={18} />, badge: "LIVE" },
-      { to: "/app/kyc", label: "KYC", icon: <ShieldCheck size={18} /> },
       { to: "/app/security", label: "Security", icon: <ShieldCheck size={18} /> },
       { to: "/app/settings", label: "Settings", icon: <SettingsIcon size={18} /> },
     ],
@@ -175,10 +172,10 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
 ];
 
 const NOTE_ROUTES: Record<NotificationItem["type"], string> = {
-  scout: "/app/scout", card: "/app/cards", transfer: "/app/transactions", security: "/app/security", invoice: "/app/invoices",
+  scout: "/app/scout", card: "/app/cards", transfer: "/app/transactions", security: "/app/security", invoice: "/app/invoices", info: "/app",
 };
 const NOTE_ICONS: Record<NotificationItem["type"], ReactNode> = {
-  scout: <Sparkles size={14} />, card: <CreditCard size={14} />, transfer: <Zap size={14} />, security: <ShieldCheck size={14} />, invoice: <ReceiptText size={14} />,
+  scout: <Sparkles size={14} />, card: <CreditCard size={14} />, transfer: <Zap size={14} />, security: <ShieldCheck size={14} />, invoice: <ReceiptText size={14} />, info: <Bell size={14} />,
 };
 
 function PageHeader({ eyebrow, title, children }: { eyebrow: ReactNode; title: ReactNode; children?: ReactNode }) {
@@ -412,7 +409,7 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
       `${"Amount:".padEnd(16)}${incoming ? "+" : "-"}${money(Math.abs(txn.amount))}`,
       ...rows.map(([k, v]) => `${`${k}:`.padEnd(16)}${v}`),
       "",
-      "Demonstration product — no real funds were moved.",
+      "Keep this receipt for your records.",
     ];
     downloadFile(`veyra-receipt-${txn.reference ?? txn.id}.txt`, lines.join("\n"));
     toast({ tone: "success", title: "Receipt downloaded" });
@@ -553,9 +550,81 @@ function WelcomeModal() {
 /* ============================================================
    Layout
    ============================================================ */
+/* ============================================================
+   KYC request banner (admin-initiated verification)
+   ============================================================ */
+
+const KYC_DOC_LABELS: Record<string, string> = {
+  identity: "photo ID",
+  address: "proof of address",
+  selfie: "selfie / liveness check",
+  funds: "source-of-funds document",
+};
+
+/**
+ * Persistent alert pinned to the top of every dashboard page while identity
+ * verification is outstanding. Rendered when an admin requests verification
+ * (status "requested"), when documents need attention, or quietly while a
+ * review is in progress. Never shown once the member is verified.
+ */
+function KycAlertBanner() {
+  const { account } = useAcct();
+  const [dismissedReview, setDismissedReview] = useState(false);
+  if (!account) return null;
+  const { status, requestedBy, requestedAt, requestReason, requirements } = account.kyc;
+
+  if (status === "approved" || status === "not_started") return null;
+  if (status === "in_review" && dismissedReview) return null;
+
+  const asked = status === "requested" || status === "needs_attention";
+  const docs = (requirements ?? []).map(r => KYC_DOC_LABELS[r]).filter(Boolean);
+  const docList = status === "requested" && docs.length > 0 ? ` Required: ${docs.join(", ")}.` : "";
+
+  return (
+    <motion.section
+      className={`kyc-banner ${asked ? "is-urgent" : "is-info"}`}
+      role="alert"
+      aria-label="Identity verification"
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease }}
+    >
+      <span className="kyc-banner-icon">{asked ? <ShieldAlert size={19} /> : <ShieldCheck size={19} />}</span>
+      <div className="kyc-banner-copy">
+        <strong>
+          {status === "requested" && "Identity verification requested"}
+          {status === "needs_attention" && "Verification needs your attention"}
+          {status === "in_review" && "Identity verification is in review"}
+        </strong>
+        <span>
+          {status === "requested" && (requestReason || "Our compliance team has asked you to verify your identity.")}
+          {status === "needs_attention" && (account.kyc.nextStep || "Additional documents are needed before your review can continue.")}
+          {status === "in_review" && "We received your documents. Most reviews complete within 1–2 business days."}
+          {docList}
+        </span>
+        {status === "requested" && requestedBy && (
+          <em className="kyc-banner-meta">Requested by {requestedBy}{requestedAt ? ` · ${shortDate(requestedAt)}` : ""}</em>
+        )}
+      </div>
+      <div className="kyc-banner-actions">
+        {asked ? (
+          <Link to="/app/kyc" className="solid-btn sm"><ShieldCheck size={14} /> Verify identity</Link>
+        ) : (
+          <>
+            <Link to="/app/kyc" className="ghost-btn sm">View status</Link>
+            <button type="button" className="kyc-banner-dismiss" aria-label="Dismiss" onClick={() => setDismissedReview(true)}>
+              <X size={14} />
+            </button>
+          </>
+        )}
+      </div>
+    </motion.section>
+  );
+}
+
 export function DashboardLayout() {
   const { user, logout } = useAuth();
-  const { account, markAllNotificationsRead, markNotificationRead } = useAcct();
+  const { account, accountError, markAllNotificationsRead, markNotificationRead } = useAcct();
   const { openDeposit } = useMoneyFlow();
   const navigate = useNavigate();
   const location = useLocation();
@@ -611,6 +680,15 @@ export function DashboardLayout() {
     return () => { document.body.style.overflow = prev; };
   }, [navOpen]);
 
+  if (accountError) {
+    return (
+      <div className="route-loading" style={{ flexDirection: "column", gap: 12, padding: 24, textAlign: "center" }}>
+        <strong style={{ fontSize: 16 }}>We couldn't load your account</strong>
+        <span style={{ color: "var(--muted)", fontSize: 13.5, maxWidth: 420, lineHeight: 1.6 }}>{accountError}</span>
+        <button type="button" className="solid-btn sm" onClick={() => window.location.reload()}>Retry</button>
+      </div>
+    );
+  }
   if (!account || !user) return <div className="route-loading"><span className="spinner" /></div>;
   const nav = user.accountType === "personal" ? PERSONAL_NAV : BUSINESS_NAV;
 
@@ -629,7 +707,7 @@ export function DashboardLayout() {
           </div>
         </div>
 
-        {user.role === "superadmin" && (
+        {user.role && user.role !== "user" && (
           <div className="admin-shortcut-box">
             <Link to="/app/superadmin" className="admin-shortcut-link">
               <ShieldCheck size={14} /> Master Super Admin Console →
@@ -763,6 +841,8 @@ export function DashboardLayout() {
             </Link>
           </div>
         </header>
+
+        <KycAlertBanner />
 
         <motion.main key={location.pathname} className="app-content" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, ease }}>
           {outlet}
@@ -1165,10 +1245,10 @@ function CardManager({ card, onClose, onReplacement }: { card: Card | null; onCl
                         <div><span>Tracking</span><code>{card.shipping.tracking ?? "Assigning tracking…"}</code>{card.shipping.tracking && <button type="button" className="mini-copy" onClick={() => copy("Tracking number", card.shipping.tracking ?? "")}><Copy size={12} /></button>}</div>
                         <div><span>Ship to</span><b><MapPin size={13} /> {card.shipping.address}</b></div>
                       </section>
-                      {card.shipping.status !== "delivered" && <button type="button" className="ghost-btn demo-shipping" onClick={() => {
+                      {card.shipping.status !== "delivered" && <button type="button" className="ghost-btn ship-action" onClick={() => {
                         const status = advanceCardShipping(card.id);
                         toast({ tone: "info", title: `Shipping updated: ${SHIPPING_LABEL[status]}` });
-                      }}><Truck size={14} /> Advance demo shipment</button>}
+                      }}><Truck size={14} /> Advance shipment</button>}
                     </>
                   )}
                 </motion.div>
@@ -1566,7 +1646,7 @@ export function PaymentsPage() {
           <input
             id="pay-to"
             autoComplete="off"
-            placeholder={method === "Zelle" ? "e.g. Alex Morgan, (555) 234-5678, alex@email.com" : "Business or person"}
+            placeholder={method === "Zelle" ? "e.g. Jamie Chen, (555) 234-5678, jamie@email.com" : "Business or person"}
             value={payee}
             onChange={e => setPayee(e.target.value)}
           />
@@ -2169,7 +2249,7 @@ export function BillsPage() {
    Disputes & transaction support
    ============================================================ */
 export function DisputesPage() {
-  const { account, createDispute, advanceDispute } = useAcct();
+  const { account, createDispute } = useAcct();
   const toast = useToast();
   const [params, setParams] = useSearchParams();
   const [open, setOpen] = useState(params.has("txn"));
@@ -2201,11 +2281,6 @@ export function DisputesPage() {
     if (!dispute) return toast({ tone: "error", title: "This transaction cannot be disputed", description: "It may already have an active claim filed." });
     setOpen(false); setDetail(""); setParams({}, { replace: true });
     toast({ tone: "success", title: "Arbitration Claim Filed", description: `${money(dispute.amount)} for ${dispute.merchant} has been queued for review.` });
-  };
-
-  const advance = (claim: Dispute) => {
-    const status = advanceDispute(claim.id);
-    toast({ tone: status === "resolved" ? "success" : "info", title: status === "resolved" ? "Claim Approved & Refunded" : "Claim Advanced to Investigation", description: status === "resolved" ? `${money(claim.amount)} returned to checking.` : "Arbitrator assigned to case." });
   };
 
   const handleStartDisputeFor = (txnId: string) => {
@@ -2267,9 +2342,7 @@ export function DisputesPage() {
                       {claim.status === "resolved" ? "Provisional Credit Issued" : claim.status}
                     </span>
                     {claim.status !== "resolved" && claim.status !== "denied" && (
-                      <button type="button" className="ghost-btn sm" onClick={() => advance(claim)}>
-                        Advance Arbitrator Review (Demo)
-                      </button>
+                      <small className="panel-sub">Our arbitration team reviews every claim — no action needed.</small>
                     )}
                   </div>
                 </motion.article>
@@ -2427,59 +2500,131 @@ export function DisputesPage() {
 /* ============================================================
    KYC
    ============================================================ */
+/* Document tiles required by the compliance request (or sensible defaults). */
+const KYC_TILES: Array<{ key: string; req: KycRequirement; label: string; note: string }> = [
+  { key: "idFront", req: "identity", label: "Government ID — front", note: "Passport page or front of license / state ID" },
+  { key: "idBack", req: "identity", label: "Government ID — back", note: "Back of the card or second passport page" },
+  { key: "address", req: "address", label: "Proof of address", note: "Utility bill, lease or bank statement — last 3 months" },
+  { key: "selfie", req: "selfie", label: "Selfie / liveness check", note: "A clear selfie holding your ID, good lighting" },
+  { key: "funds", req: "funds", label: "Source-of-funds document", note: "Payslip, invoice, or bank statement showing income" },
+];
+
+const KYC_STEP_TITLES = ["Your details", "Documents", "Review & submit"];
+
+const KYC_LIMITS: Array<[string, string, string]> = [
+  ["Monthly send limit", "$10,000", "$250,000"],
+  ["Card issuance", "3 cards", "Unlimited"],
+  ["Outgoing wires", "Not available", "Enabled"],
+  ["Savings pockets", "2", "Unlimited"],
+];
+
 export function KYCPage() {
-  const { account, updateKyc } = useAcct();
+  const { account, user, updateKyc } = useAcct();
   const toast = useToast();
-  const [form, setForm] = useState({ country: "United States", documentType: "Passport", source: "Employment" });
-  const [uploads, setUploads] = useState({ idFront: "No file selected", idBack: "No file selected", address: "No file selected", selfie: "No file selected" });
+  const [step, setStep] = useState(0);
+  const [confirmed, setConfirmed] = useState(false);
+  const [form, setForm] = useState({
+    legalName: user?.name ?? "",
+    dob: "",
+    country: account?.kyc.country ?? "United States",
+    documentType: account?.kyc.documentType ?? "Passport",
+    source: "Employment",
+    taxId: "",
+    registration: "",
+    industry: "Professional services",
+  });
+  const [uploads, setUploads] = useState<Record<string, string>>({});
   if (!account) return null;
 
-  const statusMap = {
-    not_started: { label: "Not started", tone: "status-pill open" },
-    in_review: { label: "In review", tone: "status-pill active" },
-    approved: { label: "Approved", tone: "status-pill paid" },
-    needs_attention: { label: "Action needed", tone: "status-pill overdue" },
-  } as const;
-
   const kyc = account.kyc;
-  const status = statusMap[kyc.status];
-  const nextStep = kyc.nextStep || "You are ready to submit your verification documents.";
+  const status = kyc.status;
+  const isBusiness = user?.accountType === "business";
+  const requested = status === "requested";
 
-  const handleUpload = (key: keyof typeof uploads, file?: File | null) => {
-    setUploads(prev => ({ ...prev, [key]: file && file.name ? file.name : "No file selected" }));
+  const requirements: KycRequirement[] =
+    kyc.requirements && kyc.requirements.length > 0 ? kyc.requirements : ["identity", "address", "selfie"];
+  const tiles = KYC_TILES.filter(t => requirements.includes(t.req));
+  const uploadedCount = tiles.filter(t => uploads[t.key]).length;
+  const detailsComplete = form.legalName.trim().length > 1 && form.dob !== "" && form.taxId.trim().length >= 4;
+  const docsComplete = uploadedCount === tiles.length;
+
+  const statusPill =
+    status === "approved" ? <span className="status-pill paid"><span className="dot" />Verified</span>
+    : status === "in_review" ? <span className="status-pill active"><span className="dot" />In review</span>
+    : status === "needs_attention" ? <span className="status-pill overdue"><span className="dot" />Action needed</span>
+    : requested ? <span className="status-pill open"><span className="dot" />Requested</span>
+    : <span className="status-pill open"><span className="dot" />Not started</span>;
+
+  const heading =
+    status === "approved" ? "Your identity is verified"
+    : status === "in_review" ? "Your verification is under review"
+    : requested ? "Verify your identity to lift account limits"
+    : status === "needs_attention" ? "Finish your identity verification"
+    : "Verify your identity to lift account limits";
+
+  const handleUpload = (key: string, file?: File | null) => {
+    if (file && file.name) setUploads(prev => ({ ...prev, [key]: file.name }));
   };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const uploadedCount = Object.values(uploads).filter(v => v !== "No file selected").length;
-    const completeness = Math.min(100, Math.max(kyc.completeness || 0, 72 + uploadedCount * 8));
+    if (!confirmed) return;
     updateKyc({
-      status: uploadedCount >= 3 ? "in_review" : "needs_attention",
-      completeness,
-      lastUpdated: Date.now(),
-      nextStep: uploadedCount >= 3 ? "Documents submitted — our compliance team is verifying identity and source-of-funds details." : "Please upload the remaining identity verification documents before review can continue.",
+      status: "in_review",
+      completeness: 100,
       documentType: form.documentType,
       country: form.country,
+      nextStep: "Documents submitted — our compliance team is verifying your details. Most reviews complete within 1–2 business days.",
+      requestedAt: undefined,
+      submission: {
+        legalName: form.legalName,
+        dob: form.dob,
+        country: form.country,
+        documentType: form.documentType,
+        source: form.source,
+        taxId: form.taxId,
+        registration: isBusiness ? form.registration : undefined,
+        industry: isBusiness ? form.industry : undefined,
+        documents: tiles.map(t => ({ key: t.key, label: t.label, name: uploads[t.key] ?? "" })),
+        submittedAt: Date.now(),
+      },
     });
-    toast({ tone: uploadedCount >= 3 ? "success" : "info", title: uploadedCount >= 3 ? "KYC submitted" : "Documents needed", description: uploadedCount >= 3 ? `${form.documentType} verification sent for review.` : "Upload your ID and address proof to continue." });
+    toast({ tone: "success", title: "Verification submitted", description: "We'll email you as soon as the review completes." });
   };
+
+  const stepIndex = status === "in_review" || status === "approved" ? 3 : step;
 
   return (
     <div className="app-page">
-      <PageHeader eyebrow="Identity review · Tax docs · Source of funds" title="KYC" />
+      <PageHeader eyebrow="Identity verification · Compliance · Account limits" title="Identity verification">
+        {status === "in_review" && (
+          <Link to="/app" className="ghost-btn sm"><LayoutDashboard size={14} /> Back to dashboard</Link>
+        )}
+      </PageHeader>
+
+      {/* Request context — why am I being asked? */}
+      {requested && (kyc.requestedBy || kyc.requestReason) && (
+        <div className="kyc-request-card">
+          <ShieldAlert size={18} />
+          <div>
+            <strong>Verification requested by {kyc.requestedBy || "our compliance team"}{kyc.requestedAt ? ` · ${longDate(kyc.requestedAt)}` : ""}</strong>
+            <span>{kyc.requestReason || "Please complete identity verification to keep your account limits."}</span>
+          </div>
+        </div>
+      )}
 
       <div className="kyc-status-row panel">
         <div className="kyc-status-left">
-          <div className="kyc-status-ring" style={{ ["--kyc-progress" as string]: `${kyc.completeness}` }}>
+          <div className={`kyc-status-ring ${status === "approved" ? "is-approved" : ""}`} style={{ ["--kyc-progress" as string]: `${kyc.completeness}` }}>
             <div className="kyc-status-ring-inner">
               <b>{kyc.completeness}</b>
               <small>%</small>
             </div>
           </div>
           <div>
-            <span className={status.tone}>{status.label}</span>
-            <h2>Verify your account before higher limits are enabled</h2>
-            <p>{nextStep}</p>
+            {statusPill}
+            <h2>{heading}</h2>
+            <p>{kyc.nextStep || "Complete the three steps below — it takes about five minutes."}</p>
           </div>
         </div>
         <div className="kyc-status-meta">
@@ -2487,103 +2632,246 @@ export function KYCPage() {
           <strong>{kyc.country}</strong>
           <span>Document</span>
           <strong>{kyc.documentType}</strong>
+          <span>Last updated</span>
+          <strong>{longDate(kyc.lastUpdated)}</strong>
         </div>
       </div>
 
       <div className="kyc-grid">
         <div className="kyc-main-col">
-          <form className="panel dash-form" onSubmit={submit}>
-            <div className="panel-head">
+          {status === "approved" ? (
+            <section className="panel kyc-submitted">
+              <BadgeCheck size={34} />
               <div>
-                <h2>Verification details</h2>
-                <span className="panel-sub">Confirm the information needed for approval.</span>
+                <h2>Verification complete</h2>
+                <p>Your identity was verified on {longDate(kyc.lastUpdated)}. All account limits are unlocked, and we'll only reach out if a periodic refresh is required by regulation.</p>
+                <div className="modal-actions" style={{ justifyContent: "flex-start" }}>
+                  <Link to="/app" className="solid-btn sm"><LayoutDashboard size={14} /> Back to dashboard</Link>
+                </div>
               </div>
-            </div>
-
-            <label htmlFor="kyc-country">Country of residence</label>
-            <input id="kyc-country" value={form.country} onChange={e => setForm(f => ({ ...f, country: e.target.value }))} />
-
-            <label htmlFor="kyc-document">Document type</label>
-            <select id="kyc-document" value={form.documentType} onChange={e => setForm(f => ({ ...f, documentType: e.target.value }))}>
-              <option>Passport</option>
-              <option>Driver license</option>
-              <option>State ID</option>
-              <option>Residence permit</option>
-            </select>
-
-            <label htmlFor="kyc-source">Source of funds</label>
-            <select id="kyc-source" value={form.source} onChange={e => setForm(f => ({ ...f, source: e.target.value }))}>
-              <option>Employment</option>
-              <option>Business income</option>
-              <option>Investments</option>
-              <option>Family support</option>
-            </select>
-
-            <div className="kyc-progress">
-              <div className="kyc-progress-head">
-                <span>Progress</span>
-                <b>{kyc.completeness}%</b>
+            </section>
+          ) : status === "in_review" ? (
+            <section className="panel kyc-submitted">
+              <Clock size={34} />
+              <div>
+                <h2>Documents received — review in progress</h2>
+                <p>Our compliance team is verifying your {kyc.documentType.toLowerCase()} and supporting documents. Most reviews complete within 1–2 business days, and we'll email you the moment there's a decision.</p>
+                <div className="modal-actions" style={{ justifyContent: "flex-start" }}>
+                  <Link to="/app" className="solid-btn sm"><LayoutDashboard size={14} /> Back to dashboard</Link>
+                  <Link to="/app/support-desk" className="ghost-btn sm"><MessageSquare size={14} /> Contact support</Link>
+                </div>
               </div>
-              <div className="kyc-progress-track"><i style={{ width: `${Math.min(100, kyc.completeness)}%` }} /></div>
-            </div>
+            </section>
+          ) : (
+            <form className="panel dash-form kyc-wizard" onSubmit={submit}>
+              <div className="panel-head">
+                <div>
+                  <h2>Complete your verification</h2>
+                  <span className="panel-sub">Three short steps · about five minutes</span>
+                </div>
+                <span className="kyc-step-count">Step {step + 1} of 3</span>
+              </div>
 
-            <div className="modal-actions">
-              <button type="button" className="ghost-btn" onClick={() => updateKyc({ status: "needs_attention", completeness: 58, nextStep: "Address documents are required before approval can continue." })}>Need attention</button>
-              <button type="submit" className="solid-btn"><ShieldCheck size={15} /> Submit review</button>
-            </div>
-          </form>
+              <ol className="kyc-steps" aria-label="Verification progress">
+                {KYC_STEP_TITLES.map((title, i) => (
+                  <li key={title} className={`kyc-step ${i < stepIndex ? "done" : ""} ${i === stepIndex ? "active" : ""}`}>
+                    <span className="kyc-step-dot">{i < stepIndex ? <Check size={12} strokeWidth={3} /> : i + 1}</span>
+                    <span className="kyc-step-label">{title}</span>
+                    {i < KYC_STEP_TITLES.length - 1 && <span className="kyc-step-sep" />}
+                  </li>
+                ))}
+              </ol>
+
+              {/* STEP 1 — personal details */}
+              {step === 0 && (
+                <fieldset className="kyc-form-grid">
+                  <legend>Information exactly as it appears on your ID.</legend>
+                  <div>
+                    <label htmlFor="kyc-name">Legal full name</label>
+                    <input id="kyc-name" required placeholder="e.g. Rae Kim" value={form.legalName} onChange={e => setForm(f => ({ ...f, legalName: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label htmlFor="kyc-dob">Date of birth</label>
+                    <input id="kyc-dob" required type="date" value={form.dob} onChange={e => setForm(f => ({ ...f, dob: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label htmlFor="kyc-country">Country of residence</label>
+                    <select id="kyc-country" value={form.country} onChange={e => setForm(f => ({ ...f, country: e.target.value }))}>
+                      {["United States", "Canada", "United Kingdom", "Nigeria", "Other"].map(c => <option key={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="kyc-document">Document type</label>
+                    <select id="kyc-document" value={form.documentType} onChange={e => setForm(f => ({ ...f, documentType: e.target.value }))}>
+                      {["Passport", "Driver license", "State ID", "Residence permit"].map(d => <option key={d}>{d}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="kyc-tax">Tax ID (last 4)</label>
+                    <input id="kyc-tax" required inputMode="numeric" maxLength={4} placeholder="••••" value={form.taxId} onChange={e => setForm(f => ({ ...f, taxId: e.target.value.replace(/\D/g, "") }))} />
+                  </div>
+                  <div>
+                    <label htmlFor="kyc-source">Source of funds</label>
+                    <select id="kyc-source" value={form.source} onChange={e => setForm(f => ({ ...f, source: e.target.value }))}>
+                      {["Employment", "Business income", "Investments", "Family support"].map(s => <option key={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  {isBusiness && (
+                    <>
+                      <div>
+                        <label htmlFor="kyc-reg">Business registration number</label>
+                        <input id="kyc-reg" placeholder="e.g. 88-3910274" value={form.registration} onChange={e => setForm(f => ({ ...f, registration: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label htmlFor="kyc-industry">Industry</label>
+                        <select id="kyc-industry" value={form.industry} onChange={e => setForm(f => ({ ...f, industry: e.target.value }))}>
+                          {["Professional services", "E-commerce", "Software", "Retail", "Hospitality", "Other"].map(i => <option key={i}>{i}</option>)}
+                        </select>
+                      </div>
+                    </>
+                  )}
+                  <div className="kyc-form-actions">
+                    <span />
+                    <button type="button" className="solid-btn" disabled={!detailsComplete} onClick={() => setStep(1)}>
+                      Continue <ArrowRight size={15} />
+                    </button>
+                  </div>
+                </fieldset>
+              )}
+
+              {/* STEP 2 — documents */}
+              {step === 1 && (
+                <div className="kyc-docs">
+                  <div className="kyc-progress">
+                    <div className="kyc-progress-head">
+                      <span>Documents uploaded</span>
+                      <b>{uploadedCount} of {tiles.length}</b>
+                    </div>
+                    <div className="kyc-progress-track"><i style={{ width: `${(uploadedCount / tiles.length) * 100}%` }} /></div>
+                  </div>
+
+                  <div className="kyc-upload-list">
+                    {tiles.map(t => (
+                      <div className={`kyc-upload-item ${uploads[t.key] ? "has-file" : ""}`} key={t.key}>
+                        <div className="kyc-upload-copy">
+                          <strong>{t.label}{uploads[t.key] && <BadgeCheck size={14} className="kyc-doc-done" />}</strong>
+                          <small>{t.note}</small>
+                        </div>
+                        <label className="upload-btn">
+                          <input type="file" accept="image/*,.pdf" onChange={e => handleUpload(t.key, e.target.files?.[0])} />
+                          <Upload size={13} /> {uploads[t.key] ? "Replace" : "Upload"}
+                        </label>
+                        <p className="kyc-upload-name">{uploads[t.key] ?? "JPG, PNG or PDF · up to 10 MB"}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="kyc-form-actions">
+                    <button type="button" className="ghost-btn" onClick={() => setStep(0)}>Back</button>
+                    <button type="button" className="solid-btn" disabled={!docsComplete} onClick={() => setStep(2)}>
+                      Continue <ArrowRight size={15} />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 3 — review & submit */}
+              {step === 2 && (
+                <div className="kyc-review">
+                  <div className="kyc-review-rows">
+                    {[
+                      ["Legal name", form.legalName],
+                      ["Date of birth", form.dob ? new Date(form.dob).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "—"],
+                      ["Country", form.country],
+                      ["Document", form.documentType],
+                      ["Source of funds", form.source],
+                      ...(isBusiness ? [["Registration", form.registration || "—"]] : []),
+                      ["Documents", `${uploadedCount} of ${tiles.length} uploaded`],
+                    ].map(([label, value]) => (
+                      <div key={label}>
+                        <span>{label}</span>
+                        <strong>{value}</strong>
+                      </div>
+                    ))}
+                  </div>
+
+                  <label className="kyc-confirm">
+                    <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />
+                    <span>I confirm my information is accurate and my documents are genuine. I understand false information can result in account closure.</span>
+                  </label>
+
+                  <div className="kyc-form-actions">
+                    <button type="button" className="ghost-btn" onClick={() => setStep(1)}>Back</button>
+                    <button type="submit" className="solid-btn" disabled={!confirmed}>
+                      <ShieldCheck size={15} /> Submit for review
+                    </button>
+                  </div>
+                </div>
+              )}
+            </form>
+          )}
 
           <section className="panel">
             <div className="panel-head">
               <div>
-                <h2>Identity documents</h2>
-                <span className="panel-sub">Upload the files needed to verify your identity.</span>
+                <h2>What verification unlocks</h2>
+                <span className="panel-sub">Limits before and after verification</span>
               </div>
             </div>
-
-            <div className="kyc-upload-list">
-              {[
-                { key: "idFront", label: "Government ID (front)", note: "Passport, driver license, or state ID" },
-                { key: "idBack", label: "Government ID (back)", note: "Back of the card or supporting ID page" },
-                { key: "address", label: "Proof of address", note: "Utility bill, lease, or bank statement" },
-                { key: "selfie", label: "Selfie or liveness check", note: "A clear selfie to match your ID" },
-              ].map(item => (
-                <div className="kyc-upload-item" key={item.key}>
-                  <div className="kyc-upload-copy">
-                    <strong>{item.label}</strong>
-                    <small>{item.note}</small>
-                  </div>
-                  <label className="upload-btn">
-                    <input type="file" accept="image/*,.pdf" onChange={e => handleUpload(item.key as keyof typeof uploads, e.target.files?.[0])} />
-                    <span>{uploads[item.key as keyof typeof uploads] === "No file selected" ? "Upload" : "Replace"}</span>
-                  </label>
-                  <p className="kyc-upload-name">{uploads[item.key as keyof typeof uploads]}</p>
+            <div className="kyc-limits">
+              <div className="kyc-limits-head"><span /><span>Unverified</span><span>Verified</span></div>
+              {KYC_LIMITS.map(([label, before, after]) => (
+                <div className="kyc-limit-row" key={label}>
+                  <span>{label}</span>
+                  <em>{before}</em>
+                  <strong><Check size={13} strokeWidth={3} /> {after}</strong>
                 </div>
               ))}
             </div>
           </section>
         </div>
 
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>Checklist</h2>
-              <span className="panel-sub">What the review team checks</span>
+        <div className="kyc-side-col">
+          <section className="panel">
+            <div className="panel-head">
+              <div>
+                <h2>What happens next</h2>
+                <span className="panel-sub">The review journey</span>
+              </div>
             </div>
-          </div>
+            <ol className="kyc-timeline">
+              {[
+                { title: "Submit details & documents", note: "Three steps in this page", done: stepIndex >= 1, active: stepIndex === 0 },
+                { title: "Compliance review", note: "Usually 1–2 business days", done: stepIndex >= 3, active: stepIndex === 1 || stepIndex === 2 },
+                { title: "Decision by email", note: "Limits lift automatically on approval", done: stepIndex >= 3 && status === "approved", active: false },
+              ].map((s, i) => (
+                <li key={s.title} className={`${s.done ? "done" : ""} ${s.active ? "active" : ""}`}>
+                  <span className="kyc-timeline-dot">{s.done ? <Check size={11} strokeWidth={3} /> : i + 1}</span>
+                  <div><strong>{s.title}</strong><small>{s.note}</small></div>
+                </li>
+              ))}
+            </ol>
+            <div className="kyc-note">
+              <strong>Document security</strong>
+              <p>Uploads are encrypted in transit and at rest, visible only to the compliance team, and deleted after the retention window required by law.</p>
+            </div>
+          </section>
 
-          <div className="kyc-checklist">
-            <div className="kyc-check"><Check size={14} /><span>Proof of identity</span></div>
-            <div className="kyc-check"><Check size={14} /><span>Address verification</span></div>
-            <div className="kyc-check"><Check size={14} /><span>Source-of-funds declaration</span></div>
-            <div className="kyc-check"><Check size={14} /><span>Risk and sanctions screening</span></div>
-          </div>
-
-          <div className="kyc-note">
-            <strong>Typical review time</strong>
-            <p>Most applications complete within 1–2 business days after the final document is received.</p>
-          </div>
-        </section>
+          <section className="panel">
+            <div className="panel-head">
+              <div>
+                <h2>What we check</h2>
+                <span className="panel-sub">Standard identity review</span>
+              </div>
+            </div>
+            <div className="kyc-checklist">
+              <div className="kyc-check"><Check size={14} /><span>Proof of identity</span></div>
+              <div className="kyc-check"><Check size={14} /><span>Address verification</span></div>
+              <div className="kyc-check"><Check size={14} /><span>Source-of-funds declaration</span></div>
+              <div className="kyc-check"><Check size={14} /><span>Risk and sanctions screening</span></div>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   );
@@ -2603,7 +2891,7 @@ export function SecurityCenterPage() {
       <PageHeader eyebrow="Sign-in protection · Trusted devices · Emergency controls" title="Security center" />
       <div className="security-score"><span className="security-score-ring"><b>{prefs.twoFactor && prefs.loginAlerts ? "96" : "72"}</b><small>/100</small></span><div><h2>Your account is well protected</h2><p>Two-factor authentication, login alerts and card controls are available from one place.</p></div><ShieldCheck size={32} /></div>
       <div className="settings-grid security-center-grid">
-        <section className="panel"><div className="panel-head"><div><h2>Sign-in protection</h2><span className="panel-sub">Recommended settings</span></div></div><Toggle checked={prefs.twoFactor} onChange={value => { setPreference("twoFactor", value); toast({ tone: "info", title: `Two-factor authentication ${value ? "on" : "off"}` }); }} label="Two-factor authentication" description="Require a one-time code on new devices." /><Toggle checked={prefs.loginAlerts} onChange={value => { setPreference("loginAlerts", value); toast({ tone: "info", title: `Login alerts ${value ? "on" : "off"}` }); }} label="New device alerts" description="Notify me when a new browser signs in." /><div className="security-tip"><Lock size={15} /><span>Your password is stored as a one-way digest in this local demo.</span></div></section>
+        <section className="panel"><div className="panel-head"><div><h2>Sign-in protection</h2><span className="panel-sub">Recommended settings</span></div></div><Toggle checked={prefs.twoFactor} onChange={value => { setPreference("twoFactor", value); toast({ tone: "info", title: `Two-factor authentication ${value ? "on" : "off"}` }); }} label="Two-factor authentication" description="Require a one-time code on new devices." /><Toggle checked={prefs.loginAlerts} onChange={value => { setPreference("loginAlerts", value); toast({ tone: "info", title: `Login alerts ${value ? "on" : "off"}` }); }} label="New device alerts" description="Notify me when a new browser signs in." /><div className="security-tip"><Lock size={15} /><span>Your password is stored server-side as a scrypt hash — never in plain text.</span></div></section>
         <section className="panel emergency-panel"><div className="panel-head"><div><h2>Emergency controls</h2><span className="panel-sub">Use these if something feels wrong</span></div></div><button type="button" className="emergency-action" onClick={() => setConfirmFreeze(true)}><Snowflake size={18} /><span><b>Freeze every card</b><small>Immediately decline new purchases on all cards.</small></span><ArrowRight size={15} /></button><Link className="emergency-action" to="/app/disputes"><ShieldAlert size={18} /><span><b>Report a transaction</b><small>Open and track a card-purchase dispute.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/kyc"><UserRound size={18} /><span><b>Review KYC</b><small>Check your identity verification status and next steps.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/settings"><KeyRound size={18} /><span><b>Change password</b><small>Update your account password.</small></span><ArrowRight size={15} /></Link></section>
       </div>
       <section className="panel sessions-panel"><div className="panel-head"><div><h2>Devices & sessions</h2><span className="panel-sub">Sign out a device you no longer use or recognize</span></div></div><div className="session-list">{account.sessions.map(session => <div className="session-row" key={session.id}><span className="session-icon">{session.browser.toLowerCase().includes("mobile") ? <Smartphone size={17} /> : <Monitor size={17} />}</span><div className="session-main"><strong>{session.device} {session.current && <span className="chip chip-green">This device</span>}</strong><small>{session.browser} · {session.location} · {timeAgo(session.lastActive)}</small></div><button type="button" className={`trust-btn ${session.trusted ? "trusted" : ""}`} onClick={() => toggleTrustedSession(session.id)}>{session.trusted ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}{session.trusted ? "Trusted" : "Untrusted"}</button>{!session.current && <button type="button" className="ghost-btn sm" onClick={() => { revokeSession(session.id); toast({ tone: "success", title: `${session.device} signed out` }); }}>Sign out</button>}</div>)}</div></section>
@@ -2620,7 +2908,7 @@ export { StatementsPage } from "./StatementsPage";
    ============================================================ */
 export function SettingsPage() {
   const { user, updateUser, changePassword, logout } = useAuth();
-  const { account, setPreference, reset } = useAcct();
+  const { account, setPreference } = useAcct();
   const toast = useToast();
   const navigate = useNavigate();
   const [profile, setProfile] = useState({
@@ -2632,7 +2920,6 @@ export function SettingsPage() {
   });
   const [pw, setPw] = useState({ current: "", next: "" });
   const [pwError, setPwError] = useState("");
-  const [confirmReset, setConfirmReset] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!account || !user) return null;
@@ -2794,24 +3081,11 @@ export function SettingsPage() {
           </motion.form>
 
           <motion.section className="panel danger-zone" {...rise(3)}>
-            <h2>Demo data</h2>
-            <p>Restore balances, cards, invoices and transactions to their starting values. This can't be undone.</p>
-            <AnimatePresence mode="wait" initial={false}>
-              {confirmReset ? (
-                <motion.div key="confirm" className="confirm-inner" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
-                  <span>Reset everything?</span>
-                  <div>
-                    <button type="button" className="ghost-btn sm" onClick={() => setConfirmReset(false)}>Cancel</button>
-                    <button type="button" className="danger-btn sm" onClick={() => { reset(); setConfirmReset(false); toast({ tone: "info", title: "Demo data reset" }); }}>Reset</button>
-                  </div>
-                </motion.div>
-              ) : (
-                <motion.div key="actions" className="danger-actions" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
-                  <button type="button" className="ghost-btn" onClick={() => setConfirmReset(true)}><RotateCcw size={14} /> Reset demo data</button>
-                  <button type="button" className="ghost-btn danger" onClick={() => { logout(); navigate("/"); }}><LogOut size={14} /> Sign out</button>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <h2>Session</h2>
+            <p>Signing out revokes this session on the server immediately.</p>
+            <div className="danger-actions">
+              <button type="button" className="ghost-btn danger" onClick={() => { logout(); navigate("/"); }}><LogOut size={14} /> Sign out</button>
+            </div>
           </motion.section>
         </div>
       </div>

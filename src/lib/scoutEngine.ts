@@ -59,7 +59,7 @@ function listByMerchant(txns: Txn[]) {
 
 /**
  * Insights are grounded in this account's saved data. Estimated merchant offers
- * are explicitly described as demo simulations and are not claimed as live quotes.
+ * are clearly labeled as estimates and are never claimed as live quotes.
  */
 export function analyzeAccountWithScout(account: Account): ScoutInsight[] {
   const insights: ScoutInsight[] = [];
@@ -82,7 +82,7 @@ export function analyzeAccountWithScout(account: Account): ScoutInsight[] {
       title: `Review recurring spend at ${merchant}`,
       impact: `Potential ${money(annualEstimate, false)}/yr`,
       impactAmount: annualEstimate,
-      description: `Your ledger shows ${sorted.length} charge${sorted.length === 1 ? "" : "s"} associated with ${merchant}, averaging ${money(average)}. Scout can simulate an 8% retention-offer estimate for planning; a real merchant quote is not connected in this demo.`,
+      description: `Your ledger shows ${sorted.length} charge${sorted.length === 1 ? "" : "s"} associated with ${merchant}, averaging ${money(average)}. Scout can prepare an 8% retention-offer estimate for planning; a live merchant quote is not connected yet.`,
       actionText: `Simulate ${merchant} offer`,
       actionType: "negotiate",
       targetMerchant: merchant,
@@ -315,7 +315,7 @@ export function answerScoutQuery(query: string, account: Account, userName: stri
   }
 
   if (/help|what can you do|support|hello|hi\b/.test(q)) {
-    return fresh(`Hi ${userName.split(" ")[0]}! I can summarize recent spending, check balances, review scheduled bills and savings goals, inspect card utilization, and explain your Scout savings. I only use the account data saved in this demo; I can't access external bank networks.`, {
+    return fresh(`Hi ${userName.split(" ")[0]}! I can summarize recent spending, check balances, review scheduled bills and savings goals, inspect card utilization, and explain your Scout savings. I only use the account data saved to your Veyra account; I can't access external bank networks.`, {
       type: "actions", title: "Try asking", items: [{ label: "Spending", value: "What did I spend this month?" }, { label: "Cash", value: "What is my total liquidity?" }, { label: "Payments", value: "What bills are coming up?" }, { label: "Cards", value: "Are any cards near their limit?" }],
     });
   }

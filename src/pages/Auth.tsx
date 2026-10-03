@@ -54,195 +54,41 @@ function PasswordField({ value, onChange, id, placeholder = "••••••�
 }
 
 export function LoginPage() {
-  const { login, loginWithGoogle, loginWithPasskey } = useAuth();
+  const { login, offline } = useAuth();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: string } };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [authMethod, setAuthMethod] = useState<"standard" | "passkey" | "google">("standard");
-  const [showOtpStep, setShowOtpStep] = useState(false);
-  const [otpCode, setOtpCode] = useState("");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true); setError(""); setAuthMethod("standard");
+    setBusy(true); setError("");
     try {
-      // Validate credentials first
       await login(email, password);
-      // Show SMS 2FA code verification for authenticated session
-      setShowOtpStep(true);
-      setBusy(false);
+      navigate(location.state?.from ?? "/app", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
-      setBusy(false);
-    }
-  }
-
-  function handleVerifyOtp(e: React.FormEvent) {
-    e.preventDefault();
-    if (otpCode.length < 6) {
-      setError("Please enter the complete 6-digit verification code.");
-      return;
-    }
-    setBusy(true);
-    setTimeout(() => {
-      setBusy(false);
-      navigate(location.state?.from ?? "/app", { replace: true });
-    }, 600);
-  }
-
-  function handleAutoFillOtp() {
-    setOtpCode("123456");
-    setError("");
-  }
-
-  async function handleGoogleLogin() {
-    setBusy(true); setError(""); setAuthMethod("google");
-    try {
-      await loginWithGoogle("personal");
-      navigate(location.state?.from ?? "/app", { replace: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Google authentication failed.");
     } finally { setBusy(false); }
-  }
-
-  async function handlePasskeyLogin() {
-    setBusy(true); setError(""); setAuthMethod("passkey");
-    try {
-      await loginWithPasskey(email);
-      navigate(location.state?.from ?? "/app", { replace: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Passkey verification failed.");
-    } finally { setBusy(false); }
-  }
-
-  function useDemo(kind: "business" | "personal" | "admin") {
-    if (kind === "admin") {
-      setEmail("admin@veyra.com");
-      setPassword("admin123");
-    } else {
-      setEmail(kind === "personal" ? "personal@veyra.com" : "demo@veyra.com");
-      setPassword("veyra123");
-    }
-    setError("");
-  }
-
-  if (showOtpStep) {
-    return (
-      <AuthShell
-        title="Verify your identity"
-        sub={`We sent a 6-digit security code via SMS to the mobile phone registered to ${email}.`}
-        foot={<button type="button" className="text-btn" onClick={() => setShowOtpStep(false)}>← Back to password sign-in</button>}
-      >
-        <form className="auth-form otp-auth-form" onSubmit={handleVerifyOtp}>
-          <div className="otp-banner-box">
-            <ShieldCheck size={20} className="text-green" />
-            <div>
-              <strong>Two-Factor SMS Verification</strong>
-              <small>Code expires in 10 minutes</small>
-            </div>
-            <button
-              type="button"
-              className="otp-autofill-tag"
-              onClick={handleAutoFillOtp}
-            >
-              Fill 123456
-            </button>
-          </div>
-
-          <label htmlFor="otp-input">6-Digit Verification Code</label>
-          <input
-            id="otp-input"
-            type="text"
-            inputMode="numeric"
-            maxLength={6}
-            required
-            autoFocus
-            className="otp-code-input"
-            placeholder="123456"
-            value={otpCode}
-            onChange={e => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-          />
-
-          {error && <p className="form-error">{error}</p>}
-
-          <button className="auth-submit" type="submit" disabled={busy || otpCode.length < 6}>
-            {busy ? <Loader2 className="spin" size={16} /> : null}
-            {busy ? "Verifying Token…" : "Verify & Sign in"}
-          </button>
-        </form>
-      </AuthShell>
-    );
   }
 
   return (
     <AuthShell title="Welcome back" sub="Sign in to your personal or business Veyra account."
       foot={<>New to Veyra? <Link to="/signup">Create an account</Link></>}>
-      <div className="demo-options demo-three-options">
-        <button type="button" className="demo-banner" onClick={() => useDemo("personal")}>
-          <UserRound size={15} />
-          <span><strong>Personal</strong><small>Tap to fill demo</small></span>
-        </button>
-        <button type="button" className="demo-banner" onClick={() => useDemo("business")}>
-          <Building2 size={15} />
-          <span><strong>Business</strong><small>Tap to fill demo</small></span>
-        </button>
-        <button type="button" className="demo-banner admin-demo-banner" onClick={() => useDemo("admin")}>
-          <ShieldCheck size={15} />
-          <span><strong>Super Admin</strong><small>admin@veyra.com</small></span>
-        </button>
-      </div>
-
-      {/* Google OAuth & Passkey Authentication */}
-      <div className="modern-auth-providers">
-        <button
-          type="button"
-          className="google-auth-btn"
-          disabled={busy}
-          onClick={handleGoogleLogin}
-        >
-          {busy && authMethod === "google" ? (
-            <Loader2 className="spin" size={16} />
-          ) : (
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-            </svg>
-          )}
-          <span>Continue with Google</span>
-        </button>
-
-        <button
-          type="button"
-          className="passkey-auth-btn"
-          disabled={busy}
-          onClick={handlePasskeyLogin}
-        >
-          {busy && authMethod === "passkey" ? (
-            <Loader2 className="spin" size={16} />
-          ) : (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 10a2 2 0 0 0-2 2c0 1.02.77 1.86 1.76 1.98l.24.02V20h2v-6c1.1 0 2-.9 2-2a2 2 0 0 0-2-2z" />
-              <path d="M7 10h-.5a3.5 3.5 0 0 0 0 7h.5" />
-              <path d="M17 10h.5a3.5 3.5 0 0 1 0 7h-.5" />
-              <path d="M12 6c-3.31 0-6 2.69-6 6v2h12v-2c0-3.31-2.69-6-6-6z" />
-            </svg>
-          )}
-          <span>Sign in with Passkey / Face ID</span>
-        </button>
-      </div>
-
-      <div className="auth-divider">
-        <span>or sign in with password</span>
-      </div>
+      {offline && (
+        <div className="otp-banner-box" role="alert" style={{ marginBottom: 14 }}>
+          <ShieldCheck size={20} className="text-green" />
+          <div>
+            <strong>Can't reach the Veyra server</strong>
+            <small>Check your connection — the app requires the backend to be running.</small>
+          </div>
+        </div>
+      )}
 
       <form className="auth-form" onSubmit={submit}>
         <label htmlFor="email">Email</label>
-        <input id="email" type="email" required autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+        <input id="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
         <div className="label-row"><label htmlFor="password">Password</label><Link to="/forgot-password">Forgot?</Link></div>
         <PasswordField id="password" value={password} onChange={setPassword} autoComplete="current-password" />
         {error && <p className="form-error">{error}</p>}
@@ -299,7 +145,7 @@ export function SignupPage() {
           </button>
         </div>
         <label htmlFor="name">Your legal name</label>
-        <input id="name" required autoComplete="name" placeholder={form.accountType === "personal" ? "Alex Morgan" : "Hana Park"} value={form.name} onChange={e => set("name", e.target.value)} />
+        <input id="name" required autoComplete="name" placeholder={form.accountType === "personal" ? "Jamie Chen" : "Rae Kim"} value={form.name} onChange={e => set("name", e.target.value)} />
 
         <div className="field-row">
           <div>
@@ -330,7 +176,7 @@ export function SignupPage() {
 
         {form.accountType === "business" && <>
           <label htmlFor="business">Business name</label>
-          <input id="business" required autoComplete="organization" placeholder="Park & Co Studio" value={form.business} onChange={e => set("business", e.target.value)} />
+          <input id="business" required autoComplete="organization" placeholder="Rae & Co Studio" value={form.business} onChange={e => set("business", e.target.value)} />
         </>}
         <label htmlFor="su-pw">Password</label>
         <PasswordField id="su-pw" value={form.password} onChange={v => set("password", v)} autoComplete="new-password" />
@@ -349,41 +195,153 @@ export function SignupPage() {
         <button className="auth-submit" type="submit" disabled={busy}>
           {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Creating account…" : "Create account"}
         </button>
-        <p className="auth-note">Demo product — no real banking data is collected or transmitted.</p>
+        <p className="auth-note">Bank-grade encryption · passwords stored as one-way scrypt hashes.</p>
       </form>
     </AuthShell>
   );
 }
 
 export function ForgotPasswordPage() {
-  const { resetPassword } = useAuth();
+  const { forgotPassword, resetPassword } = useAuth();
   const [email, setEmail] = useState("");
-  const [temp, setTemp] = useState("");
+  const [sent, setSent] = useState(false);
+  const [token, setToken] = useState("");
+  const [password, setPassword] = useState("");
+  const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  async function submit(e: React.FormEvent) {
+  async function request(e: React.FormEvent) {
     e.preventDefault();
-    setError(""); setTemp("");
-    try { setTemp(await resetPassword(email)); }
-    catch (err) { setError(err instanceof Error ? err.message : "Something went wrong."); }
+    setBusy(true); setError("");
+    try {
+      await forgotPassword(email);
+      setSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally { setBusy(false); }
+  }
+
+  async function complete(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      await resetPassword(token, password);
+      setDone(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally { setBusy(false); }
+  }
+
+  if (done) {
+    return (
+      <AuthShell title="Password updated" sub="Your password has been changed and all other sessions were signed out."
+        foot={<><Link to="/login">Back to sign in</Link></>}>
+        <div className="reset-success">
+          <Check /><p>You can now sign in with your new password.</p>
+          <Link className="auth-submit" to="/login">Sign in</Link>
+        </div>
+      </AuthShell>
+    );
   }
 
   return (
-    <AuthShell title="Reset your password" sub="We'll generate a temporary password for this demo."
+    <AuthShell title="Reset your password" sub={sent ? "Enter the code from your reset email and choose a new password." : "We'll email you a secure reset code."}
       foot={<>Remembered it? <Link to="/login">Back to sign in</Link></>}>
-      {temp ? (
-        <div className="reset-success">
-          <Check /><p>Your temporary password is</p><code>{temp}</code>
-          <Link className="auth-submit" to="/login">Sign in with it</Link>
-        </div>
-      ) : (
-        <form className="auth-form" onSubmit={submit}>
-          <label htmlFor="fp-email">Email</label>
-          <input id="fp-email" type="email" required placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+      {sent ? (
+        <form className="auth-form" onSubmit={complete}>
+          <label htmlFor="reset-token">Reset code</label>
+          <input id="reset-token" type="text" required autoFocus placeholder="Paste the code from your email" value={token} onChange={e => setToken(e.target.value.trim())} />
+          <label htmlFor="new-password">New password</label>
+          <PasswordField id="new-password" value={password} onChange={setPassword} autoComplete="new-password" />
           {error && <p className="form-error">{error}</p>}
-          <button className="auth-submit" type="submit">Send reset</button>
+          <button className="auth-submit" type="submit" disabled={busy || token.length < 8 || password.length < 8}>
+            {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Updating…" : "Update password"}
+          </button>
+        </form>
+      ) : (
+        <form className="auth-form" onSubmit={request}>
+          <label htmlFor="forgot-email">Email</label>
+          <input id="forgot-email" type="email" required autoFocus placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+          {error && <p className="form-error">{error}</p>}
+          <button className="auth-submit" type="submit" disabled={busy}>
+            {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Sending…" : "Send reset code"}
+          </button>
+          <p className="panel-sub" style={{ textAlign: "center" }}>If an account exists for that email, reset instructions are on their way.</p>
         </form>
       )}
+    </AuthShell>
+  );
+}
+
+/* ============================================================
+   Team invite acceptance (linked from the "You're invited" email)
+   ============================================================ */
+export function InviteAcceptPage() {
+  const { signup, user } = useAuth();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const email = params.get("email") ?? "";
+  const business = params.get("business") ?? "";
+  const role = params.get("role") ?? "Team member";
+  const [form, setForm] = useState({ name: "", password: "" });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Already signed in — nothing to accept, straight to the dashboard.
+  if (user) { navigate("/app", { replace: true }); return null; }
+
+  const valid = email.includes("@") && business.trim().length > 0;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    if (form.password.length < 8) return setError("Use at least 8 characters for your password.");
+    setBusy(true);
+    try {
+      await signup({ name: form.name, business, accountType: "business", email, password: form.password, plan: "Pro" });
+      navigate("/app?welcome=1", { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally { setBusy(false); }
+  }
+
+  if (!valid) {
+    return (
+      <AuthShell title="Invitation not found" sub="This invitation link is incomplete or has expired."
+        foot={<>Want an account anyway? <Link to="/signup">Open one now</Link></>}>
+        <div className="reset-success">
+          <Building2 />
+          <p>Ask your team admin to resend the invitation, or open a Veyra account on your own.</p>
+          <Link className="auth-submit" to="/signup">Open an account</Link>
+        </div>
+      </AuthShell>
+    );
+  }
+
+  return (
+    <AuthShell title={`Join ${business} on Veyra`} sub="Create your password to accept the invitation."
+      foot={<>Already have a Veyra account? <Link to="/login">Sign in</Link></>}>
+      <form className="auth-form" onSubmit={submit}>
+        <div className="invite-summary">
+          <Building2 size={16} />
+          <div>
+            <strong>{business}</strong>
+            <small>{role} · invited to {email}</small>
+          </div>
+        </div>
+        <label htmlFor="inv-name">Your legal name</label>
+        <input id="inv-name" required autoComplete="name" placeholder="June Okafor" value={form.name}
+          onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+        <label htmlFor="inv-pass">Create a password</label>
+        <input id="inv-pass" type="password" required autoComplete="new-password" placeholder="At least 8 characters" value={form.password}
+          onChange={e => setForm(f => ({ ...f, password: e.target.value }))} />
+        {error && <p className="form-error">{error}</p>}
+        <button className="auth-submit" type="submit" disabled={busy}>
+          {busy ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />} Accept invitation
+        </button>
+        <p className="auth-legal">You'll get your own password — the person who invited you never sees it.</p>
+      </form>
     </AuthShell>
   );
 }

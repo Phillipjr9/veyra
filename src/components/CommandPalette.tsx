@@ -232,6 +232,17 @@ export function CommandPalette({
           navigate("/app/settings");
         },
       },
+      {
+        id: "nav-kyc",
+        category: "Navigation",
+        title: "Identity verification",
+        subtitle: "Complete verification to lift account limits",
+        icon: <ShieldCheck size={16} />,
+        action: () => {
+          onClose();
+          navigate("/app/kyc");
+        },
+      },
     ];
 
     if (user?.accountType === "business") {
@@ -261,7 +272,7 @@ export function CommandPalette({
       );
     }
 
-    if (user?.role === "superadmin" || user?.email === "admin@veyra.com") {
+    if (user?.role && user.role !== "user") {
       list.unshift({
         id: "nav-superadmin",
         category: "Quick Action",

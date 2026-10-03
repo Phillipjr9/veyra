@@ -181,7 +181,7 @@ export function StatementsPage() {
         const height = document.internal.pageSize.getHeight();
         document.setFontSize(7);
         document.setTextColor(105, 100, 112);
-        document.text("Veyra is a financial technology demonstration. Northfield Bank and account details shown are fictional.", 42, height - 24);
+        document.text("Veyra is a financial technology company, not a bank. Banking services are provided by partner institutions.", 42, height - 24);
         document.text(`Page ${data.pageNumber}`, right, height - 24, { align: "right" });
       },
     });

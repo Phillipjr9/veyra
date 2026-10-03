@@ -45,8 +45,8 @@ export function PersonalBankingPage() {
       <PageHead kicker="Personal banking" title="A daily account that feels easy." sub="Checking, debit cards, transfers, rewards and useful controls for life outside work." />
       <section className="section personal-banking-page">
         <Reveal className="personal-account-showcase">
-          <div className="personal-balance"><span>Available today</span><strong>$6,824.65</strong><small><Check /> Paycheck received</small></div>
-          <div className="personal-card-demo"><VirtualCard label="Everyday debit" holder="Alex Morgan" last4="1842" type="physical" /></div>
+          <div className="personal-balance"><span>Available today</span><strong>$5,930.12</strong><small><Check /> Paycheck received</small></div>
+          <div className="personal-card-preview"><VirtualCard label="Everyday debit" holder="Jamie Chen" last4="1842" type="physical" /></div>
           <div className="personal-activity"><p><i><ShoppingBag /></i><span>Green Basket Market<small>Groceries · today</small></span><b>−$86.42</b></p><p><i><ArrowDownLeft /></i><span>Direct deposit<small>Available now</small></span><b className="personal-in">+$3,250</b></p></div>
         </Reveal>
         <div className="personal-feature-grid">
@@ -209,7 +209,7 @@ export function ContactPage() {
               <li><MessageSquare /> <Link to="/support">Support, 24/7</Link></li>
               <li><Landmark /> 100 Market Street, Suite 400</li>
             </ul>
-            <div className="contact-note"><Sparkles /> Most demos are booked within one business day.</div>
+            <div className="contact-note"><Sparkles /> We reply within one business day.</div>
           </div>
           <form className="contact-form" onSubmit={e => { e.preventDefault(); setSent(true); }}>
             <div className="field-row">
@@ -224,7 +224,7 @@ export function ContactPage() {
             <textarea id="c-msg" rows={4} required placeholder="What would you like to cover?" />
             {sent
               ? <p className="form-success"><Check size={16} /> Thanks — we'll be in touch soon.</p>
-              : <button className="auth-submit" type="submit">Request a demo</button>}
+              : <button className="auth-submit" type="submit">Send message</button>}
           </form>
         </Reveal>
       </section>
@@ -470,27 +470,28 @@ const LEGAL: Record<string, { title: string; body: string[] }> = {
   privacy: {
     title: "Privacy Policy",
     body: [
-      "This is a demonstration application built to showcase product design. It does not provide real financial services.",
-      "Any details you enter — name, business, email and password — are stored only in your own browser's local storage. Nothing is transmitted to a server, and no analytics or tracking tools collect your information.",
-      "Passwords are converted to a one-way digest before being saved, so the original text is never retained.",
-      "You can remove all stored data at any time by clearing site data in your browser, or by using the reset control in account settings.",
+      "Veyra is a financial technology company. This policy summarizes what your account data is and how it is protected.",
+      "When you create an account we store your name, business name, email address and account activity in our secure database. Passwords are stored only as one-way scrypt hashes — the original text is never retained.",
+      "We use your data to operate your account, meet compliance obligations and prevent fraud. We do not sell personal data.",
+      "Sessions are bearer tokens bound to your account. You can revoke them at any time by signing out or changing your password.",
     ],
   },
   terms: {
     title: "Terms of Service",
     body: [
-      "By using this demonstration you acknowledge that it is a design prototype and not a regulated financial product.",
-      "No real accounts are opened, no money moves, and all balances, transactions, rewards and savings figures shown are illustrative examples generated locally in your browser.",
-      "The software is provided as-is, without warranty of any kind. Do not enter genuine banking credentials or sensitive personal information.",
-      "Brand names, product names and imagery in this project are original to this demonstration.",
+      "By using Veyra you acknowledge that it is a financial technology product and not a regulated depository institution.",
+      "Veyra is not a bank; banking services would be provided by partner financial institutions, and card products issued under license.",
+      "Balances, rewards and savings figures reflect the activity recorded in your Veyra account.",
+      "The software is provided as-is, without warranty of any kind.",
+      "Brand names, product names and imagery are original to Veyra.",
     ],
   },
   disclosures: {
     title: "Disclosures",
     body: [
-      "Veyra is presented here as a fictional financial technology brand created for demonstration purposes. It is not a bank.",
-      "In a real deployment, banking services would be provided by partner financial institutions, Members FDIC, and card products would be issued under license from a card network.",
-      "Reward rates, savings estimates and annual value figures shown throughout this demonstration are illustrative and do not represent an offer.",
+      "Veyra is a financial technology company, not a bank.",
+      "Banking services would be provided by partner financial institutions, Members FDIC, and card products issued under license from a card network.",
+      "Reward rates, savings estimates and annual value figures are estimates based on your account activity and do not represent an offer or a guarantee of returns.",
       "Calculator outputs are estimates based on the inputs you provide and do not constitute financial advice.",
     ],
   },
