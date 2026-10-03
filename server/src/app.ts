@@ -11,8 +11,11 @@
  */
 import express, { type NextFunction, type Request, type Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
+import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
   PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS, type Permission, type StaffRole,
@@ -310,6 +313,23 @@ export function createApp(dbPath?: string) {
       db.prepare("UPDATE sessions SET revoked = 1 WHERE user_id = ?").run(row.user_id);
     });
     res.json({ ok: true });
+  }));
+
+  /**
+   * The accounts the login page may offer with one click.
+   *
+   * Public and unauthenticated on purpose (it is what a signed-out visitor
+   * needs), but it only ever answers on a server that holds demo accounts —
+   * a production build returns an empty list, so no credentials are advertised
+   * where members sign up for real. See server/src/demo.ts.
+   */
+  app.get("/api/demo/accounts", wrap((_req, res) => {
+    if (!demoLoginsEnabled()) return void res.json({ accounts: [] });
+    const known = new Set(
+      (db.prepare("SELECT email FROM users").all() as Array<{ email: string }>).map(r => r.email.toLowerCase()),
+    );
+    const accounts = demoLoginOptions().filter(a => known.has(a.email.toLowerCase()));
+    res.json({ accounts });
   }));
 
   /* ============================== member routes ============================== */
@@ -1610,6 +1630,23 @@ export function createApp(dbPath?: string) {
   }));
 
   /* ============================== errors ============================== */
+
+  /**
+   * Serve the built app from the same origin as the API when `dist/` exists
+   * (`npm run build`). One process, one port, no proxy: the preview — and any
+   * deployment of the built bundle — gets the app and `/api` together, which
+   * removes the whole class of "the frontend is up but its API isn't" failures.
+   * Registered before the JSON 404 so a page request is never answered with
+   * `{"error":"Not found."}`, and never for /api so routes above always win.
+   */
+  const distIndex = resolve("dist/index.html");
+  if (existsSync(distIndex)) {
+    app.use(express.static(resolve("dist"), { index: false }));
+    app.use((req, res, next) => {
+      if (req.method !== "GET" || req.path.startsWith("/api")) return next();
+      res.sendFile(distIndex);
+    });
+  }
 
   app.use((_req, res) => res.status(404).json({ error: "Not found." }));
   app.use((err: Error & { status?: number; statusCode?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {

@@ -52,6 +52,10 @@ type Policy = { method: string; path: string; auth: boolean; /** One permission,
 const BASELINE: Policy[] = [
   // Public surface: reachable without a session.
   { method: "GET", path: "/api/health", auth: false, perm: null },
+  // Advertises the demo credentials the login page offers with one click. Public
+  // by design (a signed-out visitor is who it's for) and empty in production —
+  // see demoLoginsEnabled() in server/src/demo.ts.
+  { method: "GET", path: "/api/demo/accounts", auth: false, perm: null },
   { method: "POST", path: "/api/auth/login", auth: false, perm: null },
   { method: "POST", path: "/api/auth/register", auth: false, perm: null },
   { method: "POST", path: "/api/auth/forgot-password", auth: false, perm: null },

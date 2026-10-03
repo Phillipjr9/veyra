@@ -35,6 +35,34 @@ const MEMBERS: Member[] = [
   { name: "Tunde Ops", email: "demo.business@veyra.dev", accountType: "business", business: "Lagos Logistics Ltd" },
 ];
 
+export type DemoAccount = {
+  id: string;
+  label: string;
+  detail: string;
+  email: string;
+  password: string;
+};
+
+/**
+ * The accounts the login page may offer with one click. Served by the API (see
+ * `/api/demo/accounts`) rather than hard-coded in the client, so the panel
+ * appears wherever demo accounts actually exist — dev servers, the static
+ * preview, a built bundle — and disappears entirely in production, where this
+ * function is never exposed.
+ */
+export function demoLoginOptions(): DemoAccount[] {
+  return [
+    { id: "personal", label: "Personal", detail: "Everyday money · goals, cash back, cards", email: MEMBERS[0].email, password: DEMO_PASSWORD },
+    { id: "business", label: "Business", detail: "Lagos Logistics Ltd · treasury, invoices, team", email: MEMBERS[1].email, password: DEMO_PASSWORD },
+    { id: "admin", label: "Super Admin", detail: "Platform oversight console", email: DEMO_ADMIN_EMAIL, password: DEMO_ADMIN_PASSWORD },
+  ];
+}
+
+/** True when this server is allowed to advertise demo credentials. */
+export function demoLoginsEnabled(): boolean {
+  return process.env.NODE_ENV !== "production" && process.env.DEMO_SEED !== "0";
+}
+
 export type DemoSeedResult = {
   created: number;
   seeded: number;

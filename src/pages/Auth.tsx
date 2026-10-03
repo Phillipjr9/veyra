@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
 import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
+import { apiGet } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { useToast } from "../components/Toast";
 
@@ -87,20 +88,36 @@ function AuthProviders({ onGoogle, onPasskey }: { onGoogle: () => void; onPasske
  * page. Before a real launch, change ADMIN_PASSWORD and delete this block
  * (the seed script warns if the admin password drifts from this list).
  */
-const DEMO_ACCOUNTS: Array<{ id: string; label: string; detail: string; email: string; password: string; icon: typeof UserRound }> = [
-  { id: "personal", label: "Personal", detail: "Everyday money · goals, cash back, cards", email: "demo.personal@veyra.dev", password: "veyra-demo-2026", icon: UserRound },
-  { id: "business", label: "Business", detail: "Lagos Logistics Ltd · treasury, invoices, team", email: "demo.business@veyra.dev", password: "veyra-demo-2026", icon: Building2 },
-  { id: "admin", label: "Super Admin", detail: "Platform oversight console", email: "admin@veyra.dev", password: "veyra-admin-2026", icon: ShieldCheck },
+const DEMO_ICONS: Record<string, typeof UserRound> = { personal: UserRound, business: Building2, admin: ShieldCheck };
+
+const DEMO_ACCOUNTS: Array<{ id: string; label: string; detail: string; email: string; password: string }> = [
+  { id: "personal", label: "Personal", detail: "Everyday money · goals, cash back, cards", email: "demo.personal@veyra.dev", password: "veyra-demo-2026" },
+  { id: "business", label: "Business", detail: "Lagos Logistics Ltd · treasury, invoices, team", email: "demo.business@veyra.dev", password: "veyra-demo-2026" },
+  { id: "admin", label: "Super Admin", detail: "Platform oversight console", email: "admin@veyra.dev", password: "veyra-admin-2026" },
 ];
 
-const demoModeEnabled = (): boolean => {
-  if (import.meta.env.DEV) return true;
-  const { search, hash } = window.location;
-  return /[?&]demo=1(&|$)/.test(search) || /[?&]demo=1(&|$)/.test(hash);
-};
+type DemoAccount = { id: string; label: string; detail: string; email: string; password: string };
+
+/**
+ * Which accounts to offer is the server's answer, not the bundle's: it returns
+ * them from `/api/demo/accounts` when it actually holds them (dev servers and
+ * the static preview), and an empty list in production. The hard-coded list
+ * below is only a fallback for a dev build whose API call failed.
+ */
+function useDemoAccounts(): DemoAccount[] {
+  const [accounts, setAccounts] = useState<DemoAccount[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ accounts: DemoAccount[] }>("/api/demo/accounts", { handleUnauthorized: false })
+      .then(res => { if (!cancelled) setAccounts(res.accounts ?? []); })
+      .catch(() => { if (!cancelled && import.meta.env.DEV) setAccounts(DEMO_ACCOUNTS); });
+    return () => { cancelled = true; };
+  }, []);
+  return accounts;
+}
 
 /** The demo-credential panel: one click per account, filled and submitted. */
-function DemoAccounts({ onPick, busyEmail }: { onPick: (email: string, password: string) => void; busyEmail: string }) {
+function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]; onPick: (email: string, password: string) => void; busyEmail: string }) {
   return (
     <section className="demo-logins" aria-label="Demo accounts">
       <header className="demo-logins-head">
@@ -108,8 +125,8 @@ function DemoAccounts({ onPick, busyEmail }: { onPick: (email: string, password:
         <span>One click signs you in — dev only</span>
       </header>
       <div className="demo-logins-list">
-        {DEMO_ACCOUNTS.map((account, i) => {
-          const Icon = account.icon;
+        {accounts.map((account, i) => {
+          const Icon = DEMO_ICONS[account.id] ?? UserRound;
           const busyNow = busyEmail === account.email;
           return (
             <motion.button
@@ -149,7 +166,7 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState("");
-  const demos = demoModeEnabled();
+  const demos = useDemoAccounts();
 
   async function signIn(asEmail: string, asPassword: string) {
     setError("");
@@ -234,7 +251,7 @@ export function LoginPage() {
         </div>
       )}
 
-      {demos && <DemoAccounts onPick={useDemo} busyEmail={demoBusy} />}
+      {demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
 
       <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
 
