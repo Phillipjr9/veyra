@@ -1590,14 +1590,14 @@
 @media (max-width: 900px) {
   .admin-head { flex-direction: column; align-items: flex-start !important; gap: 12px; }
   .admin-head-controls { margin-top: 8px; }
-  .admin-table { min-width: 760px; }
+  .admin-app .admin-table { min-width: 760px; }
   .admin-tabs-nav { padding-bottom: 6px; scrollbar-width: none; }
   .admin-tabs-nav::-webkit-scrollbar { display: none; }
   .admin-tab-btn { flex: none; }
   .admin-grid-split { gap: 14px; }
 }
 @media (max-width: 640px) {
-  .admin-table { min-width: 640px; }
+  .admin-app .admin-table { min-width: 640px; }
   .admin-activity-row { flex-wrap: wrap; }
   .admin-profile { flex-direction: column; }
   .modal { width: 94vw; max-width: 94vw; max-height: 92vh; overflow-y: auto; }

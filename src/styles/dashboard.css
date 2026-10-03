@@ -722,7 +722,10 @@
 .dispute-callout > div { flex: 1; min-width: 0; }
 .dispute-callout strong { display: block; font-size: 13px; }
 .dispute-callout p { margin: 2px 0 0; font-size: 11.5px; }
-.dispute-list { display: grid; gap: 12px; }
+/* minmax(0, 1fr), not the implicit auto column: a single long name in a
+   claim card sized the track to its max-content width and pushed the whole
+   page sideways on a phone. */
+.dispute-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .dispute-card { padding: 16px; border: 1px solid var(--line); border-radius: 15px; background: #fff; }
 .dispute-card-head { display: flex; align-items: center; gap: 12px; }
 .dispute-card-head > div { flex: 1; min-width: 0; }

@@ -19,6 +19,7 @@ import {
   ScoutAIPage, TeamPage, PerksPage, StatementsPage,
   AccountsPage, BillsPage, DisputesPage, SecurityCenterPage, KYCPage
 } from "./pages/Dashboard";
+import { ClassicApp } from "./pages/dashboards/ClassicDashboard";
 import { SuperAdminPage } from "./pages/SuperAdmin";
 import { SupportCenterPage } from "./pages/SupportCenter";
 import { EmailTemplatesPage } from "./pages/EmailTemplates";
@@ -38,6 +39,18 @@ function RedirectIfAuthed({ children }: { children: React.ReactNode }) {
 function BusinessOnly({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   return user?.accountType === "business" ? <>{children}</> : <Navigate to="/app" replace />;
+}
+
+/**
+ * Which dashboard a member gets.
+ * Personal accounts keep the original member dashboard — its own chrome, home
+ * page and routing (`ClassicApp`). Business accounts get the treasury shell and
+ * staff get the control room, both of which bring their own layouts.
+ */
+function MemberSurface() {
+  const { user } = useAuth();
+  const staff = Boolean(user?.role && user.role !== "user");
+  return !staff && user?.accountType !== "business" ? <ClassicApp /> : <DashboardLayout />;
 }
 
 function Shell() {
@@ -84,7 +97,7 @@ function Shell() {
             <RequireAuth>
               <AccountProvider>
                 <MoneyFlowProvider>
-                  <DashboardLayout />
+                  <MemberSurface />
                 </MoneyFlowProvider>
               </AccountProvider>
             </RequireAuth>
