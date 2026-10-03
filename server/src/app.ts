@@ -11,7 +11,7 @@
  */
 import express, { type NextFunction, type Request, type Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
-import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid } from "./db.js";
+import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, TOKEN_TTL_MS } from "./security.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
@@ -38,6 +38,20 @@ declare global {
 type Handler = (req: Request, res: Response) => void | Promise<void>;
 const wrap = (fn: Handler) => (req: Request, res: Response, next: NextFunction) => {
   Promise.resolve(fn(req, res)).catch(next);
+};
+
+/** A route failure with an explicit HTTP status (declines are 403, limits 400). */
+class RouteError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+/** Maps a thrown error to its response: RouteError keeps its status, anything else is a 400. */
+const fail = (res: Response, err: unknown, fallback: string) => {
+  if (err instanceof RouteError) return void res.status(err.status).json({ error: err.message });
+  if (err instanceof BadInputError) return void res.status(400).json({ error: err.message });
+  res.status(400).json({ error: err instanceof Error ? err.message : fallback });
 };
 
 const MAX_TRANSFER_CENTS = 250_000_00;      // $250k per transfer
@@ -121,6 +135,16 @@ export function createApp(dbPath?: string) {
     db.prepare("INSERT INTO notifications (id, user_id, type, title, detail, read, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)")
       .run(rid("n"), userId, type, title, detail, now());
 
+  /**
+   * Member-management routes operate on member accounts only. Staff and Super
+   * Admin accounts are not member surface: an operator with customer
+   * permissions must not be able to credit, debit or restrict a colleague
+   * (including the Super Admin) through them. Unknown and non-member ids both
+   * answer 404 so the route can't be used to enumerate staff.
+   */
+  const memberRow = (id: string) =>
+    db.prepare("SELECT * FROM users WHERE id = ? AND role = 'user'").get(id) as Record<string, unknown> | undefined;
+
   /* ============================== health ============================== */
 
   app.get("/api/health", (_req, res) => {
@@ -160,7 +184,9 @@ export function createApp(dbPath?: string) {
       return void res.status(409).json({ error: "An account with that email already exists." });
     }
     const type = accountType === "personal" ? "personal" : "business";
-    if (type === "business" && typeof business !== "string" && !business) {
+    // A business account must name the business (empty/whitespace/non-string
+    // values are rejected, not silently stored as "").
+    if (type === "business" && (typeof business !== "string" || !business.trim())) {
       return void res.status(400).json({ error: "Business name is required for a business account." });
     }
     const id = rid("u");
@@ -348,6 +374,34 @@ export function createApp(dbPath?: string) {
           | undefined;
         if (!account) throw new Error("No account found.");
         if (account.balance_cents < cents) throw new Error("Insufficient funds for this transfer.");
+        // Card spending honours the card's own controls. Freeze, limits and
+        // locks are security controls the member sets in the UI — the server is
+        // the system of record, so it enforces them instead of trusting that
+        // nothing will spend on a frozen card. (contactless/atm/magstripe are
+        // terminal-side controls with no meaning for a ledger transfer.)
+        if (cardId) {
+          const card = db.prepare("SELECT * FROM cards WHERE id = ? AND user_id = ?").get(cardId, req.user!.id) as Record<string, unknown> | undefined;
+          if (!card) throw new RouteError(404, "Card not found.");
+          if (card.frozen === 1) throw new RouteError(403, "This card is frozen. Unfreeze it before spending.");
+          const controls = JSON.parse(String(card.controls_json ?? "{}")) as { online?: boolean };
+          if (controls.online === false) throw new RouteError(403, "Online payments are turned off for this card.");
+          const limit = card.limit_cents as number;
+          if ((card.spent_cents as number) + cents > limit) {
+            throw new RouteError(400, `This payment exceeds the card's ${centsToDecimal(limit)} monthly limit.`);
+          }
+          const perTxn = card.single_txn_limit_cents as number;
+          if (cents > perTxn) {
+            throw new RouteError(400, `This payment exceeds the card's ${centsToDecimal(perTxn)} per-transaction limit.`);
+          }
+          const merchantLock = card.merchant_lock ? String(card.merchant_lock) : null;
+          if (merchantLock && merchantLock.toLowerCase() !== counterparty.toLowerCase()) {
+            throw new RouteError(400, `This card is locked to ${merchantLock}.`);
+          }
+          const categoryLock = card.category_lock ? String(card.category_lock) : null;
+          if (categoryLock && categoryLock !== category) {
+            throw new RouteError(400, `This card is locked to the ${categoryLock} category.`);
+          }
+        }
         const before = account.balance_cents;
         const after = before - cents + scout; // Scout savings are credited immediately
         if (after < 0) throw new Error("Insufficient funds for this transfer.");
@@ -369,7 +423,7 @@ export function createApp(dbPath?: string) {
         balance: money(result.after),
       });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Transfer failed." });
+      fail(res, err, "Transfer failed.");
     }
   }));
 
@@ -671,8 +725,16 @@ export function createApp(dbPath?: string) {
   app.post("/api/me/pockets/:id/move", requireAuth, wrap((req, res) => {
     const id = String(req.params.id);
     const cents = dollarsToCents(req.body?.amount ?? 0);
-    const direction = req.body?.direction === "to_checking" ? "to_checking" : "to_pocket";
+    const direction = req.body?.direction;
+    if (direction !== "to_pocket" && direction !== "to_checking") {
+      return void res.status(400).json({ error: "direction must be 'to_pocket' or 'to_checking'." });
+    }
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
+    // A pocket that isn't the caller's is a 404 — never a 400 that hides an
+    // ownership check (and never a write).
+    if (!db.prepare("SELECT 1 FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Pocket not found." });
+    }
     try {
       inTransaction(db, () => {
         const pocket = db.prepare("SELECT * FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
@@ -704,6 +766,9 @@ export function createApp(dbPath?: string) {
 
   app.delete("/api/me/pockets/:id", requireAuth, wrap((req, res) => {
     const id = String(req.params.id);
+    if (!db.prepare("SELECT 1 FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Pocket not found." });
+    }
     try {
       inTransaction(db, () => {
         const pocket = db.prepare("SELECT * FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
@@ -750,7 +815,10 @@ export function createApp(dbPath?: string) {
     if (!payeeName) return void res.status(400).json({ error: "A payee is required." });
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (!Number.isFinite(nextDate) || nextDate <= 0) return void res.status(400).json({ error: "A next payment date is required." });
-    const frequency = ["once", "weekly", "monthly"].includes(String(req.body?.frequency)) ? String(req.body?.frequency) : "monthly";
+    const frequency = req.body?.frequency ?? "monthly";
+    if (!["once", "weekly", "monthly"].includes(String(frequency))) {
+      return void res.status(400).json({ error: "frequency must be once, weekly or monthly." });
+    }
     const id = rid("bill");
     db.prepare(
       `INSERT INTO scheduled_payments (id, user_id, payee_id, payee_name, amount_cents, category, frequency, next_date, status, autopay, memo)
@@ -784,6 +852,9 @@ export function createApp(dbPath?: string) {
 
   app.post("/api/me/scheduled/:id/pay", requireAuth, wrap((req, res) => {
     const id = String(req.params.id);
+    if (!db.prepare("SELECT 1 FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Payment not found." });
+    }
     try {
       inTransaction(db, () => {
         const payment = db.prepare("SELECT * FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
@@ -964,7 +1035,7 @@ export function createApp(dbPath?: string) {
   }));
 
   app.get("/api/admin/members/:id", requireAuth, requirePerm("customers.view"), wrap((req, res) => {
-    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const user = memberRow(String(req.params.id));
     if (!user) return void res.status(404).json({ error: "Member not found." });
     const account = db.prepare("SELECT * FROM accounts WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
     const txns = db.prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").all(String(req.params.id));
@@ -983,10 +1054,14 @@ export function createApp(dbPath?: string) {
 
   /** Cross-account treasury adjustment (deposit / withdrawal). */
   app.post("/api/admin/members/:id/adjust", requireAuth, requirePerm("customers.adjust_balance"), wrap((req, res) => {
-    const target = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const target = memberRow(String(req.params.id));
     if (!target) return void res.status(404).json({ error: "Member not found." });
     const cents = dollarsToCents(req.body?.amount ?? 0);
-    const direction = req.body?.direction === "debit" ? "debit" : "credit";
+    // Money direction is never guessed: a typo must not silently credit.
+    const direction = req.body?.direction;
+    if (direction !== "credit" && direction !== "debit") {
+      return void res.status(400).json({ error: "direction must be 'credit' or 'debit'." });
+    }
     const requestedDescription = String(req.body?.description ?? "").trim();
     const memo = String(req.body?.memo ?? "").trim();
     const fallbackDescription = direction === "credit" ? "Direct deposit" : "ACH withdrawal";
@@ -1042,9 +1117,13 @@ export function createApp(dbPath?: string) {
 
   /** Restrict / restore an account. Restriction blocks the member's transfers server-side. */
   app.post("/api/admin/members/:id/status", requireAuth, requirePerm("accounts.set_status"), wrap((req, res) => {
-    const target = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const target = memberRow(String(req.params.id));
     if (!target) return void res.status(404).json({ error: "Member not found." });
-    const status = req.body?.status === "restricted" ? "restricted" : "active";
+    // Never guess a security control: an explicit, known status is required.
+    const status = req.body?.status;
+    if (status !== "active" && status !== "restricted") {
+      return void res.status(400).json({ error: "status must be 'active' or 'restricted'." });
+    }
     const reason = String(req.body?.reason ?? "").trim();
     if (status === "restricted" && !reason) return void res.status(400).json({ error: "A reason is required to restrict an account." });
     const before = target.status as string;
@@ -1272,8 +1351,12 @@ export function createApp(dbPath?: string) {
   app.post("/api/admin/broadcasts", requireAuth, requirePerm("notifications.broadcast"), wrap((req, res) => {
     const title = String(req.body?.title ?? "").trim();
     const detail = String(req.body?.detail ?? "").trim();
-    const audience = String(req.body?.audience ?? "all");
+    const audience = req.body?.audience ?? "all";
     if (!title || !detail) return void res.status(400).json({ error: "Title and message are required." });
+    // A mistyped audience must not silently broadcast platform-wide.
+    if (!["all", "business", "personal", "unverified"].includes(String(audience))) {
+      return void res.status(400).json({ error: "audience must be all, business, personal or unverified." });
+    }
     const targets = db.prepare("SELECT id, account_type FROM users WHERE role = 'user'").all() as Array<{ id: string; account_type: string }>;
     const audienceFilter = (u: { id: string; account_type: string }) => {
       if (audience === "business") return u.account_type === "business";
@@ -1471,9 +1554,20 @@ export function createApp(dbPath?: string) {
   /* ============================== errors ============================== */
 
   app.use((_req, res) => res.status(404).json({ error: "Not found." }));
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: Error & { status?: number; statusCode?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+    // Malformed caller input is a 400, not a server fault. Everything else is
+    // an internal error, logged server-side and never leaked as a stack trace.
+    if (err instanceof BadInputError) return void res.status(400).json({ error: err.message });
+    // body-parser tags its own client errors: malformed JSON (400) and bodies
+    // over the 256 kb limit (413). Passing them through would mask a caller
+    // mistake as a 500.
+    const status = Number(err.status ?? err.statusCode);
+    if (Number.isInteger(status) && status >= 400 && status < 500) {
+      const message = status === 413 ? "Request body is too large." : "Malformed request body.";
+      return void res.status(status).json({ error: message });
+    }
     console.error("[api]", err.message);
-    res.status(500).json({ error: "Internal server error." }); // never leak stack traces
+    res.status(500).json({ error: "Internal server error." });
   });
 
   return { app, db };

@@ -8,10 +8,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:emails": "tsx scripts/build-emails.ts",
-    "test": "tsx scripts/test-permissions.ts && node scripts/check-emails.mjs && node scripts/check-api-coverage.mjs && tsx server/scripts/test-api.ts",
+    "test": "tsx scripts/test-permissions.ts && node scripts/check-emails.mjs && node scripts/check-api-coverage.mjs && tsx server/scripts/audit-routes.ts && tsx server/scripts/test-api.ts",
     "server": "tsx server/src/index.ts",
     "test:api": "tsx server/scripts/test-api.ts",
     "check:routes": "node scripts/check-api-coverage.mjs",
+    "audit:routes": "tsx server/scripts/audit-routes.ts",
     "typecheck": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit",
     "typecheck:server": "tsc -p server/tsconfig.json --noEmit"
   },

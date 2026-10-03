@@ -392,9 +392,21 @@ export function setSetting(db: DatabaseSync, key: string, value: string, updated
   ).run(key, value, now(), updatedBy);
 }
 
+/**
+ * A bad request from the caller (malformed amount, unknown enum, …). The error
+ * middleware maps this to 400 with the message, so client mistakes never
+ * surface as 500s.
+ */
+export class BadInputError extends Error {}
+
+/**
+ * Converts a dollar amount to integer cents. Accepts numbers and numeric
+ * strings only — objects, arrays, booleans and trailing-garbage strings
+ * ("12abc") are rejected instead of being coerced.
+ */
 export function dollarsToCents(input: number | string): number {
-  const value = typeof input === "string" ? parseFloat(input) : input;
-  if (!Number.isFinite(value)) throw new Error("Invalid amount.");
+  const value = typeof input === "string" ? (input.trim() === "" ? NaN : Number(input)) : typeof input === "number" ? input : NaN;
+  if (!Number.isFinite(value)) throw new BadInputError("Invalid amount.");
   return Math.round(value * 100);
 }
 

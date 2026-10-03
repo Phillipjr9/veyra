@@ -329,6 +329,8 @@ try {
 
   /* ---------- member lifecycle: empty start → real activity ---------- */
   const juneToken = juneReg.json.token;
+  const juneId = juneReg.json.user.id;
+  const adaId = adaReg.json.user.id;
   const juneState = await api("GET", "/api/me/state", juneToken);
   const js = juneState.json.account;
   expect("new member starts EMPTY (production behavior)", juneState.status === 200 &&
@@ -446,6 +448,144 @@ try {
   // Members can open disputes but never resolve their own (compliance resolves)
   const memberAdvance = await api("POST", `/api/me/disputes/${disputeId}/advance`, alex);
   expect("member self-resolution blocked (404 — no such route)", memberAdvance.status === 404);
+
+  /* ---------- card controls are enforced when the card spends ---------- */
+
+  await api("POST", "/api/me/deposits", juneToken, { amount: 900, source: "Card control funding" });
+  const controlled = await api("POST", "/api/me/cards", juneToken, { label: "Controls", limit: 300, type: "virtual" });
+  const controlId = controlled.json.card.id;
+  const spendWithCard = (body: Record<string, unknown>) =>
+    api("POST", "/api/me/transfers", juneToken, { counterparty: "Northstar Ads", amount: 10, category: "Software", method: "Card", cardId: controlId, ...body });
+  const cardSpent = async () =>
+    (await api("GET", "/api/me/state", juneToken)).json.account.cards.find((c: any) => c.id === controlId).spent;
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { frozen: true });
+  const frozenSpend = await spendWithCard({});
+  expect("frozen card declines spending (403)", frozenSpend.status === 403);
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { frozen: false });
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { controls: { online: false } });
+  const onlineOff = await spendWithCard({});
+  expect("online payments switched off decline spending (403)", onlineOff.status === 403);
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { controls: { online: true } });
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { merchantLock: "Northstar Ads" });
+  const wrongMerchant = await spendWithCard({ counterparty: "Someone Else" });
+  expect("merchant lock declines a different merchant (400)", wrongMerchant.status === 400);
+  const rightMerchant = await spendWithCard({ counterparty: "northstar ads" });
+  expect("merchant lock allows its own merchant (case-insensitive, 201)", rightMerchant.status === 201);
+  expect("declines never touched the card's spend", await cardSpent() === 10);
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { merchantLock: "", categoryLock: "Software" });
+  const wrongCategory = await spendWithCard({ category: "Travel" });
+  expect("category lock declines another category (400)", wrongCategory.status === 400);
+  const rightCategory = await spendWithCard({ category: "Software" });
+  expect("category lock allows its own category (201)", rightCategory.status === 201);
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { categoryLock: "", singleTransactionLimit: 50 });
+  const overPerTxn = await spendWithCard({ amount: 60 });
+  expect("per-transaction limit enforced (400)", overPerTxn.status === 400 && /per-transaction/.test(overPerTxn.json.error));
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { singleTransactionLimit: 1000 });
+  const withinLimits = await spendWithCard({ amount: 100 });
+  expect("spending within every limit succeeds (201)", withinLimits.status === 201);
+  const overMonthly = await spendWithCard({ amount: 200 }); // 120 spent + 200 > 300 limit
+  expect("monthly card limit enforced (400)", overMonthly.status === 400 && /monthly limit/.test(overMonthly.json.error));
+  expect("rejected spend rolled back (spent unchanged at 120)", await cardSpent() === 120);
+
+  /* ---------- body parsing errors are 4xx, never 500 ---------- */
+
+  const malformedJson = await fetch(`${base}/api/me/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${juneToken}` },
+    body: '{"name": ',
+  });
+  expect("malformed JSON body rejected with 400", malformedJson.status === 400);
+  const oversized = await fetch(`${base}/api/me/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${juneToken}` },
+    body: JSON.stringify({ name: "x".repeat(300_000) }),
+  });
+  expect("oversized body rejected with 413", oversized.status === 413);
+
+  /* ---------- input hardening (malformed input is 400, never 500) ---------- */
+
+  const hardenState = (await api("GET", "/api/me/state", juneToken)).json.account;
+  const hardenCard = hardenState.cards[0];
+  const malformed: Array<[string, string, string, unknown]> = [
+    ["deposits", "POST", "/api/me/deposits", { amount: "abc", source: "x" }],
+    ["deposits (object)", "POST", "/api/me/deposits", { amount: { evil: true }, source: "x" }],
+    ["transfers", "POST", "/api/me/transfers", { counterparty: "x", amount: "abc" }],
+    ["invoices", "POST", "/api/me/invoices", { client: "x", amount: "abc", dueDays: 1 }],
+    ["cards", "POST", "/api/me/cards", { label: "x", limit: "abc", type: "virtual" }],
+    ["card patch", "PATCH", `/api/me/cards/${hardenCard.id}`, { limit: "abc" }],
+    ["pockets", "POST", "/api/me/pockets", { name: "x", target: "abc" }],
+    ["scheduled", "POST", "/api/me/scheduled", { payeeName: "x", amount: "abc", nextDate: Date.now() + 86_400_000 }],
+    ["team", "POST", "/api/me/team", { name: "x", email: "x@y.co", role: "Member", monthlyLimit: "abc" }],
+    ["admin adjust", "POST", `/api/admin/members/${juneId}/adjust`, { direction: "credit", amount: "abc", memo: "x" }],
+  ];
+  let badInputAll400 = true;
+  let badInputDetail = "";
+  for (const [label, method, path, body] of malformed) {
+    const token = label.startsWith("admin") ? admin : juneToken;
+    const res = await api(method, path, token, body);
+    if (res.status !== 400) { badInputAll400 = false; badInputDetail += `${label}→${res.status} `; }
+  }
+  expect("malformed amounts rejected with 400, never 500", badInputAll400, badInputDetail);
+  expect("non-numeric strings are not silently parsed (\"12abc\")",
+    (await api("POST", "/api/me/deposits", juneToken, { amount: "12abc", source: "x" })).status === 400);
+
+  /* ---------- enums are validated, never guessed ---------- */
+
+  const badDirection = await api("POST", `/api/admin/members/${juneId}/adjust`, admin, { direction: "debit-typo", amount: 5, memo: "x" });
+  expect("unknown adjustment direction rejected (400 — no silent credit)", badDirection.status === 400);
+  const badAccStatus = await api("POST", `/api/admin/members/${juneId}/status`, admin, { status: "restrictd", reason: "typo" });
+  expect("unknown account status rejected (400 — no silent restore)", badAccStatus.status === 400);
+  const badAudience = await api("POST", "/api/admin/broadcasts", admin, { title: "t", detail: "d", audience: "everyone" });
+  expect("unknown broadcast audience rejected (400 — no platform-wide send)", badAudience.status === 400);
+  const badFrequency = await api("POST", "/api/me/scheduled", juneToken, { payeeName: "x", amount: 1, nextDate: Date.now() + 86_400_000, frequency: "yearly" });
+  expect("unknown payment frequency rejected (400)", badFrequency.status === 400);
+
+  /* ---------- member routes act on member accounts only ---------- */
+
+  const staffTargets: Array<[string, string, string, unknown]> = [
+    ["view a staff account as a member record", "GET", `/api/admin/members/${adaId}`, undefined],
+    ["credit a staff account", "POST", `/api/admin/members/${adaId}/adjust`, { direction: "credit", amount: 1, memo: "x" }],
+    ["restrict the Super Admin's account", "POST", `/api/admin/members/${adminId}/status`, { status: "restricted", reason: "x" }],
+  ];
+  let staffScoped = true;
+  let staffDetail = "";
+  for (const [label, method, path, body] of staffTargets) {
+    const res = await api(method, path, admin, body);
+    if (res.status !== 404) { staffScoped = false; staffDetail += `${label}→${res.status} `; }
+  }
+  expect("staff accounts are not member surface (404, no enumeration)", staffScoped, staffDetail);
+  expect("staff account left untouched", (db.prepare("SELECT status FROM users WHERE id = ?").get(adaId) as { status: string }).status === "active");
+
+  /* ---------- foreign resources are 404, not a misleading 400 ---------- */
+
+  const junePocket = (await api("POST", "/api/me/pockets", juneToken, { name: "Foreign probe", target: 10 })).json.pocket;
+  const foreignPocket = await api("POST", `/api/me/pockets/${junePocket.id}/move`, alex, { amount: 1, direction: "to_checking" });
+  expect("another member's pocket is 404 (move)", foreignPocket.status === 404);
+  const foreignPocketDelete = await api("DELETE", `/api/me/pockets/${junePocket.id}`, alex);
+  expect("another member's pocket is 404 (delete)", foreignPocketDelete.status === 404);
+  const juneSchedule = (await api("POST", "/api/me/scheduled", juneToken, { payeeName: "Foreign probe", amount: 1, nextDate: Date.now() + 86_400_000 })).json.payment;
+  const foreignSchedule = await api("POST", `/api/me/scheduled/${juneSchedule.id}/pay`, alex);
+  expect("another member's scheduled payment is 404 (pay)", foreignSchedule.status === 404);
+  expect("pocket still owned and intact after foreign attempts",
+    (await api("GET", "/api/me/state", juneToken)).json.account.savingsPockets.some((p: any) => p.id === junePocket.id));
+
+  /* ---------- registration validation ---------- */
+
+  const emptyBusiness = await register("Empty Biz", "empty-biz@member.test", "member-pass-9", { accountType: "business", business: "   " });
+  expect("blank business name rejected for business accounts (400)", emptyBusiness.status === 400);
+  const wrongTypeBusiness = await register("Wrong Type", "wrong-type@member.test", "member-pass-9", { accountType: "business", business: 42 });
+  expect("non-string business name rejected (400)", wrongTypeBusiness.status === 400);
+  const personalNoBusiness = await register("Solo Person", "solo@member.test", "member-pass-9", { accountType: "personal" });
+  expect("personal accounts need no business name (201)", personalNoBusiness.status === 201);
+  const injectedRole = await register("Role Injector", "role-inject@member.test", "member-pass-9", { accountType: "business", business: "Inject Co", role: "superadmin", status: "active" });
+  const injectedRow = db.prepare("SELECT role, status, plan FROM users WHERE email = ?").get("role-inject@member.test") as { role: string; status: string; plan: string };
+  expect("registration ignores injected role/status/plan (member, active, Pro)", injectedRole.status === 201 &&
+    injectedRole.json.user.role === "user" && injectedRow.role === "user" && injectedRow.status === "active" && injectedRow.plan === "Pro");
 
   // Change password + production token-based password reset
   resetRateLimits(); // this suite performs many logins — reset the limiter

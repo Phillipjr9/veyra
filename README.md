@@ -110,7 +110,8 @@ server/
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   119-check integration suite (boots the real server)
+  scripts/test-api.ts   148-check integration suite (boots the real server)
+  scripts/audit-routes.ts  69 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -154,8 +155,9 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 119-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 148-check integration suite (fresh DB, ephemeral port)
 npm run check:routes      # fails if a server route has no caller in the app
+npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
 ```
 
@@ -165,13 +167,14 @@ npm run typecheck:server  # strict NodeNext typecheck
 |---|---|
 | Passwords | scrypt (`s2$salt$hash`), never plaintext or reversible |
 | Sessions | HS256 bearer tokens (12 h) with a `sessions` table — logout and admin revocation kill them instantly |
-| Login abuse | In-memory rate limit: 8 attempts / 60 s / email+IP |
+| Login abuse | In-memory rate limit: 8 attempts / 60 s per IP (login and password-reset requests) |
 | RBAC | 17 permissions × 5 roles, resolved **fresh from the DB on every request** (role changes take effect immediately, no re-login) |
 | Money | Integer cents everywhere; every mutation inside `BEGIN IMMEDIATE` |
 | Audit trail | `audit_log` is append-only **by database trigger** — `UPDATE`/`DELETE` raise `ABORT` |
 | Financial limits | $250 k transfer cap, $100 k deposit cap, $10 M admin adjustment cap |
 | Account states | `restricted` members can deposit but not transfer; `payment_rails: halted` blocks all transfers with 503 |
 | Overdrafts | Rejected — balances can never go negative |
+| Card controls | Freeze, per-transaction and monthly limits, merchant/category locks and the online-payments switch are enforced server-side when a card spends |
 | Secrets | `TOKEN_SECRET` env required in production (refuses to boot on the dev fallback) |
 | Password reset | Single-use SHA-256-hashed tokens, 30-minute expiry, reset revokes all sessions |
 | Bootstrap | First Super Admin created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` — no seeded accounts in production |
@@ -184,6 +187,28 @@ including lookup tables and `fetch` downloads) and fails on either kind of
 drift: a server route nobody calls, or a client call with no route behind it.
 Reads that already ship inside the `GET /api/me/state` / `GET /api/admin/state`
 snapshots are the only allowlisted exceptions, spelled out in the script.
+
+### Route security audit
+
+`npm run audit:routes` boots the real server on a throwaway database and probes
+**every route with six identities** — no token, a member, and each staff role —
+then checks the responses against an **independent baseline policy** written in
+the script:
+
+- a route the baseline marks private must answer 401 without a token
+- a route requiring permission `P` must answer 403 for every role whose live
+  grant list (from `GET /api/admin/roles`) lacks `P`, and must not answer 403
+  for a role that has it
+- member surface must not answer 403 to a member
+- a route missing from the baseline fails the audit, so new surface must be
+  classified deliberately
+
+Because the expectations live outside the code under test, the audit catches a
+gate that was *deleted* or a permission typo — the failure modes that a
+same-source check (and most unit tests) cannot see. It also verifies
+cross-member isolation: another member's card, invoice, pocket, payee,
+scheduled payment and session ids must all answer 404/403, and their state must
+be untouched afterwards.
 
 Every member mutation is optimistic in the UI and replayed against the API, then
 reconciled with the refreshed snapshot: the server is authoritative, so a
@@ -241,7 +266,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + API integration (119) = 159 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (148) = 189 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password
