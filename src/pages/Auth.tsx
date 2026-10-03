@@ -1,10 +1,11 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { BadgeCheck, Building2, Check, Eye, EyeOff, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
+import { useToast } from "../components/Toast";
 
 function AuthShell({ title, sub, children, foot }: { title: string; sub: string; children: ReactNode; foot: ReactNode }) {
   return (
@@ -53,8 +54,27 @@ function PasswordField({ value, onChange, id, placeholder = "••••••�
   );
 }
 
+function AuthProviders({ onGoogle, onPasskey }: { onGoogle: () => void; onPasskey: () => void }) {
+  return (
+    <>
+      <div className="auth-provider-stack">
+        <button type="button" className="auth-provider-button google" onClick={onGoogle}>
+          <Globe size={18} />
+          <span>Continue with Google</span>
+        </button>
+        <button type="button" className="auth-provider-button passkey" onClick={onPasskey}>
+          <KeyRound size={18} />
+          <span>Use passkey</span>
+        </button>
+      </div>
+      <div className="auth-divider"><span>or continue with email</span></div>
+    </>
+  );
+}
+
 export function LoginPage() {
   const { login, offline } = useAuth();
+  const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: string } };
   const [email, setEmail] = useState("");
@@ -73,6 +93,25 @@ export function LoginPage() {
     } finally { setBusy(false); }
   }
 
+  const handleGoogle = () => {
+    toast({
+      title: "Google sign-in is not configured yet",
+      description: "Add your Google OAuth client and callback before enabling this flow.",
+      tone: "info",
+    });
+  };
+
+  const handlePasskey = () => {
+    const supported = "PublicKeyCredential" in window;
+    toast({
+      title: supported ? "Passkey flow is ready to connect" : "Passkey is not supported in this browser",
+      description: supported
+        ? "Connect WebAuthn to your backend to complete the sign-in flow."
+        : "Use a modern browser with passkeys enabled to continue.",
+      tone: supported ? "scout" : "info",
+    });
+  };
+
   return (
     <AuthShell title="Welcome back" sub="Sign in to your personal or business Veyra account."
       foot={<>New to Veyra? <Link to="/signup">Create an account</Link></>}>
@@ -85,6 +124,8 @@ export function LoginPage() {
           </div>
         </div>
       )}
+
+      <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
 
       <form className="auth-form" onSubmit={submit}>
         <label htmlFor="email">Email</label>
@@ -103,6 +144,7 @@ export function LoginPage() {
 export function SignupPage() {
   const { signup } = useAuth();
   const navigate = useNavigate();
+  const toast = useToast();
   const [params] = useSearchParams();
   const initialType = params.get("type") === "personal" ? "personal" : "business";
   const [form, setForm] = useState({
@@ -112,6 +154,25 @@ export function SignupPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const set = (k: keyof typeof form, v: string | boolean) => setForm(f => ({ ...f, [k]: v }));
+
+  const handleGoogle = () => {
+    toast({
+      title: "Google sign-up is not configured yet",
+      description: "Connect your OAuth provider and callback before enabling Google registration.",
+      tone: "info",
+    });
+  };
+
+  const handlePasskey = () => {
+    const supported = "PublicKeyCredential" in window;
+    toast({
+      title: supported ? "Passkey registration is ready for setup" : "Passkey is not supported in this browser",
+      description: supported
+        ? "Enable WebAuthn registration to allow passwordless sign-up."
+        : "Use a browser that supports WebAuthn to continue.",
+      tone: supported ? "scout" : "info",
+    });
+  };
 
   const strength = Math.min(4, (form.password.length >= 8 ? 1 : 0) + (/[A-Z]/.test(form.password) ? 1 : 0) + (/[0-9]/.test(form.password) ? 1 : 0) + (/[^A-Za-z0-9]/.test(form.password) ? 1 : 0));
   const labels = ["Too short", "Weak", "Fair", "Good", "Strong"];
@@ -134,6 +195,7 @@ export function SignupPage() {
   return (
     <AuthShell title="Open your account" sub={form.accountType === "personal" ? "Simple checking for spending, saving and everyday life." : "A few details and your business account is ready."}
       foot={<>Already with us? <Link to="/login">Sign in</Link></>}>
+      <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
       <form className="auth-form" onSubmit={submit}>
         <span className="auth-choice-label">I want to open</span>
         <div className="account-type-toggle">
