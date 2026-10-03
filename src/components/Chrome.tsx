@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { ArrowRight, LayoutDashboard, Menu, X } from "lucide-react";
 import { Btn, Logo } from "./common";
 import { useAuth } from "../lib/auth";
+import { lockScroll } from "../lib/scrollLock";
 
 const NAV = [
   { label: "Personal", to: "/personal" },
@@ -28,8 +29,9 @@ export function Header() {
   }, []);
   useEffect(() => { setOpen(false); }, [pathname]);
   useEffect(() => {
-    document.body.style.overflow = open ? "hidden" : "";
-    return () => { document.body.style.overflow = ""; };
+    if (!open) return;
+    const unlock = lockScroll();
+    return unlock;
   }, [open]);
 
   return (

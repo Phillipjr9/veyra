@@ -6,6 +6,7 @@ import { downloadFile, longDate, money, rewardRate, useAcct, type MoveResult } f
 import { useToast } from "./Toast";
 import { ease, useCountUp } from "./common";
 import { VeyraMark } from "./VeyraMark";
+import { lockScroll } from "../lib/scrollLock";
 
 /* ============================================================
    Types & constants
@@ -469,9 +470,8 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
+    const unlock = lockScroll();
+    return unlock;
   }, [open]);
 
   useEffect(() => {

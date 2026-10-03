@@ -21,6 +21,7 @@ import { PersonalChrome, PersonalOverview } from "./dashboards/PersonalDashboard
 import { BusinessChrome, BusinessOverview } from "./dashboards/BusinessDashboard";
 import { Camera } from "lucide-react";
 import { useAuth } from "../lib/auth";
+import { lockScroll } from "../lib/scrollLock";
 import {
   categories, copyText, downloadFile, longDate, money, rewardRate, shortDate, useAcct,
   type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
@@ -175,10 +176,11 @@ function Modal({ open, onClose, title, subtitle, children }: { open: boolean; on
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    // Locks the page without moving it: releasing a plain overflow lock after a
+    // submit (which can resize the page) used to jump the member's view.
+    const unlock = lockScroll();
     window.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
+    return () => { window.removeEventListener("keydown", onKey); unlock(); };
   }, [open, onClose]);
   return createPortal(
     <AnimatePresence>
