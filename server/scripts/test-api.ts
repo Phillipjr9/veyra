@@ -28,6 +28,28 @@ const expect = (label: string, cond: boolean, extra?: string) => {
   if (!cond) failures++;
 };
 
+/** Parses one CSV line into cells (handles the exports' quoted fields). */
+const csvCells = (line: string): string[] => {
+  const cells: string[] = [];
+  let cell = "", quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch !== '"') cell += ch;
+      else if (line[i + 1] === '"') { cell += '"'; i++; }
+      else quoted = false;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { cells.push(cell); cell = ""; }
+    else cell += ch;
+  }
+  cells.push(cell);
+  return cells;
+};
+const csvRowFor = (csv: string, needle: string): string[] | null => {
+  const line = csv.split("\n").find(l => l.includes(needle));
+  return line ? csvCells(line) : null;
+};
+
 const tmp = mkdtempSync(join(tmpdir(), "veyra-api-test-"));
 // Clean production instance — env-bootstrapped admin, no other identities.
 process.env.ADMIN_EMAIL = "ops@veyra.test";
@@ -277,12 +299,50 @@ try {
     const report = await api("GET", `/api/admin/reports/${kind}.csv`, admin);
     expect(`report export: ${kind}`, report.status === 200 && report.text.includes(",") && (report.headers.get("content-type") ?? "").includes("text/csv"));
   }
+  // The exports mirror the console tables column for column: a column the
+  // console shows but the file omits is a gap, so both are asserted here.
   const accountsCsv = await api("GET", "/api/admin/reports/accounts.csv", admin);
-  expect("accounts export carries the console columns", accountsCsv.text.split("\n")[0].includes("Frozen cards") &&
-    accountsCsv.text.split("\n")[0].includes("KYC") && accountsCsv.text.split("\n")[0].includes("Last activity"));
+  const accountsHeader = accountsCsv.text.split("\n")[0];
+  const accountColumns = ["Member", "Type", "Balance", "Pending", "Cards", "Frozen cards",
+    "Transactions", "Pending transactions", "KYC", "Status", "Last activity"];
+  expect("accounts export carries every Accounts-console column",
+    accountColumns.every(c => accountsHeader.includes(c)));
+  const consoleAccounts = ((await api("GET", "/api/admin/state", admin)).json as any).accounts as any[];
+  const raeConsole = consoleAccounts.find(a => a.email === "rae@member.test");
+  // Column order in the file: 0 User ID … 9 Cards, 10 Frozen cards,
+  // 11 Transactions, 12 Pending transactions, 13 KYC, 14 Status, 15 Last activity.
+  const raeRow = csvRowFor(accountsCsv.text, "rae@member.test") ?? [];
+  expect("accounts export matches the console's own counts for a member",
+    raeRow.length > 14 && raeConsole !== undefined &&
+    raeRow[9] === String(raeConsole.cards) &&
+    raeRow[10] === String(raeConsole.frozenCards) &&
+    raeRow[11] === String(raeConsole.txnCount) &&
+    raeRow[12] === String(raeConsole.pendingTxns) &&
+    raeRow[13] === raeConsole.kycStatus &&
+    raeRow[14] === raeConsole.accountStatus,
+    `csv=${JSON.stringify(raeRow.slice(9, 15))} console=${JSON.stringify(raeConsole)}`);
+  expect("accounts export reports real activity, not placeholders",
+    raeConsole !== undefined && raeConsole.txnCount > 0 && Number(raeRow[11]) === raeConsole.txnCount);
+
   const kycCsv = await api("GET", "/api/admin/reports/kyc.csv", admin);
-  expect("kyc export carries requested/updated timestamps", kycCsv.text.split("\n")[0].includes("Requested at") &&
-    kycCsv.text.split("\n")[0].includes("Updated"));
+  const kycHeader = kycCsv.text.split("\n")[0];
+  const kycColumns = ["KYC status", "Completeness", "Submitted", "Legal name", "Document", "Files",
+    "Source of funds", "Requested at", "Updated"];
+  expect("kyc export carries every KYC-console column",
+    kycColumns.every(c => kycHeader.includes(c)));
+  // 0 User ID, 1 Member, 2 Email, 3 Type, 4 KYC status, 5 Completeness,
+  // 6 Submitted, 7 Legal name, 8 Document, 9 Files, 10 Source of funds, 11 Requested at, 12 Updated.
+  const alexKycRow = csvRowFor(kycCsv.text, "alex@member.test") ?? [];
+  // The case has been decided by now, so its row is no longer in the review
+  // queue — the console's Accounts view is where its KYC standing shows.
+  const alexConsoleKyc = consoleAccounts.find(a => a.email === "alex@member.test")?.kycStatus;
+  expect("kyc export carries the reviewed case's submission details",
+    alexKycRow[7] === "Alex Stone" && alexKycRow[8] === "Drivers License" &&
+    alexKycRow[9] === "1" && alexKycRow[10] === "Salary income",
+    `row=${JSON.stringify(alexKycRow)}`);
+  expect("kyc export status matches the console's KYC column",
+    alexKycRow[4] === alexConsoleKyc && alexKycRow[5] === "100%" && alexKycRow[6] !== "—",
+    `csv=${JSON.stringify(alexKycRow.slice(4, 7))} console=${alexConsoleKyc}`);
   const auditCsv = await api("GET", "/api/admin/audit/export.csv", admin);
   expect("report export: audit (CSV)", auditCsv.status === 200 && auditCsv.text.includes(",") && (auditCsv.headers.get("content-type") ?? "").includes("text/csv"));
   const exportNoPerm = await api("GET", "/api/admin/reports/customers.csv", support);

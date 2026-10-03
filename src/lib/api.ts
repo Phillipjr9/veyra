@@ -30,6 +30,15 @@ export function apiOnline(): boolean {
   return cachedOnline === true;
 }
 
+/**
+ * Tri-state reachability: "unknown" before the first probe resolves. Callers
+ * that must decide whether to *send* something can treat unknown as "try it" —
+ * the request itself is the better probe — while "offline" is a known fact.
+ */
+export function apiReachability(): "online" | "offline" | "unknown" {
+  return cachedOnline === null ? "unknown" : cachedOnline ? "online" : "offline";
+}
+
 /** Probes the backend health endpoint. Result is cached for the session. */
 export async function probeApi(force = false): Promise<boolean> {
   if (!force && probe) return probe;

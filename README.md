@@ -110,7 +110,7 @@ server/
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   152-check integration suite (boots the real server)
+  scripts/test-api.ts   153-check integration suite (boots the real server)
   scripts/audit-routes.ts  69 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
@@ -155,7 +155,7 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 152-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 153-check integration suite (fresh DB, ephemeral port)
 npm run check:routes      # fails if a server route has no caller in the app
 npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
@@ -214,15 +214,31 @@ be untouched afterwards.
 Every member mutation is optimistic in the UI and replayed against the API, then
 reconciled with the refreshed snapshot: the server is authoritative, so a
 rejected action (insufficient funds, halted rails, restricted account) rolls the
-optimistic state back and surfaces the server's error. Records created client
-side get a local id until the create response returns the server's id
-(`adoptId`/`resolveId` in `src/lib/store.tsx`), so a follow-up action taken in
-the same breath — pay this invoice, move money out of this pocket — still hits
-the right row.
+optimistic state back and surfaces the server's error. A mutation that could not
+be *sent* is surfaced too: with no session token, or with the API known to be
+unreachable, the action is refused and the member is told it was not saved —
+there is no offline replay queue, so it would be lost on refresh. (An unresolved
+health probe is not treated as offline; the request itself is the better probe,
+and its failure travels the normal error path.) Requests are serialised through
+one queue so the optimistic state and the server can't interleave, and the
+path/body of a queued call is resolved when it runs rather than when it is
+created.
+
+Records created client-side get a local id until the create response returns
+the server's id (`adoptId`/`resolveId` in `src/lib/store.tsx`), so a follow-up
+action taken in the same breath — pay this invoice, move money out of this
+pocket, dispute the payment you just scheduled — still hits the row the server
+actually stored. Deposits, transfers and scheduled payments adopt the ledger
+row's id from the response for the same reason.
 
 Console CSV exports are generated server-side from the database (full ledger,
 not the console's window) via `GET /api/admin/reports/:kind.csv` and
-`GET /api/admin/audit/export.csv`, downloaded with the session token.
+`GET /api/admin/audit/export.csv`, downloaded with the session token. The
+accounts and KYC files carry the columns the console shows — the accounts file
+includes cards, frozen cards, transaction and pending-transaction counts, KYC
+standing, status and last activity, and the KYC file adds the review queue's
+submission columns (submitted date, legal name, document, file count, source of
+funds) to the status columns.
 
 ### API surface (summary)
 
@@ -267,7 +283,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (152) = 193 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (153) = 194 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

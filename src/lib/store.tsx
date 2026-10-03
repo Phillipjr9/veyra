@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiOnline, getToken } from "./api";
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiReachability, probeApi, getToken } from "./api";
 import { useToast } from "../components/Toast";
 import { useAuth } from "./auth";
 
@@ -615,14 +615,44 @@ function useAccountState() {
   const resolveDeferred = <T,>(value: Deferred<T>): T =>
     (typeof value === "function" ? (value as () => T)() : value);
 
+  /**
+   * The optimistic state is only honest if a mutation that never reached the
+   * server is reported instead of looking saved. There is no offline replay
+   * queue, so without a session token or with the API known to be down the
+   * request is refused *and the member is told* — the action stays unsent and
+   * would be lost on refresh. An unresolved probe ("unknown") is not a reason
+   * to refuse: the request itself is the better probe, and its failure is
+   * surfaced by the queue's error path.
+   */
+  const canSync = useCallback((): boolean => {
+    if (!getToken()) {
+      toast({ tone: "error", title: "Action not saved", description: "You're not signed in, so this change was not sent. Sign in and try again." });
+      return false;
+    }
+    if (apiReachability() === "offline") {
+      toast({ tone: "error", title: "Action not saved", description: "The Veyra server can't be reached, so this change was not sent and won't survive a refresh. Retrying…" });
+      void probeApi(true); // re-probe so the next attempt can go through
+      return false;
+    }
+    return true;
+  }, [toast]);
+
   const syncPost = useCallback((path: Deferred<string>, body?: Deferred<unknown>, onResult?: (result: unknown) => void) => {
-    if (apiOnline() && getToken()) enqueue(() => apiPost(resolveDeferred(path), resolveDeferred(body)), onResult);
-  }, [enqueue]);
+    if (!canSync()) return;
+    enqueue(() => apiPost(resolveDeferred(path), resolveDeferred(body)), onResult);
+  }, [canSync, enqueue]);
   const syncPatch = useCallback((path: Deferred<string>, body: Deferred<unknown>, onResult?: (result: unknown) => void) => {
-    if (apiOnline() && getToken()) enqueue(() => apiPatch(resolveDeferred(path), resolveDeferred(body)), onResult);
-  }, [enqueue]);
-  const syncPut = useCallback((path: Deferred<string>, body: Deferred<unknown>) => { if (apiOnline() && getToken()) enqueue(() => apiPut(resolveDeferred(path), resolveDeferred(body))); }, [enqueue]);
-  const syncDelete = useCallback((path: Deferred<string>) => { if (apiOnline() && getToken()) enqueue(() => apiDelete(resolveDeferred(path))); }, [enqueue]);
+    if (!canSync()) return;
+    enqueue(() => apiPatch(resolveDeferred(path), resolveDeferred(body)), onResult);
+  }, [canSync, enqueue]);
+  const syncPut = useCallback((path: Deferred<string>, body: Deferred<unknown>) => {
+    if (!canSync()) return;
+    enqueue(() => apiPut(resolveDeferred(path), resolveDeferred(body)));
+  }, [canSync, enqueue]);
+  const syncDelete = useCallback((path: Deferred<string>) => {
+    if (!canSync()) return;
+    enqueue(() => apiDelete(resolveDeferred(path)));
+  }, [canSync, enqueue]);
 
   // Keep account holder + owner row in sync with profile edits.
   useEffect(() => {

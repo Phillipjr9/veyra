@@ -1416,28 +1416,46 @@ export function createApp(dbPath?: string) {
         ...db.prepare("SELECT id, name, email, phone, business, account_type, plan, status, role FROM users ORDER BY created_at").all()
           .map((r: any) => [r.id, r.name, r.email, r.phone, r.business, r.account_type, r.plan, r.status, r.role])];
     } else if (kind === "accounts") {
-      rows = [["User ID", "Member", "Email", "Business", "Type", "Account number", "Balance", "Pending", "Rewards", "Cards", "Frozen cards", "KYC", "Status", "Last activity"],
+      // Columns mirror the Accounts console: the same counts (cards, frozen
+      // cards, transactions incl. how many are pending), KYC standing, status
+      // and last activity, computed from the same source of truth.
+      rows = [["User ID", "Member", "Email", "Business", "Type", "Account number", "Balance", "Pending", "Rewards", "Cards", "Frozen cards", "Transactions", "Pending transactions", "KYC", "Status", "Last activity"],
         ...db.prepare(`SELECT a.user_id, u.name, u.email, u.business, u.account_type, u.status, a.account_number,
                               a.balance_cents, a.pending_cents, a.rewards_cents,
                               (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
                               (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.frozen = 1) AS frozen_count,
+                              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
+                              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id AND t.status = 'pending') AS pending_count,
                               (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status,
                               (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity
                        FROM accounts a JOIN users u ON u.id = a.user_id ORDER BY a.balance_cents DESC`).all()
           .map((r: any) => [r.user_id, r.name, r.email, r.business ?? "", r.account_type, r.account_number,
             centsToDecimal(r.balance_cents), centsToDecimal(r.pending_cents), centsToDecimal(r.rewards_cents),
-            r.card_count, r.frozen_count, r.kyc_status ?? "not_started", r.status,
+            r.card_count, r.frozen_count, r.txn_count, r.pending_count, r.kyc_status ?? "not_started", r.status,
             r.last_activity ? new Date(r.last_activity).toISOString() : "Never"])];
     } else if (kind === "transactions") {
       rows = [["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"],
         ...db.prepare(`SELECT t.*, u.name AS member FROM transactions t JOIN users u ON u.id = t.user_id ORDER BY t.created_at DESC`).all()
           .map((r: any) => [new Date(r.created_at).toISOString(), r.member, r.merchant, r.category, r.method, centsToDecimal(r.amount_cents), r.status, r.reference])];
     } else if (kind === "kyc") {
-      rows = [["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Requested at", "Updated"],
-        ...db.prepare(`SELECT k.user_id, u.name, u.email, u.account_type, k.status, k.completeness, k.requested_at, k.updated_at
+      // Status columns plus the columns the review queue shows for a submitted
+      // case (submitted date, legal name, document, file count, source of
+      // funds) — one file covers both KYC views in the console.
+      rows = [["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Submitted", "Legal name", "Document", "Files", "Source of funds", "Requested at", "Updated"],
+        ...db.prepare(`SELECT k.user_id, u.name, u.email, u.account_type, k.status, k.completeness,
+                              k.document_type, k.submission_json, k.requested_at, k.updated_at
                        FROM kyc_records k JOIN users u ON u.id = k.user_id`).all()
-          .map((r: any) => [r.user_id, r.name, r.email, r.account_type, r.status, `${r.completeness}%`,
-            r.requested_at ? new Date(r.requested_at).toISOString() : "—", new Date(r.updated_at).toISOString()])];
+          .map((r: any) => {
+            let submission: { submittedAt?: number; legalName?: string; documentType?: string; documents?: unknown[]; source?: string } = {};
+            try { submission = r.submission_json ? JSON.parse(String(r.submission_json)) : {}; } catch { /* unreadable submission — export the status columns only */ }
+            return [r.user_id, r.name, r.email, r.account_type, r.status, `${r.completeness}%`,
+              submission.submittedAt ? new Date(submission.submittedAt).toISOString() : "—",
+              submission.legalName || "—",
+              submission.documentType || r.document_type || "—",
+              Array.isArray(submission.documents) ? submission.documents.length : 0,
+              submission.source || "—",
+              r.requested_at ? new Date(r.requested_at).toISOString() : "—", new Date(r.updated_at).toISOString()];
+          })];
     } else {
       return void res.status(404).json({ error: "Unknown report. Use customers|accounts|transactions|kyc." });
     }
