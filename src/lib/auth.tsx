@@ -60,13 +60,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (online && getToken()) {
         // Restore the session from the server via the stored bearer token.
         try {
-          const { user: me } = await apiGet<{ user: User }>("/api/auth/me");
+          // Quiet: a refusal here means a stale token, not a session ending now.
+          const { user: me } = await apiGet<{ user: User }>("/api/auth/me", { handleUnauthorized: false });
           setUser(me);
         } catch (err) {
-          clearToken(); // revoked or expired — sign in again
+          // A token left over from a previous visit was refused (it expired, was
+          // revoked, or the account is gone — a restarted server with a rebuilt
+          // database does this). That is the normal start of a new visit, not a
+          // failure worth a banner: drop it quietly and show a clean sign-in.
+          // Only losing a session you were actively using gets the notice below.
+          clearToken();
           if (err instanceof ApiError && err.status === 401) {
-            setSessionNotice("Your session ended — sign in again to pick up where you left off.");
-            setSessionDetail(err.message);
+            console.info(`[veyra] discarded a stored session: ${err.message}`);
           }
         }
       }

@@ -161,8 +161,15 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * `handleUnauthorized: false` keeps a 401 out of the app-wide session handling —
+ * for the one call that *checks* a leftover session on load, where a rejection
+ * is the normal start of a visit rather than a session dying under the member.
+ */
+type ApiOptions = { handleUnauthorized?: boolean };
+
 /** Authenticated JSON request. Throws ApiError with the server's message on failure. */
-export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+export async function api<T = unknown>(method: string, path: string, body?: unknown, opts: ApiOptions = {}): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -175,7 +182,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   let json: any = null;
   try { json = JSON.parse(text); } catch { /* non-JSON */ }
   if (!res.ok) {
-    if (res.status === 401) sessionRejected(Boolean(token), json?.error ?? "Session rejected.");
+    if (res.status === 401 && opts.handleUnauthorized !== false) sessionRejected(Boolean(token), json?.error ?? "Session rejected.");
     throw new ApiError(res.status, json?.error ?? `Request failed (${res.status}).`);
   }
   return json as T;
@@ -205,7 +212,7 @@ export async function apiGetText(path: string): Promise<string> {
 }
 
 /** Convenience wrappers */
-export const apiGet = <T = unknown,>(path: string) => api<T>("GET", path);
+export const apiGet = <T = unknown,>(path: string, opts?: ApiOptions) => api<T>("GET", path, undefined, opts);
 export const apiPost = <T = unknown,>(path: string, body?: unknown) => api<T>("POST", path, body);
 export const apiPatch = <T = unknown,>(path: string, body?: unknown) => api<T>("PATCH", path, body);
 export const apiPut = <T = unknown,>(path: string, body?: unknown) => api<T>("PUT", path, body);
