@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { apiGet, apiPost, apiPatch, apiPut, apiDelete, probeApi, apiOnline, getToken } from "./api";
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiOnline, getToken } from "./api";
 import { useToast } from "../components/Toast";
-import { useAuth, getUsers } from "./auth";
+import { useAuth } from "./auth";
 
 /* ============================================================
    Types
@@ -211,7 +211,6 @@ export type MoveResult = { reference: string; date: number; amount: number; bala
    ============================================================ */
 export const SCHEMA_VERSION = 6;
 const DAY = 86_400_000;
-const HOUR = 3_600_000;
 
 export const categories = ["Software", "Advertising", "Travel", "Operations", "Utilities", "Equipment", "Professional"];
 const RATE: Record<string, number> = { Software: 0.04, Advertising: 0.045, Travel: 0.035, Operations: 0.025, Utilities: 0.025, Equipment: 0.03, Professional: 0.02 };
@@ -235,7 +234,7 @@ function cardNumbers(fixedLast4?: string) {
   const month = 1 + Math.floor(Math.random() * 12);
   return {
     last4,
-    // The fictional Arc network uses a reserved demo range instead of a live card-network BIN.
+    // The Arc network uses a reserved test range instead of a live card-network BIN.
     fullNumber: `9${digits(3)} ${digits(4)} ${digits(4)} ${last4}`,
     exp: `${String(month).padStart(2, "0")}/${String(year).padStart(2, "0")}`,
     cvv: digits(3),
@@ -323,194 +322,26 @@ export function transactionsToCSV(txns: Txn[]) {
 }
 
 /* ============================================================
-   Seed data (all merchants, partners and banks are fictional)
-   ============================================================ */
-function seed(p: Profile): Account {
-  const now = Date.now();
-  const personal = p.accountType === "personal";
-  const domain = p.email.includes("@") ? p.email.split("@")[1] : "company.example";
-  const businessCards: Card[] = [
-    { id: rid("card"), label: "Subscriptions", ...cardNumbers("2903"), limit: 4000, spent: 1182.4, frozen: false, type: "virtual", categoryLock: "Software", cardholder: p.name, pin: "2846", singleTransactionLimit: 1200, dailyAtmLimit: 0, controls: defaultCardControls("virtual"), shipping: virtualShipping(), walletStatus: "added", createdAt: now - DAY * 90 },
-    { id: rid("card"), label: "Advertising", ...cardNumbers("7741"), limit: 12000, spent: 5620.5, frozen: false, type: "virtual", merchantLock: "Northstar Ads", categoryLock: "Advertising", cardholder: p.name, pin: "6031", singleTransactionLimit: 5000, dailyAtmLimit: 0, controls: defaultCardControls("virtual"), shipping: virtualShipping(), walletStatus: "not_added", createdAt: now - DAY * 60 },
-    { id: rid("card"), label: "Metal debit", ...cardNumbers("5118"), limit: 15000, spent: 410, frozen: false, type: "physical", cardholder: p.name, pin: "4917", singleTransactionLimit: 7500, dailyAtmLimit: 1000, controls: defaultCardControls("physical"), shipping: deliveredShipping(now), walletStatus: "added", createdAt: now - DAY * 38 },
-  ];
-  const personalCards: Card[] = [
-    { id: rid("card"), label: "Everyday debit", ...cardNumbers("1842"), limit: 5000, spent: 682.71, frozen: false, type: "physical", cardholder: p.name, pin: "3174", singleTransactionLimit: 2500, dailyAtmLimit: 600, controls: defaultCardControls("physical"), shipping: deliveredShipping(now), walletStatus: "added", createdAt: now - DAY * 70 },
-    { id: rid("card"), label: "Online spending", ...cardNumbers("6219"), limit: 1500, spent: 128.55, frozen: false, type: "virtual", categoryLock: "Software", cardholder: p.name, pin: "5402", singleTransactionLimit: 500, dailyAtmLimit: 0, controls: defaultCardControls("virtual"), shipping: virtualShipping(), walletStatus: "added", createdAt: now - DAY * 42 },
-    { id: rid("card"), label: "Travel", ...cardNumbers("9086"), limit: 3000, spent: 0, frozen: true, type: "virtual", categoryLock: "Travel", cardholder: p.name, pin: "8251", singleTransactionLimit: 1200, dailyAtmLimit: 0, controls: { ...defaultCardControls("virtual"), international: true }, shipping: virtualShipping(), walletStatus: "not_added", createdAt: now - DAY * 20 },
-  ];
-  const cards = personal ? personalCards : businessCards;
-  const cardFor = (category: string) => personal
-    ? category === "Software" ? cards[1].id : category === "Travel" ? cards[2].id : cards[0].id
-    : category === "Advertising" ? cards[1].id : category === "Software" || category === "Utilities" ? cards[0].id : cards[2].id;
-
-  // merchant, category, amount, days ago, memo, method, scout rate
-  const businessRows: Array<[string, string, number, number, string, string, number]> = [
-    ["Fable Cloud", "Software", -218, 1, "Team workspace · monthly", "Card", 0.08],
-    ["Northstar Ads", "Advertising", -1240.5, 3, "Spring retargeting campaign", "Card", 0.12],
-    ["Orbit Mobile", "Utilities", -92, 5, "Team phone lines", "Card", 0],
-    ["Pixelforge", "Software", -256, 8, "Design plugins · annual", "Card", 0.1],
-    ["Harbor Studio", "Operations", -1480, 11, "Brand workshop", "ACH", 0],
-    ["Canvas Studio", "Software", -150.4, 14, "Editor seats", "Card", 0],
-    ["Skyline Rail", "Travel", -318.75, 18, "Client visit", "Card", 0.06],
-    ["Mono Labs", "Operations", 6800, 21, "Invoice #1048 · milestone 2", "ACH", 0],
-    ["Searchlight Ads", "Advertising", -860.2, 25, "Search campaign", "Card", 0.07],
-    ["Deskwork Supply", "Equipment", -412.6, 29, "Monitors for new hires", "Card", 0],
-    ["Stratus Compute", "Software", -642.1, 34, "Cloud hosting", "Card", 0.09],
-    ["Commons Coworking", "Operations", -599, 42, "Desk memberships", "ACH", 0],
-    ["Card processor payout", "Operations", 12450, 45, "Weekly sales settlement", "ACH", 0],
-    ["Ledgerly Advisors", "Professional", -1200, 52, "Quarterly bookkeeping", "Wire", 0],
-  ];
-  const personalRows: Array<[string, string, number, number, string, string, number]> = [
-    ["Green Basket Market", "Operations", -86.42, 1, "Weekly groceries", "Card", .04],
-    ["Daily Grind Coffee", "Operations", -6.85, 2, "Morning coffee", "Card", 0],
-    ["Northfield Payroll", "Operations", 3250, 3, "Direct deposit", "ACH", 0],
-    ["Metro Transit", "Travel", -42, 5, "Monthly transit pass", "Card", .06],
-    ["Streambox", "Software", -16.99, 8, "Monthly subscription", "Card", .08],
-    ["Oak Street Rent", "Operations", -1450, 11, "Monthly rent", "ACH", 0],
-    ["City Electric", "Utilities", -93.18, 14, "Electric bill", "ACH", .04],
-    ["Harbor Pharmacy", "Operations", -34.6, 18, "Prescription", "Card", 0],
-    ["Northstar Air", "Travel", -328.4, 23, "Weekend flight", "Card", .07],
-    ["Corner Books", "Operations", -28.95, 27, "Books", "Card", 0],
-    ["Orbit Mobile", "Utilities", -74, 33, "Mobile plan", "Card", .05],
-    ["Northfield Payroll", "Operations", 3250, 34, "Direct deposit", "ACH", 0],
-    ["Home Savings", "Operations", -500, 38, "Savings transfer", "ACH", 0],
-    ["Fitness House", "Operations", -49, 47, "Monthly membership", "Card", .05],
-  ];
-  const rows = personal ? personalRows : businessRows;
-  const transactions = rows.map(([merchant, category, amount, daysAgo, note, method, scoutRate]): Txn => ({
-    id: rid("txn"),
-    merchant,
-    category,
-    amount,
-    reward: amount < 0 ? r2(Math.abs(amount) * rewardRate(category)) : 0,
-    scout: amount < 0 ? r2(Math.abs(amount) * scoutRate) : 0,
-    date: now - DAY * daysAgo - Math.floor(Math.random() * 8) * HOUR,
-    cardId: method === "Card" ? cardFor(category) : undefined,
-    note,
-    method,
-    reference: makeReference(),
-    status: "cleared",
-  }));
-
-  const invoices: Invoice[] = personal ? [] : [
-    { id: "1051", client: "Quill & Co", clientEmail: "accounts@quill.example", amount: 3250, status: "open", due: now + DAY * 18, createdAt: now - DAY * 2, description: "Website retainer" },
-    { id: "1050", client: "Lumen Retail", clientEmail: "finance@lumen.example", amount: 1150, status: "overdue", due: now - DAY * 4, createdAt: now - DAY * 24, description: "Product photography" },
-    { id: "1049", client: "Harbor Studio", clientEmail: "ap@harbor.example", amount: 2400, status: "open", due: now + DAY * 6, createdAt: now - DAY * 8, description: "Workshop facilitation" },
-    { id: "1048", client: "Mono Labs", clientEmail: "billing@monolabs.example", amount: 6800, status: "paid", due: now - DAY * 21, createdAt: now - DAY * 35, description: "Milestone 2 delivery" },
-  ];
-
-  const team: TeamMember[] = personal ? [
-    { id: rid("tm"), name: p.name, email: p.email, role: "Owner", cardCount: 3, monthlyLimit: 9500, status: "active" },
-  ] : [
-    { id: rid("tm"), name: p.name, email: p.email, role: "Owner", cardCount: 2, monthlyLimit: 25000, status: "active" },
-    { id: rid("tm"), name: "Marcus Vance", email: `marcus@${domain}`, role: "Admin", cardCount: 1, monthlyLimit: 8000, status: "active" },
-    { id: rid("tm"), name: "Chloe Chen", email: `chloe@${domain}`, role: "Bookkeeper", cardCount: 0, monthlyLimit: 0, status: "active" },
-  ];
-
-  const perks: Perk[] = personal ? [
-    { id: "pp1", partner: "Green Basket", category: "Everyday", value: "$15 grocery credit", description: "Spend $100 on groceries and get $15 back.", code: "VEYRA-GROCERY15", status: "available" },
-    { id: "pp2", partner: "Northstar Air", category: "Travel", value: "Free checked bag", description: "One checked bag on an eligible round trip.", code: "VEYRA-FLYFREE", status: "available" },
-    { id: "pp3", partner: "Streambox", category: "Entertainment", value: "3 months free", description: "New and returning members get three months on us.", code: "VEYRA-STREAM3", status: "redeemed" },
-    { id: "pp4", partner: "Daily Grind", category: "Dining", value: "20% back", description: "Cash back on one coffee order each week.", code: "VEYRA-COFFEE20", status: "available" },
-  ] : [
-    { id: "p1", partner: "Stratus Compute", category: "Infrastructure", value: "$5,000 credits", description: "Cloud hosting credits for new business accounts.", code: "VEYRA-STRATUS-5K", status: "available" },
-    { id: "p2", partner: "Notebook Pro", category: "Productivity", value: "6 months free", description: "Docs, wikis and AI writing for your whole team.", code: "VEYRA-NOTEBOOK-6M", status: "available" },
-    { id: "p3", partner: "Paywell Checkout", category: "Payments", value: "$20k fee-free", description: "No processing fees on your first $20,000 in card sales.", code: "VEYRA-PAYWELL-20K", status: "redeemed" },
-    { id: "p4", partner: "Trackline", category: "Software", value: "$1,000 credit", description: "Issue tracking and roadmaps for product teams.", code: "VEYRA-TRACK-1K", status: "available" },
-    { id: "p5", partner: "Wayfare Travel", category: "Travel", value: "20% off hotels", description: "Corporate rates at boutique hotels worldwide.", code: "VEYRA-WAYFARE20", status: "available" },
-    { id: "p6", partner: "Ledgerly Advisors", category: "Finance", value: "First month free", description: "A dedicated bookkeeper and a clean monthly close.", code: "VEYRA-LEDGER-1M", status: "available" },
-  ];
-
-  const notifications: NotificationItem[] = personal ? [
-    { id: rid("n"), title: "Scout saved $26.27", detail: "A lower fare was applied to your Northstar Air purchase.", time: now - 2 * HOUR, read: false, type: "scout" },
-    { id: rid("n"), title: "Paycheck deposited", detail: "+$3,250.00 is available in checking.", time: now - DAY * 3, read: false, type: "transfer" },
-    { id: rid("n"), title: "Travel card is frozen", detail: "No new purchases can be made until you unfreeze it.", time: now - DAY * 5, read: true, type: "card" },
-    { id: rid("n"), title: "New sign-in", detail: "Chrome on macOS · verified with two-factor.", time: now - DAY * 8, read: true, type: "security" },
-  ] : [
-    { id: rid("n"), title: "Scout saved $148.86", detail: "Negotiated an annual rate on your Northstar Ads plan.", time: now - 2 * HOUR, read: false, type: "scout" },
-    { id: rid("n"), title: "Invoice #1050 is overdue", detail: "Lumen Retail hasn't paid $1,150.00 yet.", time: now - 9 * HOUR, read: false, type: "invoice" },
-    { id: rid("n"), title: "Deposit received", detail: "+$6,800.00 from Mono Labs cleared via ACH.", time: now - DAY * 2, read: true, type: "transfer" },
-    { id: rid("n"), title: "New sign-in", detail: "Chrome on macOS · verified with two-factor.", time: now - DAY * 4, read: true, type: "security" },
-  ];
-
-  const savingsPockets: SavingsPocket[] = personal ? [
-    { id: rid("pocket"), name: "Emergency fund", balance: 1850, target: 5000, color: "#7558dc", icon: "shield", createdAt: now - DAY * 120 },
-    { id: rid("pocket"), name: "Summer trip", balance: 740, target: 2200, color: "#3f9a68", icon: "travel", createdAt: now - DAY * 70 },
-  ] : [
-    { id: rid("pocket"), name: "Tax reserve", balance: 12400, target: 20000, color: "#7558dc", icon: "tax", createdAt: now - DAY * 140 },
-    { id: rid("pocket"), name: "Payroll buffer", balance: 6800, target: 15000, color: "#3f9a68", icon: "payroll", createdAt: now - DAY * 95 },
-  ];
-
-  const payees: Payee[] = personal ? [
-    { id: rid("payee"), name: "Oak Street Properties", nickname: "Rent", bankName: "Civic Bank", routingNumber: "071000288", accountLast4: "3018", accountType: "Checking", verified: true, createdAt: now - DAY * 100 },
-    { id: rid("payee"), name: "Jordan Ellis", nickname: "Jordan", bankName: "Union Savings", routingNumber: "122105155", accountLast4: "8842", accountType: "Checking", verified: true, createdAt: now - DAY * 48 },
-    { id: rid("payee"), name: "City Electric", bankName: "Metro Bank", routingNumber: "026009593", accountLast4: "4420", accountType: "Checking", verified: true, createdAt: now - DAY * 80 },
-  ] : [
-    { id: rid("payee"), name: "Harbor Studio", bankName: "Civic Bank", routingNumber: "071000288", accountLast4: "1180", accountType: "Checking", verified: true, createdAt: now - DAY * 120 },
-    { id: rid("payee"), name: "Ledgerly Advisors", bankName: "Union Savings", routingNumber: "122105155", accountLast4: "7204", accountType: "Checking", verified: true, createdAt: now - DAY * 84 },
-    { id: rid("payee"), name: "Commons Coworking", bankName: "Metro Bank", routingNumber: "026009593", accountLast4: "6107", accountType: "Checking", verified: true, createdAt: now - DAY * 64 },
-  ];
-
-  const scheduledPayments: ScheduledPayment[] = personal ? [
-    { id: rid("bill"), payeeId: payees[0].id, payeeName: payees[0].name, amount: 1450, category: "Operations", frequency: "monthly", nextDate: now + DAY * 7, status: "active", autopay: true, memo: "Monthly rent" },
-    { id: rid("bill"), payeeId: payees[2].id, payeeName: payees[2].name, amount: 96, category: "Utilities", frequency: "monthly", nextDate: now + DAY * 12, status: "active", autopay: true, memo: "Electric bill" },
-    { id: rid("bill"), payeeName: "Orbit Mobile", amount: 74, category: "Utilities", frequency: "monthly", nextDate: now + DAY * 19, status: "active", autopay: true, memo: "Mobile plan" },
-  ] : [
-    { id: rid("bill"), payeeId: payees[2].id, payeeName: payees[2].name, amount: 599, category: "Operations", frequency: "monthly", nextDate: now + DAY * 5, status: "active", autopay: true, memo: "Workspace membership" },
-    { id: rid("bill"), payeeId: payees[1].id, payeeName: payees[1].name, amount: 1200, category: "Professional", frequency: "monthly", nextDate: now + DAY * 14, status: "active", autopay: false, memo: "Bookkeeping retainer" },
-  ];
-
-  const sessions: SecuritySession[] = [
-    { id: rid("session"), device: "MacBook Pro", browser: "Chrome", location: "San Francisco, CA", lastActive: now, current: true, trusted: true },
-    { id: rid("session"), device: "iPhone", browser: "Veyra mobile", location: "San Francisco, CA", lastActive: now - HOUR * 6, current: false, trusted: true },
-    { id: rid("session"), device: "Windows laptop", browser: "Edge", location: "Oakland, CA", lastActive: now - DAY * 18, current: false, trusted: false },
-  ];
-
-  const kyc: KycRecord = {
-    status: personal ? "in_review" : "approved",
-    completeness: personal ? 72 : 92,
-    lastUpdated: now - DAY * 2,
-    nextStep: personal ? "Awaiting address verification review." : "Ready for final account review.",
-    documentType: personal ? "Passport" : "Business registration",
-    country: personal ? "United States" : "United States",
-  };
-
-  const rewards = r2(transactions.reduce((s, t) => s + t.reward, 0));
-  return {
-    version: SCHEMA_VERSION,
-    balance: personal ? 6824.65 : 84290.42,
-    pendingBalance: personal ? 325 : 2174.5,
-    rewards,
-    lifetimeRewards: r2(rewards + (personal ? 286.4 : 1420.5)),
-    scoutSaved: r2(transactions.reduce((s, t) => s + (t.scout ?? 0), 0)),
-    cards,
-    transactions,
-    invoices,
-    bankDetails: { accountNumber: personal ? "509381726142" : "409281729014", routingNumber: "091408735", bankName: "Northfield Bank", accountType: personal ? "Personal checking" : "Business checking", holder: personal ? p.name : p.business || "Your business" },
-    team,
-    perks,
-    notifications,
-    preferences: { twoFactor: true, loginAlerts: true, scoutAuto: true, weeklyDigest: false },
-    savingsPockets,
-    payees,
-    scheduledPayments,
-    disputes: [],
-    sessions,
-    scoutApplied: [],
-    kyc,
-  };
-}
-
-/* ============================================================
    Persistence + migration from earlier data shapes
    ============================================================ */
 const RENAMED: Record<string, string> = { "AWS Cloud": "Stratus Compute", "WeWork All Access": "Commons Coworking" };
 const num = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
 const list = <T,>(v: unknown): T[] | null => (Array.isArray(v) ? (v as T[]) : null);
 
+/** Minimal safe default used only if a snapshot field is missing. */
+const emptyAccount = (): Account => ({
+  version: SCHEMA_VERSION,
+  balance: 0, pendingBalance: 0, rewards: 0, lifetimeRewards: 0, scoutSaved: 0,
+  cards: [], transactions: [], invoices: [],
+  bankDetails: { accountNumber: "", routingNumber: "", bankName: "", accountType: "Business checking", holder: "" },
+  team: [], perks: [], notifications: [],
+  preferences: { twoFactor: true, loginAlerts: true, scoutAuto: true, weeklyDigest: false },
+  savingsPockets: [], payees: [], scheduledPayments: [], disputes: [], sessions: [], scoutApplied: [],
+  kyc: { status: "not_started", completeness: 0, lastUpdated: 0, nextStep: "", documentType: "", country: "" },
+});
+
 function normalize(raw: unknown, p: Profile): Account {
-  const base = seed(p);
+  const base = emptyAccount();
   if (!raw || typeof raw !== "object") return base;
   const r = raw as Partial<Account>;
   const current = r.version === SCHEMA_VERSION;
@@ -637,108 +468,13 @@ function normalize(raw: unknown, p: Profile): Account {
   };
 }
 
-const storageKey = (userId: string) => `veyra.account.${userId}`;
-
-function isUsableAccount(account: Partial<Account> | null | undefined): boolean {
-  if (!account || typeof account !== "object") return false;
-  const hasSeedData = [
-    Array.isArray(account.transactions) && account.transactions.length > 0,
-    Array.isArray(account.cards) && account.cards.length > 0,
-    Array.isArray(account.notifications) && account.notifications.length > 0,
-    Array.isArray(account.savingsPockets) && account.savingsPockets.length > 0,
-    typeof account.balance === "number" && Number.isFinite(account.balance) && account.balance !== 0,
-    typeof account.rewards === "number" && Number.isFinite(account.rewards) && account.rewards !== 0,
-    typeof account.scoutSaved === "number" && Number.isFinite(account.scoutSaved) && account.scoutSaved !== 0,
-  ].some(Boolean);
-
-  return hasSeedData || typeof account.version === "number";
-}
-
-function save(userId: string, account: Account) {
-  try {
-    localStorage.setItem(storageKey(userId), JSON.stringify(account));
-  } catch {
-    /* storage full or unavailable */
-  }
-}
-
-function load(userId: string, p: Profile): Account {
-  let parsed: unknown = null;
-  try {
-    const raw = localStorage.getItem(storageKey(userId));
-    parsed = raw ? JSON.parse(raw) : null;
-  } catch {
-    parsed = null;
-  }
-
-  const seeded = seed(p);
-  const account = parsed ? normalize(parsed, p) : seeded;
-  const hydrated = isUsableAccount(account) ? account : seeded;
-  save(userId, hydrated);
-  return hydrated;
-}
-
 const pushNote = (a: Account, note: Omit<NotificationItem, "id" | "time" | "read">): NotificationItem[] =>
   [{ ...note, id: rid("n"), time: Date.now(), read: false }, ...a.notifications].slice(0, 40);
 
 /* ============================================================
-   Admin-initiated KYC requests (cross-account)
+   Shared account state (one source of truth for every page)
    ============================================================ */
-
-/**
- * Places a verification request on a member's account (used by the Super Admin
- * console). The member sees a pop-up alert at the top of their dashboard until
- * they complete verification. Seeds the member's store if they have never
- * signed in on this device so the request is never lost.
- */
-export function requestKycForUser(userId: string, profile: Profile, req: KycRequest): void {
-  const account = load(userId, profile);
-  const requirements = req.requirements.length > 0 ? req.requirements : (["identity", "address"] as KycRequirement[]);
-  const next: Account = {
-    ...account,
-    kyc: {
-      ...account.kyc,
-      status: account.kyc.status === "approved" ? account.kyc.status : "requested",
-      requestedAt: Date.now(),
-      requestedBy: req.requestedBy,
-      requestReason: req.reason,
-      requirements,
-      documentType: req.documentType ?? account.kyc.documentType,
-      lastUpdated: Date.now(),
-      nextStep: `Compliance requested ${requirements.length} document${requirements.length === 1 ? "" : "s"} — upload them to lift your account limits.`,
-    },
-    notifications: pushNote(account, {
-      title: "Identity verification requested",
-      detail: `${req.requestedBy} asked you to verify your identity. ${req.reason}`,
-      type: "security",
-    }),
-  };
-  save(userId, next);
-}
-
-/** Reads a member's KYC status without seeding or mutating their store. */
-export function peekKycForUser(userId: string): Pick<KycRecord, "status" | "completeness" | "requestedAt"> {
-  const kyc = readStoredAccount(userId)?.kyc;
-  if (!kyc || typeof kyc !== "object") return { status: "not_started", completeness: 0 };
-  const allowed: KycStatus[] = ["not_started", "requested", "in_review", "approved", "needs_attention"];
-  return {
-    status: allowed.includes(kyc.status as KycStatus) ? (kyc.status as KycStatus) : "not_started",
-    completeness: typeof kyc.completeness === "number" ? kyc.completeness : 0,
-    requestedAt: typeof kyc.requestedAt === "number" ? kyc.requestedAt : undefined,
-  };
-}
-
-/** Parses a member's stored account without side effects (null if absent). */
-function readStoredAccount(userId: string): Partial<Account> | null {
-  try {
-    const raw = localStorage.getItem(storageKey(userId));
-    return raw ? (JSON.parse(raw) as Partial<Account>) : null;
-  } catch {
-    return null;
-  }
-}
-
-/** One pending review in the admin KYC queue. */
+/** Member verification awaiting compliance review (served by /api/admin/state). */
 export type KycQueueItem = {
   userId: string;
   name: string;
@@ -748,62 +484,7 @@ export type KycQueueItem = {
   kyc: KycRecord;
 };
 
-/** All member verifications awaiting compliance review (oldest first). */
-export function listKycQueue(): KycQueueItem[] {
-  const users = getUsers().filter(u => u.role !== "superadmin");
-  const items: KycQueueItem[] = [];
-  for (const u of users) {
-    const kyc = readStoredAccount(u.id)?.kyc;
-    if (!kyc || kyc.status !== "in_review") continue;
-    items.push({
-      userId: u.id,
-      name: u.name,
-      email: u.email,
-      business: u.business || "",
-      accountType: u.accountType === "personal" ? "personal" : "business",
-      kyc: kyc as KycRecord,
-    });
-  }
-  return items.sort((a, b) => (a.kyc.submission?.submittedAt ?? a.kyc.lastUpdated) - (b.kyc.submission?.submittedAt ?? b.kyc.lastUpdated));
-}
-
-/** Admin decision on a member's verification: approve or request changes. */
-export function resolveKycForUser(
-  userId: string,
-  profile: Profile,
-  decision: "approved" | "needs_attention",
-  note: string,
-  adminName: string,
-): void {
-  const account = load(userId, profile);
-  const approved = decision === "approved";
-  const attribution = `Reviewed by ${adminName}.`;
-  const next: Account = {
-    ...account,
-    kyc: {
-      ...account.kyc,
-      status: decision,
-      completeness: approved ? 100 : account.kyc.completeness,
-      lastUpdated: Date.now(),
-      nextStep: approved
-        ? "Identity verified — all account limits are unlocked."
-        : note || "One or more documents need attention before approval can continue.",
-      ...(approved ? { requestedAt: undefined, requestedBy: undefined, requestReason: undefined, requirements: undefined } : {}),
-    },
-    notifications: pushNote(account, approved
-      ? { title: "Identity verification approved", detail: `${note || "Your identity is verified and all account limits are now unlocked."} ${attribution}`, type: "security" }
-      : { title: "Verification changes requested", detail: `${note || "Our compliance team needs another look at one or more documents."} ${attribution}`, type: "security" }),
-  };
-  save(userId, next);
-}
-
-/* ============================================================
-   Platform oversight (Super Admin console)
-   Aggregates every member's stored account — no duplicate data
-   system: the per-user stores remain the single source of truth.
-   ============================================================ */
-
-/** Summary of one member's account for the Accounts module. */
+/** Summary of one member's account (served by /api/admin/state). */
 export type PlatformAccount = {
   userId: string;
   name: string;
@@ -823,187 +504,6 @@ export type PlatformAccount = {
   lastActivity: number;
 };
 
-const memberProfile = (u: { name: string; business: string; email: string; accountType: string }): Profile => ({
-  name: u.name,
-  business: u.business || "",
-  email: u.email,
-  accountType: u.accountType === "personal" ? "personal" : "business",
-});
-
-/** Every member (non-staff) with their stored account summary. */
-export function listAllAccounts(): PlatformAccount[] {
-  return getUsers()
-    .filter(u => u.role === "user" || (!u.role && u.email !== "admin@veyra.com"))
-    .map(u => {
-      const account = readStoredAccount(u.id);
-      return {
-        userId: u.id,
-        name: u.name,
-        email: u.email,
-        business: u.business || "",
-        accountType: u.accountType === "personal" ? "personal" : "business",
-        hasAccount: Boolean(account),
-        balance: typeof account?.balance === "number" ? account.balance : 0,
-        pendingBalance: typeof account?.pendingBalance === "number" ? account.pendingBalance : 0,
-        rewards: typeof account?.rewards === "number" ? account.rewards : 0,
-        cards: Array.isArray(account?.cards) ? account.cards.length : 0,
-        frozenCards: Array.isArray(account?.cards) ? account.cards.filter(c => (c as { frozen?: boolean }).frozen).length : 0,
-        txnCount: Array.isArray(account?.transactions) ? account.transactions.length : 0,
-        pendingTxns: Array.isArray(account?.transactions)
-          ? account.transactions.filter(t => (t as { status?: string }).status === "pending").length
-          : 0,
-        kycStatus: (account?.kyc as { status?: KycStatus } | undefined)?.status ?? "not_started",
-        accountStatus: account?.accountStatus === "restricted" ? "restricted" : "active",
-        lastActivity: Array.isArray(account?.transactions)
-          ? account.transactions.reduce((m, t) => Math.max(m, (t as { date?: number }).date ?? 0), 0)
-          : 0,
-      };
-    });
-}
-
-/** Platform-wide transaction ledger across every stored member account. */
-export function listAllTransactions(limit = 400): Array<Txn & { userId: string; memberName: string }> {
-  const all: Array<Txn & { userId: string; memberName: string }> = [];
-  for (const u of getUsers()) {
-    const account = readStoredAccount(u.id);
-    if (!Array.isArray(account?.transactions)) continue;
-    for (const t of account.transactions) {
-      if (!t || typeof t !== "object") continue;
-      all.push({ ...(t as Txn), userId: u.id, memberName: u.name });
-    }
-  }
-  return all.sort((a, b) => b.date - a.date).slice(0, limit);
-}
-
-/** Every dispute across stored member accounts. */
-export function listAllDisputes(): Array<Dispute & { userId: string; memberName: string }> {
-  const all: Array<Dispute & { userId: string; memberName: string }> = [];
-  for (const u of getUsers()) {
-    const account = readStoredAccount(u.id);
-    if (!Array.isArray(account?.disputes)) continue;
-    for (const d of account.disputes) {
-      if (!d || typeof d !== "object") continue;
-      all.push({ ...(d as Dispute), userId: u.id, memberName: u.name });
-    }
-  }
-  return all;
-}
-
-/**
- * Credits or debits a member's stored account (cross-account treasury
- * adjustment). This is the real target-user adjustment used by the Super
- * Admin console — with a ledger transaction, member notification, and
- * before/after values returned for the audit trail.
- */
-export function adminAdjustUserBalance(
-  userId: string,
-  profile: Profile,
-  amount: number,
-  direction: "credit" | "debit",
-  memo: string,
-): { before: number; after: number; reference: string } {
-  const account = load(userId, profile);
-  const before = account.balance;
-  const delta = direction === "credit" ? r2(amount) : -r2(amount);
-  const after = r2(before + delta);
-  const reference = makeReference();
-  const next: Account = {
-    ...account,
-    balance: after,
-    transactions: [
-      {
-        id: rid("txn"),
-        merchant: `Treasury adjustment (${direction === "credit" ? "Credit" : "Debit"})`,
-        category: "Operations",
-        amount: delta,
-        reward: 0,
-        scout: 0,
-        date: Date.now(),
-        note: memo,
-        method: "Internal",
-        reference,
-        status: "cleared",
-      },
-      ...account.transactions,
-    ],
-    notifications: pushNote(account, {
-      title: direction === "credit" ? "Funds credited by Veyra" : "Adjustment applied to your account",
-      detail: `${direction === "credit" ? "+" : "−"}${money(Math.abs(delta))} · ${memo}. New balance ${money(after)}.`,
-      type: direction === "credit" ? "transfer" : "security",
-    }),
-  };
-  save(userId, next);
-  return { before, after, reference };
-}
-
-/** Restricts or restores a member's account (restriction blocks outgoing sends). */
-export function setAccountStatus(
-  userId: string,
-  profile: Profile,
-  status: "active" | "restricted",
-  reason: string,
-): void {
-  const account = load(userId, profile);
-  const next: Account = {
-    ...account,
-    accountStatus: status,
-    notifications: pushNote(account, status === "restricted"
-      ? { title: "Your account is restricted", detail: `${reason} Outgoing transfers are paused while we review.`, type: "security" }
-      : { title: "Your account is fully active", detail: "Restrictions were lifted — all features are available again.", type: "info" }),
-  };
-  save(userId, next);
-}
-
-/** Advances a dispute on a member's stored account (admin arbitration). */
-export function advanceDisputeForUser(
-  userId: string,
-  profile: Profile,
-  disputeId: string,
-): { status: Dispute["status"]; merchant: string; amount: number } | null {
-  const account = load(userId, profile);
-  const dispute = account.disputes.find(d => d.id === disputeId);
-  if (!dispute || dispute.status === "resolved" || dispute.status === "denied") return null;
-  const status: Dispute["status"] = dispute.status === "submitted" ? "reviewing" : "resolved";
-  save(userId, {
-    ...account,
-    balance: status === "resolved" ? r2(account.balance + dispute.amount) : account.balance,
-    disputes: account.disputes.map(d => d.id === disputeId ? { ...d, status, updatedAt: Date.now() } : d),
-    transactions: status === "resolved"
-      ? [{ id: rid("txn"), merchant: `Dispute credit · ${dispute.merchant}`, category: "Operations", amount: dispute.amount, reward: 0, scout: 0, date: Date.now(), note: `Resolved dispute ${dispute.id}`, method: "Adjustment", reference: makeReference(), status: "cleared" }, ...account.transactions]
-      : account.transactions,
-    notifications: pushNote(account, status === "resolved"
-      ? { title: "Dispute resolved", detail: `${money(dispute.amount)} was returned to your account.`, type: "security" }
-      : { title: "Dispute under review", detail: `We're reviewing your ${dispute.merchant} claim.`, type: "security" }),
-  });
-  return { status, merchant: dispute.merchant, amount: dispute.amount };
-}
-
-/** Broadcasts an in-app notification to every member (or a segment). */
-export function broadcastNotification(
-  input: { title: string; detail: string; audience: "all" | "business" | "personal" | "unverified" },
-): { delivered: number } {
-  let delivered = 0;
-  for (const u of getUsers()) {
-    if (u.role && u.role !== "user") continue; // staff are not broadcast targets
-    if (input.audience === "business" && u.accountType !== "business") continue;
-    if (input.audience === "personal" && u.accountType !== "personal") continue;
-    if (input.audience === "unverified") {
-      const kyc = readStoredAccount(u.id)?.kyc;
-      if (kyc?.status === "approved") continue;
-    }
-    const account = load(u.id, memberProfile(u));
-    save(u.id, {
-      ...account,
-      notifications: pushNote(account, { title: input.title, detail: input.detail, type: "info" }),
-    });
-    delivered++;
-  }
-  return { delivered };
-}
-
-/* ============================================================
-   Shared account state (one source of truth for every page)
-   ============================================================ */
 type SendInput = { counterparty: string; amount: number; category: string; method: string; cardId?: string; note?: string };
 type CardInput = { label: string; limit: number; type: Card["type"]; merchantLock?: string; cardholder: string; shippingAddress?: string };
 type InvoiceInput = { client: string; clientEmail: string; amount: number; dueDays: number; description?: string };
@@ -1022,31 +522,29 @@ function useAccountState() {
   const email = user?.email ?? "";
   const accountType = user?.accountType ?? "business";
   const [account, setAccount] = useState<Account | null>(null);
+  const [accountError, setAccountError] = useState<string | null>(null);
   const ref = useRef<Account | null>(null);
 
   useEffect(() => {
     if (!userId) {
       ref.current = null;
       setAccount(null);
+      setAccountError(null);
       return;
     }
     let cancelled = false;
     (async () => {
-      // API mode: the backend is the system of record — load the server snapshot.
-      if (await probeApi()) {
+      // The backend is the system of record — load the server snapshot.
+      try {
+        const { account: raw } = await apiGet<{ account: unknown }>("/api/me/state");
         if (cancelled) return;
-        try {
-          const { account: raw } = await apiGet<{ account: unknown }>("/api/me/state");
-          if (cancelled) return;
-          const loaded = normalize(raw, { name, business, email, accountType });
-          ref.current = loaded;
-          setAccount(loaded);
-          return;
-        } catch { /* server rejected the session — fall back to the local demo */ }
+        ref.current = normalize(raw, { name, business, email, accountType });
+        setAccount(ref.current);
+        setAccountError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setAccountError(err instanceof Error ? err.message : "Could not load your account.");
       }
-      const loaded = load(userId, { name, business, email, accountType });
-      ref.current = loaded;
-      setAccount(loaded);
     })();
     // Reload only when the signed-in user changes; profile edits sync below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1055,15 +553,12 @@ function useAccountState() {
   const commit = useCallback(
     (fn: (a: Account) => Account) => {
       const current = ref.current;
-      if (!current || !userId) return;
+      if (!current) return;
       const next = fn(current);
       ref.current = next;
-      // API mode: the server owns the data (optimistic apply only — the sync
-      // layer below reconciles with the server snapshot). Local mode: persist.
-      if (!apiOnline()) save(userId, next);
-      setAccount(next);
+      setAccount(next); // optimistic — the sync layer reconciles with the server
     },
-    [userId],
+    [],
   );
 
   /* ------------------------------------------------------------------
@@ -1169,42 +664,6 @@ function useAccountState() {
     [commit, syncPost],
   );
 
-  const adminAdjustBalance = useCallback(
-    (amount: number, memo: string, type: "credit" | "debit" = "credit"): MoveResult => {
-      const before = ref.current?.balance ?? 0;
-      const delta = type === "credit" ? r2(amount) : -r2(amount);
-      const after = r2(before + delta);
-      const result: MoveResult = { reference: makeReference(), date: Date.now(), amount: delta, balanceBefore: before, balanceAfter: after, reward: 0, scout: 0 };
-      commit(a => ({
-        ...a,
-        balance: after,
-        transactions: [
-          {
-            id: rid("txn"),
-            merchant: `Treasury Adjustment (${type === "credit" ? "Credit" : "Debit"})`,
-            category: "Operations",
-            amount: delta,
-            reward: 0,
-            scout: 0,
-            date: result.date,
-            note: memo || "Manual Super Admin Ledger Adjustment",
-            method: "Adjustment",
-            reference: result.reference,
-            status: "cleared",
-          },
-          ...a.transactions,
-        ],
-        notifications: pushNote(a, {
-          title: `Administrative Balance Adjustment`,
-          detail: `${type === "credit" ? "+" : "−"}${money(amount)} · ${memo || "System adjustment"}`,
-          type: "security",
-        }),
-      }));
-      return result;
-    },
-    [commit],
-  );
-
   const sendPayment = useCallback(
     (input: SendInput): MoveResult => {
       const current = ref.current;
@@ -1259,7 +718,7 @@ function useAccountState() {
     return amount;
   }, [commit, syncPost]);
 
-  /** Records a demo-mode Scout rebate as a credited adjustment and prevents applying it twice. */
+  /** Records a Scout rebate as a credited adjustment and prevents applying it twice. */
   const applyScoutSavings = useCallback(
     (opportunityId: string, merchant: string, amount: number, note: string): boolean => {
       const current = ref.current;
@@ -1636,23 +1095,6 @@ function useAccountState() {
     [commit],
   );
 
-  const advanceDispute = useCallback(
-    (id: string) => {
-      const dispute = ref.current?.disputes.find(d => d.id === id);
-      if (!dispute || dispute.status === "resolved" || dispute.status === "denied") return dispute?.status;
-      const status: Dispute["status"] = dispute.status === "submitted" ? "reviewing" : "resolved";
-      commit(a => ({
-        ...a,
-        balance: status === "resolved" ? r2(a.balance + dispute.amount) : a.balance,
-        disputes: a.disputes.map(d => d.id === id ? { ...d, status, updatedAt: Date.now() } : d),
-        transactions: status === "resolved" ? [{ id: rid("txn"), merchant: `Dispute credit · ${dispute.merchant}`, category: "Operations", amount: dispute.amount, reward: 0, scout: 0, date: Date.now(), note: `Resolved dispute ${dispute.id}`, method: "Adjustment", reference: makeReference(), status: "cleared" }, ...a.transactions] : a.transactions,
-        notifications: pushNote(a, { title: status === "resolved" ? "Dispute resolved" : "Dispute under review", detail: status === "resolved" ? `${money(dispute.amount)} was returned to checking.` : `We're reviewing your ${dispute.merchant} claim.`, type: "security" }),
-      }));
-      return status;
-    },
-    [commit],
-  );
-
   const revokeSession = useCallback((id: string) => {
     commit(a => ({ ...a, sessions: a.sessions.filter(s => s.id !== id || s.current) }));
     syncPost(`/api/me/sessions/${id}/revoke`);
@@ -1715,22 +1157,13 @@ function useAccountState() {
     return data.length;
   }, []);
 
-  const reset = useCallback(() => {
-    if (!userId) return;
-    const fresh = seed({ name, business, email, accountType });
-    ref.current = fresh;
-    save(userId, fresh);
-    setAccount(fresh);
-    syncPost("/api/me/reset");
-  }, [userId, name, business, email, accountType, syncPost]);
-
   return useMemo(
     () => ({
       account,
+      accountError,
       user,
       deposit,
       depositCheck,
-      adminAdjustBalance,
       sendPayment,
       redeemRewards,
       applyScoutSavings,
@@ -1763,7 +1196,6 @@ function useAccountState() {
       removeScheduledPayment,
       payScheduledNow,
       createDispute,
-      advanceDispute,
       revokeSession,
       toggleTrustedSession,
       freezeAllCards,
@@ -1772,9 +1204,8 @@ function useAccountState() {
       markAllNotificationsRead,
       setPreference,
       exportCSV,
-      reset,
     }),
-    [account, user, deposit, depositCheck, adminAdjustBalance, sendPayment, redeemRewards, applyScoutSavings, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createDispute, advanceDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV, reset],
+    [account, accountError, user, deposit, depositCheck, sendPayment, redeemRewards, applyScoutSavings, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
   );
 }
 

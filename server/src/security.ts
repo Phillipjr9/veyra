@@ -73,6 +73,11 @@ export function verifyToken(token: string): TokenPayload | null {
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 
+/** Test helper: clears the in-memory rate-limit counters. */
+export function resetRateLimits(): void {
+  attempts.clear();
+}
+
 export function rateLimit(key: string, limit = 8, windowMs = 60_000): boolean {
   const entry = attempts.get(key);
   const t = Date.now();

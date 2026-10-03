@@ -11,6 +11,7 @@
  * Run: npm run test:api   (or: npx tsx server/scripts/test-api.ts)
  */
 import { createApp } from "../src/app.js";
+import { resetRateLimits } from "../src/security.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +23,8 @@ const expect = (label: string, cond: boolean, extra?: string) => {
 };
 
 const tmp = mkdtempSync(join(tmpdir(), "veyra-api-test-"));
-const { app, db } = createApp(join(tmp, "test.db"));
+// Demo mode instance — the rich scenario suite (same identities as DEMO_SEED=1).
+const { app, db } = createApp(join(tmp, "test.db"), { demo: true });
 const server = await new Promise<{ port: number }>(resolve => {
   const s = app.listen(0, "127.0.0.1", () => resolve({ port: (s.address() as { port: number }).port }));
 });
@@ -275,15 +277,24 @@ try {
   const dupe = await api("POST", "/api/auth/register", undefined, { name: "X", email: "june@parkandco.com", password: "supersafe123" });
   expect("duplicate email rejected (409)", dupe.status === 409);
 
-  /* ---------- v2: full member state surface ---------- */
+  /* ---------- production member lifecycle: empty start → real activity ---------- */
   const juneToken = register.json.token;
   const juneState = await api("GET", "/api/me/state", juneToken);
   const js = juneState.json.account;
-  expect("new member gets the seeded demo state", juneState.status === 200 &&
-    js.balance === 84290.42 && js.cards.length === 3 && js.transactions.length === 14 &&
-    js.invoices.length === 4 && js.team.length === 3 && js.savingsPockets.length === 2 &&
-    js.payees.length === 3 && js.scheduledPayments.length === 2 && js.perks.length === 6 &&
-    js.sessions.length === 3 && js.bankDetails.accountNumber.length === 12 && js.kyc.status === "approved");
+  expect("new member starts EMPTY (production behavior)", juneState.status === 200 &&
+    js.balance === 0 && js.pendingBalance === 0 && js.cards.length === 0 && js.transactions.length === 0 &&
+    js.invoices.length === 0 && js.team.length === 1 && js.team[0].role === "Owner" &&
+    js.savingsPockets.length === 0 && js.payees.length === 0 && js.scheduledPayments.length === 0 &&
+    js.perks.length === 0 && js.disputes.length === 0 && js.notifications.length === 0 &&
+    js.bankDetails.accountNumber.length === 12 && js.kyc.status === "not_started" && js.accountStatus === "active");
+  await api("PUT", "/api/me/preferences", juneToken, { key: "scoutAuto", value: false }); // deterministic balances
+  await api("POST", "/api/me/deposits", juneToken, { amount: 1200, source: "Payroll" });
+  const juneCard = await api("POST", "/api/me/cards", juneToken, { label: "Everyday", type: "virtual", limit: 500, cardholder: "June Okafor" });
+  await api("POST", "/api/me/transfers", juneToken, { counterparty: "Acme Supplies", amount: 180, category: "Operations", method: "Card", cardId: juneCard.json.card.id });
+  const juneAfter = (await api("GET", "/api/me/state", juneToken)).json.account;
+  expect("member builds real history through the API", juneAfter.balance === 1200 - 180 &&
+    juneAfter.transactions.length === 2 && juneAfter.cards.length === 1 &&
+    juneAfter.cards[0].spent === 180 && juneAfter.team[0].name === "June Okafor");
 
   const hanaState = await api("GET", "/api/me/state", hana);
   expect("demo member state matches frontend seed", hanaState.status === 200 &&
@@ -384,24 +395,33 @@ try {
   const ownerRemove = await api("DELETE", `/api/me/team/${ownerRow.id}`, hana);
   expect("account owner cannot be removed (400)", ownerRemove.status === 400);
 
-  // Member-side dispute tracking
-  const myDispute = (await api("GET", "/api/me/state", alex)).json.account.disputes[0];
-  const adv1 = await api("POST", `/api/me/disputes/${myDispute.id}/advance`, alex);
-  const alexBalPre = (await api("GET", "/api/me/state", alex)).json.account.balance;
-  const adv2 = await api("POST", `/api/me/disputes/${myDispute.id}/advance`, alex);
-  expect("member dispute advance credits balance on resolve", adv1.json.status === "reviewing" && adv2.json.status === "resolved" &&
-    (await api("GET", "/api/me/state", alex)).json.account.balance === alexBalPre + myDispute.amount);
+  // Members can open disputes but never resolve their own (compliance resolves)
+  const memberAdvance = await api("POST", `/api/me/disputes/dsp_seed_1/advance`, alex);
+  expect("member self-resolution blocked (404 — no such route)", memberAdvance.status === 404);
 
-  // Demo data reset
-  const resetState = await api("POST", "/api/me/reset", hana);
-  expect("demo data reset restores seeded state", resetState.status === 200 && resetState.json.account.balance === 84290.42);
-
-  // Change password + reset password
+  // Change password + production token-based password reset
   const changePw = await api("POST", "/api/auth/change-password", juneToken, { current: "supersafe123", next: "even safer 99" });
   expect("change password works", changePw.status === 200 &&
     (await api("POST", "/api/auth/login", undefined, { email: "june@parkandco.com", password: "even safer 99" })).status === 200);
-  const resetPw = await api("POST", "/api/auth/reset-password", undefined, { email: "june@parkandco.com" });
-  expect("reset password issues a temp password", resetPw.status === 200 && resetPw.json.tempPassword.startsWith("veyra-"));
+  const forgotUnknown = await api("POST", "/api/auth/forgot-password", undefined, { email: "nobody@nowhere.example" });
+  expect("forgot-password never reveals account existence", forgotUnknown.status === 200 && forgotUnknown.json.ok === true &&
+    !forgotUnknown.json.token && !forgotUnknown.json.tempPassword);
+  await api("POST", "/api/auth/forgot-password", undefined, { email: "june@parkandco.com" });
+  const badReset = await api("POST", "/api/auth/reset-password", undefined, { token: "forged-token", password: "new password 123" });
+  expect("forged reset token rejected (400)", badReset.status === 400);
+  // Mint a token through the same code path (sha256-hashed, 30-min expiry) for
+  // June's real user id, then complete the reset like the emailed link would.
+  const crypto = await import("node:crypto");
+  const rawToken = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+  db.prepare("INSERT INTO password_resets (token_hash, user_id, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)")
+    .run(crypto.createHash("sha256").update(rawToken).digest("hex"), register.json.user.id, Date.now() + 30 * 60_000, Date.now());
+  const weakReset = await api("POST", "/api/auth/reset-password", undefined, { token: rawToken, password: "short" });
+  expect("reset enforces the 8-char minimum (400)", weakReset.status === 400);
+  const goodReset = await api("POST", "/api/auth/reset-password", undefined, { token: rawToken, password: "totally new pass 77" });
+  expect("valid token resets the password", goodReset.status === 200 &&
+    (await api("POST", "/api/auth/login", undefined, { email: "june@parkandco.com", password: "totally new pass 77" })).status === 200);
+  const replayReset = await api("POST", "/api/auth/reset-password", undefined, { token: rawToken, password: "another pass 88" });
+  expect("reset token is single-use (replay rejected)", replayReset.status === 400);
 
   /* ---------- v2: admin aggregate state ---------- */
   const adminState = await api("GET", "/api/admin/state", admin);
@@ -410,9 +430,46 @@ try {
     as.users.length >= 6 && as.accounts.length >= 3 && as.transactions.length >= 40 &&
     Array.isArray(as.disputes) && Array.isArray(as.kycQueue) && as.audit.length > 0 &&
     as.roles.support.length > 0 && as.settings.payment_rails === "operational");
-  expect("admin state mirrors member shapes", as.accounts.some((a: any) => a.userId === "demo" && a.balance === 84290.42 && a.kycStatus === "approved" && a.cards === 3));
+  const hanaMirror = (await api("GET", "/api/me/state", hana)).json.account;
+  expect("admin state mirrors member shapes", as.accounts.some((a: any) =>
+    a.userId === "demo" && a.balance === hanaMirror.balance && a.kycStatus === "approved" && a.cards === hanaMirror.cards.length));
   const memberState = await api("GET", "/api/admin/state", hana);
   expect("admin state blocked for members (403)", memberState.status === 403);
+
+  /* ---------- production mode: clean database, env-bootstrapped admin ---------- */
+  {
+    resetRateLimits(); // fresh counters for the second instance
+    process.env.ADMIN_EMAIL = "ops@production.test";
+    process.env.ADMIN_PASSWORD = "prod-admin-pass-1";
+    process.env.ADMIN_NAME = "Ops Admin";
+    const prod = createApp(join(tmp, "prod.db"));
+    const pserver = await new Promise<any>(resolve => {
+      const s = prod.app.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    const pport = (pserver.address() as { port: number }).port;
+    const papi = async (method: string, path: string, token?: string, body?: unknown) => {
+      const res = await fetch(`http://127.0.0.1:${pport}` + path, {
+        method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return { status: res.status, json: await res.json().catch(() => null) };
+    };
+    const demoLogin = await papi("POST", "/api/auth/login", undefined, { email: "demo@veyra.com", password: "veyra123" });
+    expect("production mode has NO demo identities", demoLogin.status === 401);
+    const userCount = (prod.db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
+    expect("production database contains only the bootstrap admin", userCount === 1);
+    const adminLogin = await papi("POST", "/api/auth/login", undefined, { email: "ops@production.test", password: "prod-admin-pass-1" });
+    expect("env-bootstrapped superadmin can sign in", adminLogin.status === 200 && (adminLogin.json as any).user.role === "superadmin");
+    const adminState = await papi("GET", "/api/admin/state", (adminLogin.json as any).token);
+    expect("production admin console starts empty", adminState.status === 200 &&
+      (adminState.json as any).users.length === 1 && (adminState.json as any).accounts.length === 0 && (adminState.json as any).transactions.length === 0);
+    const signup = await papi("POST", "/api/auth/register", undefined, { name: "Real User", email: "real@production.test", password: "real password 9", accountType: "personal" });
+    const newState = await papi("GET", "/api/me/state", (signup.json as any).token);
+    expect("production signup starts at $0 with an empty account", newState.status === 200 &&
+      (newState.json as any).account.balance === 0 && (newState.json as any).account.cards.length === 0 && (newState.json as any).account.transactions.length === 0);
+    delete process.env.ADMIN_EMAIL; delete process.env.ADMIN_PASSWORD; delete process.env.ADMIN_NAME;
+    await new Promise<void>(r => { pserver.close(() => r()); });
+  }
 
   console.log(failures === 0 ? "\nALL API INTEGRATION TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 } finally {

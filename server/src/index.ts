@@ -1,25 +1,50 @@
 /**
- * Server bootstrap. Run with: npm run server   (tsx server/src/index.ts)
+ * Veyra API bootstrap.
  *
- * Environment:
- *   PORT          — listen port            (default 8787)
- *   DB_PATH       — SQLite file            (default server/veyra.db)
- *   TOKEN_SECRET  — HMAC secret for tokens (REQUIRED in production)
- *   CORS_ORIGIN   — allowed origin         (default *)
+ * Environment (also read from a .env file next to package.json):
+ *   PORT           — HTTP port (default 8787)
+ *   DB_PATH        — SQLite file (default server/veyra.db)
+ *   TOKEN_SECRET   — HMAC secret for bearer tokens (REQUIRED in production)
+ *   ADMIN_EMAIL    — first Super Admin account email
+ *   ADMIN_PASSWORD — first Super Admin password (min 8 chars)
+ *   ADMIN_NAME     — optional display name for the bootstrap admin
+ *   DEMO_SEED=1    — also seed the demo identities (development only)
+ *   CORS_ORIGIN    — allow a non-proxied browser origin
  */
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
+
+// Minimal zero-dependency .env loader (KEY=VALUE lines, # comments).
+(function loadEnv() {
+  const path = resolve(process.cwd(), ".env");
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const match = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
+    if (!match) continue;
+    const [, key, value] = match;
+    if (process.env[key] === undefined) process.env[key] = value.replace(/^["']|["']$/g, "");
+  }
+})();
+
 import { createApp } from "./app.js";
-import { IS_DEV_SECRET } from "./security.js";
 
-const PORT = parseInt(process.env.PORT ?? "8787", 10);
+const DEMO_SEED = process.env.DEMO_SEED === "1" || process.env.DEMO_SEED === "true";
+const PORT = Number(process.env.PORT ?? 8787);
 
-if (process.env.NODE_ENV === "production" && IS_DEV_SECRET) {
-  console.error("FATAL: TOKEN_SECRET must be set in production. Refusing to start.");
+const { app } = createApp(undefined, { demo: DEMO_SEED });
+
+if (process.env.NODE_ENV === "production" && !process.env.TOKEN_SECRET) {
+  console.error("Refusing to start: TOKEN_SECRET is required in production.");
   process.exit(1);
 }
-
-const { app } = createApp();
+if (DEMO_SEED && process.env.NODE_ENV === "production") {
+  console.warn("WARNING: DEMO_SEED is enabled in a production environment — demo accounts exist.");
+}
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Veyra API listening on http://0.0.0.0:${PORT}`);
-  if (IS_DEV_SECRET) console.warn("WARNING: using the development token secret — set TOKEN_SECRET before deploying.");
+  console.log(DEMO_SEED ? "Mode: development (demo identities seeded)" : "Mode: production (clean database)");
+  if (!process.env.ADMIN_EMAIL) {
+    console.log("No ADMIN_EMAIL set — create the first Super Admin by starting with ADMIN_EMAIL + ADMIN_PASSWORD.");
+  }
 });

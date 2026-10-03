@@ -5,7 +5,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
   Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, RotateCcw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../components/common";
 import { Footer } from "../components/Chrome";
@@ -624,7 +624,7 @@ function KycAlertBanner() {
 
 export function DashboardLayout() {
   const { user, logout } = useAuth();
-  const { account, markAllNotificationsRead, markNotificationRead } = useAcct();
+  const { account, accountError, markAllNotificationsRead, markNotificationRead } = useAcct();
   const { openDeposit } = useMoneyFlow();
   const navigate = useNavigate();
   const location = useLocation();
@@ -680,6 +680,15 @@ export function DashboardLayout() {
     return () => { document.body.style.overflow = prev; };
   }, [navOpen]);
 
+  if (accountError) {
+    return (
+      <div className="route-loading" style={{ flexDirection: "column", gap: 12, padding: 24, textAlign: "center" }}>
+        <strong style={{ fontSize: 16 }}>We couldn't load your account</strong>
+        <span style={{ color: "var(--muted)", fontSize: 13.5, maxWidth: 420, lineHeight: 1.6 }}>{accountError}</span>
+        <button type="button" className="solid-btn sm" onClick={() => window.location.reload()}>Retry</button>
+      </div>
+    );
+  }
   if (!account || !user) return <div className="route-loading"><span className="spinner" /></div>;
   const nav = user.accountType === "personal" ? PERSONAL_NAV : BUSINESS_NAV;
 
@@ -1239,7 +1248,7 @@ function CardManager({ card, onClose, onReplacement }: { card: Card | null; onCl
                       {card.shipping.status !== "delivered" && <button type="button" className="ghost-btn demo-shipping" onClick={() => {
                         const status = advanceCardShipping(card.id);
                         toast({ tone: "info", title: `Shipping updated: ${SHIPPING_LABEL[status]}` });
-                      }}><Truck size={14} /> Advance demo shipment</button>}
+                      }}><Truck size={14} /> Advance shipment</button>}
                     </>
                   )}
                 </motion.div>
@@ -2240,7 +2249,7 @@ export function BillsPage() {
    Disputes & transaction support
    ============================================================ */
 export function DisputesPage() {
-  const { account, createDispute, advanceDispute } = useAcct();
+  const { account, createDispute } = useAcct();
   const toast = useToast();
   const [params, setParams] = useSearchParams();
   const [open, setOpen] = useState(params.has("txn"));
@@ -2272,11 +2281,6 @@ export function DisputesPage() {
     if (!dispute) return toast({ tone: "error", title: "This transaction cannot be disputed", description: "It may already have an active claim filed." });
     setOpen(false); setDetail(""); setParams({}, { replace: true });
     toast({ tone: "success", title: "Arbitration Claim Filed", description: `${money(dispute.amount)} for ${dispute.merchant} has been queued for review.` });
-  };
-
-  const advance = (claim: Dispute) => {
-    const status = advanceDispute(claim.id);
-    toast({ tone: status === "resolved" ? "success" : "info", title: status === "resolved" ? "Claim Approved & Refunded" : "Claim Advanced to Investigation", description: status === "resolved" ? `${money(claim.amount)} returned to checking.` : "Arbitrator assigned to case." });
   };
 
   const handleStartDisputeFor = (txnId: string) => {
@@ -2338,9 +2342,7 @@ export function DisputesPage() {
                       {claim.status === "resolved" ? "Provisional Credit Issued" : claim.status}
                     </span>
                     {claim.status !== "resolved" && claim.status !== "denied" && (
-                      <button type="button" className="ghost-btn sm" onClick={() => advance(claim)}>
-                        Advance Arbitrator Review (Demo)
-                      </button>
+                      <small className="panel-sub">Our arbitration team reviews every claim — no action needed.</small>
                     )}
                   </div>
                 </motion.article>
@@ -2889,7 +2891,7 @@ export function SecurityCenterPage() {
       <PageHeader eyebrow="Sign-in protection · Trusted devices · Emergency controls" title="Security center" />
       <div className="security-score"><span className="security-score-ring"><b>{prefs.twoFactor && prefs.loginAlerts ? "96" : "72"}</b><small>/100</small></span><div><h2>Your account is well protected</h2><p>Two-factor authentication, login alerts and card controls are available from one place.</p></div><ShieldCheck size={32} /></div>
       <div className="settings-grid security-center-grid">
-        <section className="panel"><div className="panel-head"><div><h2>Sign-in protection</h2><span className="panel-sub">Recommended settings</span></div></div><Toggle checked={prefs.twoFactor} onChange={value => { setPreference("twoFactor", value); toast({ tone: "info", title: `Two-factor authentication ${value ? "on" : "off"}` }); }} label="Two-factor authentication" description="Require a one-time code on new devices." /><Toggle checked={prefs.loginAlerts} onChange={value => { setPreference("loginAlerts", value); toast({ tone: "info", title: `Login alerts ${value ? "on" : "off"}` }); }} label="New device alerts" description="Notify me when a new browser signs in." /><div className="security-tip"><Lock size={15} /><span>Your password is stored as a one-way digest in this local demo.</span></div></section>
+        <section className="panel"><div className="panel-head"><div><h2>Sign-in protection</h2><span className="panel-sub">Recommended settings</span></div></div><Toggle checked={prefs.twoFactor} onChange={value => { setPreference("twoFactor", value); toast({ tone: "info", title: `Two-factor authentication ${value ? "on" : "off"}` }); }} label="Two-factor authentication" description="Require a one-time code on new devices." /><Toggle checked={prefs.loginAlerts} onChange={value => { setPreference("loginAlerts", value); toast({ tone: "info", title: `Login alerts ${value ? "on" : "off"}` }); }} label="New device alerts" description="Notify me when a new browser signs in." /><div className="security-tip"><Lock size={15} /><span>Your password is stored server-side as a scrypt hash — never in plain text.</span></div></section>
         <section className="panel emergency-panel"><div className="panel-head"><div><h2>Emergency controls</h2><span className="panel-sub">Use these if something feels wrong</span></div></div><button type="button" className="emergency-action" onClick={() => setConfirmFreeze(true)}><Snowflake size={18} /><span><b>Freeze every card</b><small>Immediately decline new purchases on all cards.</small></span><ArrowRight size={15} /></button><Link className="emergency-action" to="/app/disputes"><ShieldAlert size={18} /><span><b>Report a transaction</b><small>Open and track a card-purchase dispute.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/kyc"><UserRound size={18} /><span><b>Review KYC</b><small>Check your identity verification status and next steps.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/settings"><KeyRound size={18} /><span><b>Change password</b><small>Update your account password.</small></span><ArrowRight size={15} /></Link></section>
       </div>
       <section className="panel sessions-panel"><div className="panel-head"><div><h2>Devices & sessions</h2><span className="panel-sub">Sign out a device you no longer use or recognize</span></div></div><div className="session-list">{account.sessions.map(session => <div className="session-row" key={session.id}><span className="session-icon">{session.browser.toLowerCase().includes("mobile") ? <Smartphone size={17} /> : <Monitor size={17} />}</span><div className="session-main"><strong>{session.device} {session.current && <span className="chip chip-green">This device</span>}</strong><small>{session.browser} · {session.location} · {timeAgo(session.lastActive)}</small></div><button type="button" className={`trust-btn ${session.trusted ? "trusted" : ""}`} onClick={() => toggleTrustedSession(session.id)}>{session.trusted ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}{session.trusted ? "Trusted" : "Untrusted"}</button>{!session.current && <button type="button" className="ghost-btn sm" onClick={() => { revokeSession(session.id); toast({ tone: "success", title: `${session.device} signed out` }); }}>Sign out</button>}</div>)}</div></section>
@@ -2906,7 +2908,7 @@ export { StatementsPage } from "./StatementsPage";
    ============================================================ */
 export function SettingsPage() {
   const { user, updateUser, changePassword, logout } = useAuth();
-  const { account, setPreference, reset } = useAcct();
+  const { account, setPreference } = useAcct();
   const toast = useToast();
   const navigate = useNavigate();
   const [profile, setProfile] = useState({
@@ -2918,7 +2920,6 @@ export function SettingsPage() {
   });
   const [pw, setPw] = useState({ current: "", next: "" });
   const [pwError, setPwError] = useState("");
-  const [confirmReset, setConfirmReset] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!account || !user) return null;
@@ -3080,24 +3081,11 @@ export function SettingsPage() {
           </motion.form>
 
           <motion.section className="panel danger-zone" {...rise(3)}>
-            <h2>Demo data</h2>
-            <p>Restore balances, cards, invoices and transactions to their starting values. This can't be undone.</p>
-            <AnimatePresence mode="wait" initial={false}>
-              {confirmReset ? (
-                <motion.div key="confirm" className="confirm-inner" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
-                  <span>Reset everything?</span>
-                  <div>
-                    <button type="button" className="ghost-btn sm" onClick={() => setConfirmReset(false)}>Cancel</button>
-                    <button type="button" className="danger-btn sm" onClick={() => { reset(); setConfirmReset(false); toast({ tone: "info", title: "Demo data reset" }); }}>Reset</button>
-                  </div>
-                </motion.div>
-              ) : (
-                <motion.div key="actions" className="danger-actions" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
-                  <button type="button" className="ghost-btn" onClick={() => setConfirmReset(true)}><RotateCcw size={14} /> Reset demo data</button>
-                  <button type="button" className="ghost-btn danger" onClick={() => { logout(); navigate("/"); }}><LogOut size={14} /> Sign out</button>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <h2>Session</h2>
+            <p>Signing out revokes this session on the server immediately.</p>
+            <div className="danger-actions">
+              <button type="button" className="ghost-btn danger" onClick={() => { logout(); navigate("/"); }}><LogOut size={14} /> Sign out</button>
+            </div>
           </motion.section>
         </div>
       </div>

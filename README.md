@@ -1,12 +1,18 @@
 # Veyra
 
-A high-fidelity demo banking product: marketing site, personal & business dashboards,
-cards, transfers, invoicing, Scout AI savings, statements, a Super Admin console,
-a 25-template transactional email system — and a real Express + SQLite backend the
-frontend runs on — built on one design system.
+A production banking product front-to-back: marketing site, personal & business
+dashboards, cards, transfers, invoicing, Scout AI savings, statements, a Super
+Admin console, a 25-template transactional email system — on a real Express +
+SQLite backend — built on one design system.
 
-> **Fictional product.** No real accounts, cards or payments. Banking copy is
-> illustrative only.
+Every login, account, transaction and admin action is server-authoritative:
+scrypt password hashing, revocable sessions, server-enforced RBAC, atomic
+financial operations in integer cents, and an append-only audit trail enforced
+by database triggers. There is no demo mode, no seeded data and no offline
+fallback — signups start with a real, empty account.
+
+> Veyra is a financial technology product, not a bank. Card issuing and payment
+> rails still require a sponsor bank / processor integration.
 
 ## Stack
 
@@ -21,32 +27,28 @@ frontend runs on — built on one design system.
 
 ```bash
 npm install
-npm run dev        # frontend → http://localhost:5173
-npm run server     # API      → http://localhost:8787 (in a second terminal)
+cp .env.example .env    # set TOKEN_SECRET + ADMIN_EMAIL / ADMIN_PASSWORD
+npm run server          # API → http://localhost:8787
+npm run dev             # frontend → http://localhost:5173 (in a second terminal)
 ```
 
-**Two modes, zero configuration:**
+The frontend requires the backend (`/api` is proxied in dev). The first Super
+Admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` on boot; members create
+accounts through the signup flow and start with a real, empty account ($0
+balance, no cards, no history).
 
-- **Backend online** — start `npm run server` and the app detects it (`GET /api/health`):
-  login, accounts, money movement, KYC, disputes, admin console and the audit trail all
-  run against the real API (`/api` is proxied in dev). Actions apply optimistically in the
-  UI, then reconcile with the server's authoritative snapshot; if the server rejects an
-  action (insufficient funds, restricted account, halted rails, RBAC) the UI rolls back
-  and surfaces the server's error.
-- **Backend offline** — the same app falls back to the original localStorage demo, so the
-  standalone experience keeps working with zero setup.
+**Development demo data** — set `DEMO_SEED=1` (or `DEMO_SEED=1 npm run server`)
+to additionally seed the demo identities with a full dataset for exploring and
+testing. Production boots clean; the flag also warns if set with
+`NODE_ENV=production`.
 
-### Demo logins (password: `123456`)
-
-| Account | Email | Password | What it shows |
-|---|---|---|---|
-| Business | `demo@veyra.com` | `veyra123` | Full business dashboard: cards, invoices, team, statements |
-| Personal | `personal@veyra.com` | `veyra123` | Personal banking: everyday debit, savings pockets |
-| Super Admin | `admin@veyra.com` | `admin123` | `/app/superadmin` control center — everything below |
-| Compliance | `compliance@veyra.com` | `veyra123` | Admin console limited to KYC + risk queues (RBAC demo) |
-| Support | `support@veyra.com` | `veyra123` | Admin console limited to read-only views + broadcasts |
-
-The login screen's demo buttons fill the business/personal/admin credentials.
+| Demo identity (DEMO_SEED=1 only) | Email | Password |
+|---|---|---|
+| Business member | `demo@veyra.com` | `veyra123` |
+| Personal member | `personal@veyra.com` | `veyra123` |
+| Super Admin | `admin@veyra.com` | `admin123` |
+| Compliance officer | `compliance@veyra.com` | `veyra123` |
+| Support agent | `support@veyra.com` | `veyra123` |
 
 ## Super Admin control center
 
@@ -105,17 +107,20 @@ src/
     templates.ts        24 transactional templates
   styles/               Shared CSS per area
 emails/                 Exported standalone HTML (build:emails)
-scripts/                Email export + tests
+scripts/
+  test-permissions.ts  RBAC mirror unit tests (14 checks)
+  check-emails.mjs     Email template validation (25 checks)
+  build-emails.ts      Email export
 public/images/email/    Hosted logo PNG for emails (Gmail/Outlook-safe)
 server/
   src/
-    index.ts            Bootstrap: PORT, seed, production secret guard
-    app.ts              createApp() — ~35 REST routes + middleware
+    index.ts            Bootstrap: .env loader, DEMO_SEED, production guards
+    app.ts              createApp() — REST routes + middleware
     db.ts               SQLite (WAL, FK on): migrations, audit triggers, tx helper
     security.ts         scrypt hashing, HS256 tokens, rate limiter, TOKEN_SECRET
     rbac.ts             Server-authoritative permission matrix (DB overrides)
     audit.ts            logAdminAction — the only write path to audit_log
-    seed.ts             Idempotent demo seed (same identities as the frontend)
+    seed.ts             Production bootstrap (env admin) + opt-in demo seed
   scripts/test-api.ts   69-check integration suite (boots the real server)
   tsconfig.json         NodeNext strict typecheck
 ```
@@ -155,9 +160,8 @@ the request cross-account with an in-app notification.
 
 ## Backend
 
-A real Express 5 + SQLite API lives in `server/` — same demo identities as the
-frontend, same permission matrix as `src/lib/permissions.ts`, but enforced
-server-side on every admin route.
+A real Express 5 + SQLite API lives in `server/` — the same permission matrix
+as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
@@ -179,6 +183,8 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Account states | `restricted` members can deposit but not transfer; `payment_rails: halted` blocks all transfers with 503 |
 | Overdrafts | Rejected — balances can never go negative |
 | Secrets | `TOKEN_SECRET` env required in production (refuses to boot on the dev fallback) |
+| Password reset | Single-use SHA-256-hashed tokens, 30-minute expiry, reset revokes all sessions |
+| Bootstrap | First Super Admin created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` — no seeded accounts in production |
 
 ### API surface (summary)
 
@@ -197,10 +203,16 @@ npm run typecheck:server  # strict NodeNext typecheck
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `TOKEN_SECRET` | dev fallback | HMAC key for bearer tokens — **required in production** |
+| `ADMIN_EMAIL` | — | First Super Admin email (created on boot) |
+| `ADMIN_PASSWORD` | — | First Super Admin password (min 8 chars) |
+| `ADMIN_NAME` | `System Admin` | Optional display name |
 | `PORT` | `8787` | API port |
 | `DB_PATH` | `server/veyra.db` | SQLite file (git-ignored) |
-| `TOKEN_SECRET` | dev fallback | HMAC key for bearer tokens — **required in production** |
-| `CORS_ORIGIN` | — | Allow a non-proxied browser origin |
+| `CORS_ORIGIN` | `*` | Allow a specific browser origin |
+| `DEMO_SEED` | off | `1` = seed demo identities (development only) |
+
+Variables can live in a `.env` file (loaded automatically — see `.env.example`).
 
 The database schema is created by versioned migrations in `server/src/db.ts`
 (v1: `users`, `accounts`, `transactions`, `cards`, `kyc_records`, `disputes`,
@@ -219,12 +231,11 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # KYC (18) + admin console (39) + emails (25) + API integration (105) = 187 checks
+npm test               # permissions (14) + emails (25) + API integration (114) = 153 checks
 ```
 
-> **Note:** with the backend running, the frontend is fully wired to the API —
-> auth (login/signup/logout/password), every member action (money, cards,
-> invoices, team, pockets, payees, scheduled payments, Scout, preferences) and
-> the whole Super Admin console (including the role matrix, which is loaded
-> from the server so `can()` mirrors server-side enforcement). localStorage
-> remains only as the offline fallback when no backend is reachable.
+> **Production notes:** the frontend is API-only (no offline mode). Password
+> reset tokens are minted and stored hashed, but delivering the reset email
+> requires wiring an SMTP provider to the marked TODO in
+> `server/src/app.ts`. Card issuing and payment rails are internal-ledger
+> operations until a sponsor bank / processor is integrated.

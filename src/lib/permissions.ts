@@ -1,14 +1,11 @@
 /**
  * Role-based access control for the Veyra admin console.
  *
- * Roles are stored on the existing User record (src/lib/auth.tsx) — no second
- * auth system. Permission grants per role live in localStorage ("veyra.rbac")
- * as overrides on top of ROLE_DEFAULTS, editable only by superadmins in the
- * Roles & Permissions module.
- *
- * NOTE: this demo has no backend, so enforcement happens in the store/action
- * layer via assertCan() — the closest analog to server-side checks. In
- * production these same checks must run on the server.
+ * Roles live on the User record and are verified server-side on every admin
+ * route. The console loads the live role matrix from GET /api/admin/state and
+ * installs it via setServerRoleMatrix(), so can()/assertCan() here mirror
+ * exactly what the server enforces. ROLE_DEFAULTS is only the pre-load
+ * fallback; edits go through PUT /api/admin/roles (superadmin-only).
  */
 
 export type StaffRole = "support" | "compliance" | "admin" | "superadmin";
@@ -90,34 +87,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "settings.manage": "Banking settings",
 };
 
-const RBAC_KEY = "veyra.rbac";
-
-function readOverrides(): Partial<Record<StaffRole, Permission[]>> {
-  try {
-    const raw = localStorage.getItem(RBAC_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Partial<Record<StaffRole, Permission[]>>;
-    const clean: Partial<Record<StaffRole, Permission[]>> = {};
-    for (const role of STAFF_ROLES) {
-      const list = parsed[role];
-      if (Array.isArray(list)) clean[role] = list.filter((p): p is Permission => (PERMISSIONS as readonly string[]).includes(p));
-    }
-    // Super Admin can never be locked out.
-    clean.superadmin = ALL;
-    return clean;
-  } catch {
-    return {};
-  }
-}
-
-function writeOverrides(overrides: Partial<Record<StaffRole, Permission[]>>) {
-  try {
-    localStorage.setItem(RBAC_KEY, JSON.stringify(overrides));
-  } catch {
-    /* storage unavailable */
-  }
-}
-
 /**
  * Server-authoritative matrix (API mode). When the backend is reachable the
  * Super Admin console loads the live role matrix from /api/admin/state and
@@ -136,11 +105,9 @@ export function setServerRoleMatrix(matrix: Partial<Record<StaffRole, Permission
   if (serverMatrix) serverMatrix.superadmin = [...PERMISSIONS];
 }
 
-/** Effective permission list for a staff role (server matrix → stored overrides → defaults). */
+/** Effective permission list for a staff role (server matrix, defaults before it loads). */
 export function rolePermissions(role: StaffRole): Permission[] {
-  if (serverMatrix) return serverMatrix[role] ?? [];
-  const overrides = readOverrides();
-  return overrides[role] ?? ROLE_DEFAULTS[role];
+  return serverMatrix?.[role] ?? ROLE_DEFAULTS[role];
 }
 
 /** True when the role has the permission. Super Admin always passes. */
@@ -164,19 +131,3 @@ export function isStaff(role: Role | undefined): boolean {
   return role !== undefined && role !== "user";
 }
 
-/** Persists a permission override for a role. Superadmin-only operation. */
-export function setRolePermissions(role: StaffRole, permissions: Permission[]): Permission[] {
-  const overrides = readOverrides();
-  const next = role === "superadmin" ? ALL : permissions.filter(p => (PERMISSIONS as readonly string[]).includes(p));
-  overrides[role] = next;
-  writeOverrides(overrides);
-  return next;
-}
-
-/** Resets a role back to its default grants. */
-export function resetRolePermissions(role: StaffRole): Permission[] {
-  const overrides = readOverrides();
-  delete overrides[role];
-  writeOverrides(overrides);
-  return rolePermissions(role);
-}

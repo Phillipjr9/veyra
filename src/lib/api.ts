@@ -1,15 +1,12 @@
 /**
  * Backend API client.
  *
- * The app runs in two modes:
- *   — API mode: the Express + SQLite backend (server/) is reachable at /api
- *     (proxied in dev, same-origin in production). Auth, money, RBAC and the
- *     audit trail are server-authoritative.
- *   — Local mode: the backend is unreachable; the app falls back to the
- *     original localStorage demo so the standalone experience keeps working.
+ * The Express + SQLite backend (server/) is the system of record — auth,
+ * accounts, money movement, RBAC and the audit trail are all server-side.
+ * /api is proxied in dev and same-origin in production.
  *
- * Mode is probed once per page load (plus on demand when logging in) via
- * GET /api/health with a short timeout.
+ * Reachability is probed via GET /api/health (short timeout) so the UI can
+ * show an offline banner when the server can't be reached.
  */
 
 const TOKEN_KEY = "veyra.token";

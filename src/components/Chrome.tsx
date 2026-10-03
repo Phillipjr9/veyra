@@ -116,7 +116,7 @@ export function Footer() {
       </div>
       <div className="footer-bottom">
         <span>© 2026 Veyra Financial, Inc.</span>
-        <span>Veyra is a financial technology company, not a bank. Banking services would be provided by partner institutions, Members FDIC. Veyra Arc debit cards shown here are fictional demonstration products; no real accounts or cards are issued.</span>
+        <span>Veyra is a financial technology company, not a bank. Banking services would be provided by partner institutions, Members FDIC.</span>
       </div>
     </footer>
   );

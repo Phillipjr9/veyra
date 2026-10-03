@@ -344,6 +344,21 @@ ALTER TABLE kyc_records ADD COLUMN next_step TEXT NOT NULL DEFAULT '';
 ALTER TABLE kyc_records ADD COLUMN request_reqs_json TEXT NOT NULL DEFAULT '[]';
 `,
   },
+  {
+    version: 3,
+    sql: `
+-- v3: production password reset — tokens are stored hashed, expire, and are
+-- single-use. The raw token only ever exists in the reset email.
+CREATE TABLE password_resets (
+  token_hash TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id),
+  expires_at INTEGER NOT NULL,
+  used       INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_pw_resets_user ON password_resets(user_id);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

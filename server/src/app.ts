@@ -10,7 +10,7 @@
  *   5. writes an audit entry with before/after values.
  */
 import express, { type NextFunction, type Request, type Response } from "express";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, TOKEN_TTL_MS } from "./security.js";
 import {
@@ -19,7 +19,7 @@ import {
 } from "./rbac.js";
 import { logAdminAction } from "./audit.js";
 import { seed } from "./seed.js";
-import { buildMemberState, seedMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
+import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -44,9 +44,9 @@ const MAX_TRANSFER_CENTS = 250_000_00;      // $250k per transfer
 const MAX_DEPOSIT_CENTS = 100_000_00;       // $100k per deposit
 const MAX_ADJUSTMENT_CENTS = 10_000_000_00; // $10M per admin adjustment
 
-export function createApp(dbPath?: string) {
+export function createApp(dbPath?: string, opts: { demo?: boolean } = {}) {
   const db = openDb(dbPath);
-  seed(db);
+  seed(db, { demo: opts.demo === true });
 
   const app = express();
   app.disable("x-powered-by");
@@ -164,16 +164,26 @@ export function createApp(dbPath?: string) {
       return void res.status(400).json({ error: "Business name is required for a business account." });
     }
     const id = rid("u");
+    const accountNumber = Array.from({ length: 12 }, () => Math.floor(Math.random() * 10)).join("");
     inTransaction(db, () => {
       db.prepare(
         `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
          VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?, 'active', ?)`,
       ).run(id, name.trim(), email, typeof phone === "string" ? phone.trim() : "", typeof business === "string" ? business : "", type,
         plan === "Starter" ? "Starter" : "Pro", hashPassword(password), now());
-    });
-    // New members start with the same demo dataset the standalone frontend generates.
-    seedMemberState(db, id, {
-      name: name.trim(), business: typeof business === "string" ? business : "", email, accountType: type,
+      // Production start: a real, empty account — $0 balance, no cards, no history.
+      db.prepare(
+        `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
+         VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
+      ).run(id, accountNumber, now(), now());
+      db.prepare("INSERT INTO kyc_records (user_id, status, completeness, updated_at) VALUES (?, 'not_started', 0, ?)").run(id, now());
+      db.prepare("INSERT INTO preferences (user_id, two_factor, login_alerts, scout_auto, weekly_digest) VALUES (?, 1, 1, 1, 0)").run(id);
+      db.prepare(
+        `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status) VALUES (?, ?, ?, ?, 'Owner', 0, 0, 'active')`,
+      ).run(rid("tm"), id, name.trim(), email);
+      db.prepare(
+        `INSERT INTO security_sessions (id, user_id, device, browser, location, last_active, current, trusted) VALUES (?, ?, 'This device', 'Web', '', ?, 1, 1)`,
+      ).run(rid("session"), id, now());
     });
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
@@ -202,15 +212,50 @@ export function createApp(dbPath?: string) {
     res.json({ ok: true });
   }));
 
-  // Demo password reset: issues a temporary password (a real deployment would
-  // email a one-time link instead of returning the password in the response).
-  app.post("/api/auth/reset-password", wrap((req, res) => {
+  // Password reset — production flow. Requesting a reset always returns the
+  // same generic response (never reveals whether the email exists). The token
+  // is stored hashed with a 30-minute expiry and is single-use. Delivery of
+  // the email requires an SMTP provider (see README).
+  app.post("/api/auth/forgot-password", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`forgot:${ip}`)) return void res.status(429).json({ error: "Too many attempts — try again in a minute." });
     const email = String(req.body?.email ?? "").trim().toLowerCase();
-    const row = db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string } | undefined;
-    if (!row) return void res.status(404).json({ error: "We couldn't find an account with that email." });
-    const temp = `veyra-${Math.random().toString(36).slice(2, 8)}`;
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(temp), row.id);
-    res.json({ tempPassword: temp });
+    const row = typeof email === "string" && email
+      ? (db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string } | undefined)
+      : undefined;
+    if (row) {
+      const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      db.prepare(
+        "INSERT INTO password_resets (token_hash, user_id, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)",
+      ).run(tokenHash, row.id, Date.now() + 30 * 60_000, now());
+      // TODO(send-email): deliver the token to `email` via the transactional
+      // email provider. Until a provider is configured it is only logged in
+      // development mode so the flow stays testable.
+      if (process.env.NODE_ENV !== "production") console.log(`[dev] password reset token for ${email}: ${token}`);
+    }
+    res.json({ ok: true, message: "If an account exists for that email, reset instructions have been sent." });
+  }));
+
+  app.post("/api/auth/reset-password", wrap((req, res) => {
+    const token = String(req.body?.token ?? "").trim();
+    const password = String(req.body?.password ?? "");
+    if (!token) return void res.status(400).json({ error: "A reset token is required." });
+    if (password.length < 8) return void res.status(400).json({ error: "Use at least 8 characters for your password." });
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    const row = db.prepare("SELECT * FROM password_resets WHERE token_hash = ?").get(tokenHash) as
+      | { user_id: string; expires_at: number; used: number }
+      | undefined;
+    if (!row || row.used || row.expires_at < Date.now()) {
+      return void res.status(400).json({ error: "This reset link is invalid or has expired. Request a new one." });
+    }
+    inTransaction(db, () => {
+      db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(password), row.user_id);
+      db.prepare("UPDATE password_resets SET used = 1 WHERE token_hash = ?").run(tokenHash);
+      // A reset invalidates every existing session.
+      db.prepare("UPDATE sessions SET revoked = 1 WHERE user_id = ?").run(row.user_id);
+    });
+    res.json({ ok: true });
   }));
 
   /* ============================== member routes ============================== */
@@ -390,18 +435,6 @@ export function createApp(dbPath?: string) {
     const state = buildMemberState(db, req.user!.id);
     if (!state) return void res.status(404).json({ error: "No account found." });
     res.json({ account: state });
-  }));
-
-  // Demo data reset (Settings → Reset demo data)
-  app.post("/api/me/reset", requireAuth, wrap((req, res) => {
-    const u = db.prepare("SELECT name, business, email, account_type FROM users WHERE id = ?").get(req.user!.id) as Record<string, unknown>;
-    inTransaction(db, () => {
-      seedMemberState(db, req.user!.id, {
-        name: String(u.name), business: String(u.business ?? ""), email: String(u.email),
-        accountType: u.account_type === "personal" ? "personal" : "business",
-      });
-    });
-    res.json({ account: buildMemberState(db, req.user!.id) });
   }));
 
   /* ---------- profile & preferences ---------- */
@@ -865,37 +898,6 @@ export function createApp(dbPath?: string) {
        ON CONFLICT(user_id) DO UPDATE SET ${sets.join(", ")}, updated_at = excluded.updated_at`,
     ).run(req.user!.id, String(patch.documentType ?? ""), String(patch.country ?? ""), String(patch.nextStep ?? ""), now(), ...vals);
     res.json({ ok: true });
-  }));
-
-  // Member-side dispute tracking (Security Center). Demo parity: the member
-  // can nudge their own claim forward; resolution credits their balance.
-  app.post("/api/me/disputes/:id/advance", requireAuth, wrap((req, res) => {
-    const id = String(req.params.id);
-    try {
-      const status = inTransaction(db, () => {
-        const dispute = db.prepare("SELECT * FROM disputes WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
-        if (!dispute) throw new Error("Dispute not found.");
-        if (dispute.status === "resolved" || dispute.status === "denied") return String(dispute.status);
-        const next = dispute.status === "submitted" ? "reviewing" : "resolved";
-        db.prepare("UPDATE disputes SET status = ?, updated_at = ? WHERE id = ?").run(next, now(), id);
-        if (next === "resolved") {
-          const cents = dispute.amount_cents as number;
-          const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as { id: number; balance_cents: number };
-          db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents + cents, now(), account.id);
-          db.prepare(
-            `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
-             VALUES (?, ?, ?, ?, 'Operations', 'Adjustment', ?, 'cleared', ?, ?, ?)`,
-          ).run(rid("txn"), account.id, req.user!.id, `Dispute credit · ${String(dispute.merchant)}`, cents,
-            makeReference(), `Resolved dispute ${id}`, now());
-        }
-        notify(req.user!.id, "security", next === "resolved" ? "Dispute resolved" : "Dispute under review",
-          next === "resolved" ? `${centsToDecimal(dispute.amount_cents as number)} was returned to checking.` : `We're reviewing your ${String(dispute.merchant)} claim.`);
-        return next;
-      });
-      res.json({ status });
-    } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Failed to advance dispute." });
-    }
   }));
 
   /* ============================== admin: overview & members ============================== */

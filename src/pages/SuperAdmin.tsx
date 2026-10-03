@@ -5,24 +5,20 @@ import {
   Landmark, Lock, LogOut, Mail, Megaphone, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
   TrendingUp, UserCheck, UserRound, Users, Wallet,
 } from "lucide-react";
-import { useAuth, getUsers, setUserRole } from "../lib/auth";
-import { apiGet, apiPost, apiPut, apiOnline, getToken } from "../lib/api";
+import { useAuth, type User, type UserRole } from "../lib/auth";
+import { apiGet, apiPost, apiPut } from "../lib/api";
 import {
   money, longDate, downloadFile,
-  requestKycForUser, resolveKycForUser,
-  listKycQueue, listAllAccounts, listAllTransactions, listAllDisputes,
-  adminAdjustUserBalance, setAccountStatus, broadcastNotification, advanceDisputeForUser,
   type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
 } from "../lib/store";
 import {
   can, assertCan, isStaff, STAFF_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS,
-  rolePermissions, setRolePermissions, resetRolePermissions, setServerRoleMatrix,
+  rolePermissions, setServerRoleMatrix,
   PERMISSIONS, PERMISSION_LABELS, type Permission, type Role, type StaffRole,
 } from "../lib/permissions";
-import { logAdminAction, getAuditLogs, exportAuditLogs, ensureAuditSeed, type AuditAction, type AuditEntry } from "../lib/audit";
 import { useToast } from "../components/Toast";
 
-type AdminUser = ReturnType<typeof getUsers>[number];
+type AdminUser = User & { role?: UserRole };
 type TabId =
   | "dashboard" | "customers" | "accounts" | "transactions" | "kyc" | "risk"
   | "staff" | "roles" | "reports" | "notifications" | "audit" | "settings" | "profile";
@@ -56,7 +52,21 @@ const ago = (ts: number) => {
 const csv = (rows: Array<Array<string | number>>) =>
   rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
 
-/** Aggregate admin state served by GET /api/admin/state (API mode). */
+/** Audit entry as served by GET /api/admin/state (append-only, server-side). */
+type AuditEntry = {
+  id: string;
+  at: number;
+  adminId: string;
+  adminName: string;
+  action: string;
+  category: string;
+  target: string;
+  summary: string;
+  before?: string;
+  after?: string;
+};
+
+/** Aggregate admin state served by GET /api/admin/state. */
 type AdminServerState = {
   users: Array<{ id: string; name: string; email: string; phone: string; business: string; accountType: "personal" | "business"; avatarUrl: string; role: string; plan: "Starter" | "Pro"; createdAt: number }>;
   accounts: PlatformAccount[];
@@ -133,33 +143,33 @@ export function SuperAdminPage() {
   const [broadcastConfirm, setBroadcastConfirm] = useState(false);
   // Audit
   const [auditSearch, setAuditSearch] = useState("");
-  const [auditCategory, setAuditCategory] = useState<"all" | AuditEntry["category"]>("all");
+  const [auditCategory, setAuditCategory] = useState<"all" | "Financial" | "KYC" | "Risk" | "Access" | "System" | "Comms">("all");
   // Settings
   const [interestRate, setInterestRate] = useState("4.25");
   const [systemFrozen, setSystemFrozen] = useState(false);
   const [haltConfirm, setHaltConfirm] = useState(false);
 
-  // API mode: the backend is the system of record — load the aggregate admin
-  // state and install the server's role matrix so can() matches the server.
+  // The backend is the system of record — load the aggregate admin state and
+  // install the server's role matrix so can() matches server enforcement.
   const [adminData, setAdminData] = useState<AdminServerState | null>(null);
-  const online = apiOnline() && !!getToken();
+  const [adminLoadError, setAdminLoadError] = useState<string | null>(null);
   useEffect(() => {
-    if (!online) { setAdminData(null); setServerRoleMatrix(null); return; }
     let cancelled = false;
     apiGet<AdminServerState>("/api/admin/state")
       .then(data => {
         if (cancelled) return;
         setAdminData(data);
+        setAdminLoadError(null);
         setServerRoleMatrix(data.roles as Partial<Record<StaffRole, Permission[]>>);
         setInterestRate(data.settings.core_apy ?? "4.25");
         setSystemFrozen(data.settings.payment_rails === "halted");
       })
-      .catch(() => undefined); // e.g. role lacks dashboard.view — local mode stays
+      .catch(err => {
+        if (!cancelled) setAdminLoadError(err instanceof Error ? err.message : "Could not load platform data.");
+      });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick, online]);
-
-  useEffect(() => { if (!online) ensureAuditSeed(); }, [online]);
+  }, [tick]);
 
   const role = (user?.role ?? "user") as Role;
   const allow = (perm: Permission) => can(role, perm);
@@ -170,21 +180,18 @@ export function SuperAdminPage() {
       return false;
     }
   };
-  const audit = (action: AuditAction, category: AuditEntry["category"], target: string, summary: string, before?: string, after?: string) => {
-    // API mode: every admin route writes the audit trail server-side already.
-    if (online) return;
-    logAdminAction({ adminId: user?.id ?? "unknown", adminName: user?.name ?? "Unknown admin", action, category, target, summary, before, after });
-  };
+  // Every admin route writes the append-only audit trail server-side — there is
+  // deliberately no client-side audit writer.
 
-  /* ---------------- platform data (server snapshot in API mode, member stores locally) ---------------- */
-  const users: AdminUser[] = adminData ? (adminData.users as AdminUser[]) : getUsers();
+  /* ---------------- platform data (server snapshot) ---------------- */
+  const users: AdminUser[] = adminData ? (adminData.users as AdminUser[]) : [];
   const members = useMemo(() => users.filter(u => (u.role ?? "user") === "user"), [users]);
   const staff = useMemo(() => users.filter(u => u.role && u.role !== "user"), [users]);
-  const accounts: PlatformAccount[] = adminData ? adminData.accounts : listAllAccounts();
-  const allTxns: Array<Txn & { userId: string; memberName: string }> = adminData ? adminData.transactions : listAllTransactions();
-  const disputes: Array<Dispute & { userId: string; memberName: string }> = adminData ? adminData.disputes : listAllDisputes();
-  const kycQueue: KycQueueItem[] = adminData ? adminData.kycQueue : listKycQueue();
-  const auditLogs: AuditEntry[] = adminData ? adminData.audit : getAuditLogs();
+  const accounts: PlatformAccount[] = adminData ? adminData.accounts : [];
+  const allTxns: Array<Txn & { userId: string; memberName: string }> = adminData ? adminData.transactions : [];
+  const disputes: Array<Dispute & { userId: string; memberName: string }> = adminData ? adminData.disputes : [];
+  const kycQueue: KycQueueItem[] = adminData ? adminData.kycQueue : [];
+  const auditLogs: AuditEntry[] = adminData ? adminData.audit : [];
 
   const accountBy = (userId: string) => accounts.find(a => a.userId === userId);
   const openDisputes = disputes.filter(d => d.status !== "resolved" && d.status !== "denied");
@@ -216,160 +223,76 @@ export function SuperAdminPage() {
     if (!val || val <= 0 || !targetUser) return;
     if (!guard("customers.adjust_balance", "adjust balances")) return;
     const memo = adjustMemo || "Administrative adjustment";
-    if (online) {
-      apiPost<{ before: { amount: string }; after: { amount: string } }>(`/api/admin/members/${targetUser.id}/adjust`, { direction: adjustType, amount: val, memo })
+          apiPost<{ before: { amount: string }; after: { amount: string } }>(`/api/admin/members/${targetUser.id}/adjust`, { direction: adjustType, amount: val, memo })
         .then(r => {
           toast({ tone: "success", title: "Ledger adjustment committed", description: `${targetUser.name}: $${r.before.amount} → $${r.after.amount} · ref recorded on their statement.` });
           setAdjustModal(false); setAdjustAmount(""); setAdjustMemo(""); refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Adjustment failed", description: err.message }));
-      return;
-    }
-    try {
-      const { before, after } = adminAdjustUserBalance(
-        targetUser.id,
-        { name: targetUser.name, business: targetUser.business || "", email: targetUser.email, accountType: targetUser.accountType === "personal" ? "personal" : "business" },
-        val, adjustType, memo,
-      );
-      audit("balance.adjust", "Financial", `user:${targetUser.id} · ${targetUser.name}`,
-        `${adjustType === "credit" ? "Credited" : "Debited"} ${money(val)} — ${memo}.`, money(before), money(after));
-      toast({ tone: "success", title: "Ledger adjustment committed", description: `${targetUser.name}: ${money(before)} → ${money(after)} · ref recorded on their statement.` });
-      setAdjustModal(false); setAdjustAmount(""); setAdjustMemo("");
-      refresh();
-    } catch (err) {
-      toast({ tone: "error", title: "Adjustment failed", description: err instanceof Error ? err.message : "Something went wrong." });
-    }
   };
 
   const handleRequestKyc = (e: React.FormEvent) => {
     e.preventDefault();
     if (!targetUser) return;
     if (!guard("kyc.request", "request verification")) return;
-    if (online) {
-      apiPost(`/api/admin/kyc/request`, { userId: targetUser.id, requirements: kycReqs, reason: kycReason.trim() || "Identity verification is required to lift your account limits." })
+          apiPost(`/api/admin/kyc/request`, { userId: targetUser.id, requirements: kycReqs, reason: kycReason.trim() || "Identity verification is required to lift your account limits." })
         .then(() => {
           setKycModal(false); setKycReason("");
           toast({ tone: "success", title: "Verification request sent", description: `${targetUser.name} will see the alert on their dashboard.` });
           refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Request failed", description: err.message }));
-      return;
-    }
-    requestKycForUser(targetUser.id,
-      { name: targetUser.name, business: targetUser.business || "", email: targetUser.email, accountType: targetUser.accountType === "personal" ? "personal" : "business" },
-      { requestedBy: user?.name || "Veyra compliance", reason: kycReason.trim() || "Identity verification is required to lift your account limits.", requirements: kycReqs });
-    audit("kyc.request", "KYC", `user:${targetUser.id} · ${targetUser.name}`,
-      `Requested verification (${kycReqs.join(", ")}).`, accountBy(targetUser.id)?.kycStatus ?? "not_started", "requested");
-    setKycModal(false); setKycReason("");
-    toast({ tone: "success", title: "Verification request sent", description: `${targetUser.name} will see the alert on their dashboard.` });
-    refresh();
   };
 
   const handleKycDecision = (decision: "approved" | "needs_attention") => {
     if (!kycReview) return;
     if (!guard("kyc.review", "review verification")) return;
-    const before = kycReview.kyc.status;
-    if (online) {
-      apiPost(`/api/admin/kyc/${kycReview.userId}/decision`, { decision, note: kycDecisionNote.trim() })
+    apiPost(`/api/admin/kyc/${kycReview.userId}/decision`, { decision, note: kycDecisionNote.trim() })
         .then(() => {
           toast({ tone: decision === "approved" ? "success" : "info", title: decision === "approved" ? "Verification approved" : "Changes requested", description: `${kycReview.name} has been notified.` });
           setKycReview(null); setKycDecisionNote(""); refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Decision failed", description: err.message }));
-      return;
-    }
-    resolveKycForUser(kycReview.userId,
-      { name: kycReview.name, business: kycReview.business, email: kycReview.email, accountType: kycReview.accountType },
-      decision, kycDecisionNote.trim(), user?.name || "Veyra compliance");
-    audit(decision === "approved" ? "kyc.approve" : "kyc.request_changes", "KYC",
-      `user:${kycReview.userId} · ${kycReview.name}`,
-      decision === "approved" ? "Approved identity verification." : `Requested changes — ${kycDecisionNote.trim()}`,
-      before, decision === "approved" ? "approved" : "needs_attention");
-    toast({ tone: decision === "approved" ? "success" : "info", title: decision === "approved" ? "Verification approved" : "Changes requested", description: `${kycReview.name} has been notified.` });
-    setKycReview(null); setKycDecisionNote("");
-    refresh();
   };
 
   const handleStatusConfirm = () => {
     if (!statusConfirm) return;
     if (!guard("accounts.set_status", "change account status")) return;
     const { target, status } = statusConfirm;
-    if (online) {
-      apiPost(`/api/admin/members/${target.userId}/status`, { status, reason: statusReason || "Reviewed by compliance." })
+          apiPost(`/api/admin/members/${target.userId}/status`, { status, reason: statusReason || "Reviewed by compliance." })
         .then(() => {
           toast({ tone: status === "restricted" ? "info" : "success", title: status === "restricted" ? "Account restricted" : "Account restored", description: `${target.name} has been notified.` });
           setStatusConfirm(null); setStatusReason(""); refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Status change failed", description: err.message }));
-      return;
-    }
-    setAccountStatus(target.userId,
-      { name: target.name, business: target.business, email: target.email, accountType: target.accountType },
-      status, statusReason || "Reviewed by compliance.");
-    audit("account.status", "Financial", `user:${target.userId} · ${target.name}`,
-      status === "restricted" ? `Restricted account — ${statusReason || "compliance review"}.` : "Restored account to active.",
-      target.accountStatus, status);
-    toast({ tone: status === "restricted" ? "info" : "success", title: status === "restricted" ? "Account restricted" : "Account restored", description: `${target.name} has been notified.` });
-    setStatusConfirm(null); setStatusReason("");
-    refresh();
   };
 
-  const handleResolveDispute = (userId: string, name: string, profile: { name: string; business: string; email: string; accountType: "personal" | "business" }, disputeId: string, merchant: string) => {
+  const handleResolveDispute = (name: string, disputeId: string, merchant: string) => {
     if (!guard("risk.resolve", "resolve disputes")) return;
-    if (online) {
-      apiPost<{ status: string }>(`/api/admin/risk/disputes/${disputeId}/advance`)
+          apiPost<{ status: string }>(`/api/admin/risk/disputes/${disputeId}/advance`)
         .then(r => {
           const resolved = r.status === "resolved";
           toast({ tone: resolved ? "success" : "info", title: resolved ? "Dispute resolved" : "Dispute under review", description: `${merchant} · ${name}` });
           refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Action failed", description: err.message }));
-      return;
-    }
-    try {
-      const result = advanceDisputeForUser(userId, profile, disputeId);
-      if (!result) return;
-      audit("dispute.resolve", "Risk", `user:${userId} · ${name}`,
-        `${result.status === "resolved" ? "Resolved" : "Moved to reviewing"} dispute for ${merchant} (${money(result.amount)}).`);
-      toast({ tone: result.status === "resolved" ? "success" : "info", title: result.status === "resolved" ? "Dispute resolved" : "Dispute under review", description: `${merchant} · ${money(result.amount)} · ${name}` });
-      refresh();
-    } catch (err) {
-      toast({ tone: "error", title: "Action failed", description: err instanceof Error ? err.message : "Something went wrong." });
-    }
   };
 
   const handleStaffConfirm = () => {
     if (!staffConfirm) return;
     if (!guard("staff.manage", "manage staff")) return;
-    if (online) {
-      apiPost(`/api/admin/staff/${staffConfirm.userId}/role`, { role: staffConfirm.role })
+          apiPost(`/api/admin/staff/${staffConfirm.userId}/role`, { role: staffConfirm.role })
         .then(() => {
           toast({ tone: "success", title: "Role updated", description: `${staffConfirm.name} is now ${ROLE_LABELS[staffConfirm.role]}.` });
           setStaffConfirm(null); refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Role change failed", description: err.message }));
-      return;
-    }
-    try {
-      const before = staffListRole(staffConfirm.userId);
-      setUserRole(staffConfirm.userId, staffConfirm.role, user?.id ?? "");
-      audit(staffConfirm.role === "user" ? "staff.demote" : "staff.promote", "Access",
-        `user:${staffConfirm.userId} · ${staffConfirm.name}`,
-        `Changed role.`, before, staffConfirm.role);
-      toast({ tone: "success", title: "Role updated", description: `${staffConfirm.name} is now ${ROLE_LABELS[staffConfirm.role]}.` });
-      setStaffConfirm(null);
-      refresh();
-    } catch (err) {
-      toast({ tone: "error", title: "Role change failed", description: err instanceof Error ? err.message : "Something went wrong." });
-    }
   };
-  const staffListRole = (userId: string) => ROLE_LABELS[(users.find(u => u.id === userId)?.role ?? "user") as Role];
 
   const handleSaveMatrix = () => {
     if (!guard("roles.manage", "edit the permission matrix")) return;
     if (!matrixDraft) return;
-    if (online) {
-      Promise.all(STAFF_ROLES.filter(r => r !== "superadmin")
+          Promise.all(STAFF_ROLES.filter(r => r !== "superadmin")
         .filter(r => (matrixDraft[r] ?? rolePermissions(r)).join() !== rolePermissions(r).join())
         .map(r => apiPut("/api/admin/roles", { role: r, permissions: matrixDraft[r] ?? rolePermissions(r) })))
         .then(() => {
@@ -378,39 +301,17 @@ export function SuperAdminPage() {
           refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Save failed", description: err.message }));
-      return;
-    }
-    for (const r of STAFF_ROLES.filter(r => r !== "superadmin")) {
-      const next = matrixDraft[r] ?? rolePermissions(r);
-      const before = rolePermissions(r);
-      if (next.join() !== before.join()) {
-        setRolePermissions(r, next);
-        audit("roles.update", "Access", `role:${r}`, `Updated permissions (${next.length} granted).`, `${before.length} granted`, `${next.length} granted`);
-      }
-    }
-    setMatrixDraft(null);
-    toast({ tone: "success", title: "Permission matrix saved", description: "Role grants updated for future staff sessions." });
-    refresh();
   };
 
   const handleResetRole = (r: StaffRole) => {
     if (!guard("roles.manage", "edit the permission matrix")) return;
-    if (online) {
-      apiPost("/api/admin/roles/reset", { role: r })
+          apiPost("/api/admin/roles/reset", { role: r })
         .then(() => {
           setMatrixDraft(null);
           toast({ tone: "info", title: `${ROLE_LABELS[r]} reset`, description: "Default permissions restored." });
           refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Reset failed", description: err.message }));
-      return;
-    }
-    const before = rolePermissions(r);
-    const after = resetRolePermissions(r);
-    audit("roles.reset", "Access", `role:${r}`, `Reset to default grants.`, `${before.length} granted`, `${after.length} granted`);
-    setMatrixDraft(null);
-    toast({ tone: "info", title: `${ROLE_LABELS[r]} reset`, description: "Default permissions restored." });
-    refresh();
   };
 
   const handleBroadcast = (e: React.FormEvent) => {
@@ -420,22 +321,12 @@ export function SuperAdminPage() {
   };
   const commitBroadcast = () => {
     if (!guard("notifications.broadcast", "send broadcasts")) return;
-    if (online) {
-      apiPost<{ delivered: number }>("/api/admin/broadcasts", { title: broadcast.title.trim(), detail: broadcast.detail.trim(), audience: broadcast.audience })
+          apiPost<{ delivered: number }>("/api/admin/broadcasts", { title: broadcast.title.trim(), detail: broadcast.detail.trim(), audience: broadcast.audience })
         .then(r => {
           toast({ tone: "success", title: "Broadcast sent", description: `Delivered to ${r.delivered} member${r.delivered === 1 ? "" : "s"} in-app.` });
           setBroadcast({ title: "", detail: "", audience: "all" }); setBroadcastConfirm(false); refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Broadcast failed", description: err.message }));
-      return;
-    }
-    const { delivered } = broadcastNotification({ title: broadcast.title.trim(), detail: broadcast.detail.trim(), audience: broadcast.audience });
-    audit("notification.broadcast", "Comms", `platform · ${broadcast.audience}`,
-      `Broadcast “${broadcast.title.trim()}” delivered to ${delivered} member${delivered === 1 ? "" : "s"}.`);
-    toast({ tone: "success", title: "Broadcast sent", description: `Delivered to ${delivered} member${delivered === 1 ? "" : "s"} in-app.` });
-    setBroadcast({ title: "", detail: "", audience: "all" });
-    setBroadcastConfirm(false);
-    refresh();
   };
 
   const handleExport = (kind: "customers" | "accounts" | "transactions" | "kyc" | "audit") => {
@@ -449,40 +340,30 @@ export function SuperAdminPage() {
       downloadFile(`veyra-ledger-${date}.csv`, csv([["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"], ...allTxns.map(t => [longDate(t.date), t.memberName, t.merchant, t.category, t.method ?? "", t.amount.toFixed(2), t.status ?? "cleared", t.reference ?? ""])]), "text/csv");
     } else if (kind === "kyc") {
       downloadFile(`veyra-kyc-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Requested at"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.kycStatus, `${a.kycStatus === "not_started" ? 0 : a.kycStatus === "approved" ? 100 : 72}%`, a.lastActivity ? longDate(a.lastActivity) : "—"])]), "text/csv");
-    } else if (online) {
-      // Server audit trail (append-only, DB-enforced) exported straight from the API.
-      fetch("/api/admin/audit/export.csv", { headers: { Authorization: `Bearer ${getToken()}` } })
+    } else {
+      // Audit trail (append-only, DB-enforced) exported straight from the API.
+      fetch("/api/admin/audit/export.csv")
         .then(r => r.text())
         .then(text => downloadFile(`veyra-audit-${date}.csv`, text, "text/csv"))
         .catch(() => toast({ tone: "error", title: "Export failed", description: "The audit export couldn't be downloaded." }));
-    } else {
-      exportAuditLogs();
     }
-    audit("report.export", "Comms", `platform · ${kind}`, `Exported ${kind} report as CSV.`);
     toast({ tone: "success", title: "Export ready", description: `${kind[0].toUpperCase() + kind.slice(1)} CSV downloaded.` });
   };
 
   const handleSaveSettings = () => {
     if (!guard("settings.manage", "change banking settings")) return;
-    if (online) {
-      apiPut("/api/admin/settings", { coreApy: interestRate })
+          apiPut("/api/admin/settings", { coreApy: interestRate })
         .then(() => {
           toast({ tone: "success", title: "System parameters saved", description: `Core treasury yield updated to ${interestRate}%.` });
           refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Save failed", description: err.message }));
-      return;
-    }
-    audit("settings.save", "System", "platform", `Updated core high-yield APY to ${interestRate}%.`, "4.10%", `${interestRate}%`);
-    toast({ tone: "success", title: "System parameters saved", description: `Core treasury yield updated to ${interestRate}%.` });
-    refresh();
   };
 
   const handleHaltToggle = () => {
     if (!guard("settings.manage", "change banking settings")) return;
     const next = !systemFrozen;
-    if (online) {
-      apiPut("/api/admin/settings", { paymentRails: next ? "halted" : "operational" })
+          apiPut("/api/admin/settings", { paymentRails: next ? "halted" : "operational" })
         .then(() => {
           setSystemFrozen(next);
           setHaltConfirm(false);
@@ -490,15 +371,6 @@ export function SuperAdminPage() {
           refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Action failed", description: err.message }));
-      return;
-    }
-    setSystemFrozen(next);
-    setHaltConfirm(false);
-    audit(next ? "system.halt" : "system.resume", "System", "platform",
-      next ? "EMERGENCY: payment rails halted — outgoing wires and card authorizations paused." : "Payment rails resumed.",
-      next ? "Operational" : "Halted", next ? "Halted" : "Operational");
-    toast({ tone: next ? "error" : "success", title: next ? "EMERGENCY: Payment rails halted" : "Core payment gateway resumed", description: next ? "All outgoing wire and card authorizations paused." : "All transaction flows operational." });
-    refresh();
   };
 
   const filteredMembers = members.filter(u =>
@@ -565,8 +437,21 @@ export function SuperAdminPage() {
         ))}
       </div>
 
+      {/* Backend down / unauthorized — the console is API-only */}
+      {adminLoadError && (
+        <div className="panel admin-panel" role="alert" style={{ borderColor: "rgba(180,60,60,.4)" }}>
+          <div className="panel-head">
+            <div>
+              <h2>Can't load platform data</h2>
+              <span className="panel-sub">{adminLoadError}</span>
+            </div>
+            <button type="button" className="ghost-btn sm" onClick={refresh}><RefreshCw size={14} /> Retry</button>
+          </div>
+        </div>
+      )}
+
       {/* ============================ DASHBOARD ============================ */}
-      {activeTab === "dashboard" && (
+      {activeTab === "dashboard" && !adminLoadError && (
         <div className="admin-tab-pane">
           <div className="admin-kpi-grid">
             {([
@@ -596,7 +481,7 @@ export function SuperAdminPage() {
                 {apiHealth === "online"
                   ? `Real backend connected${apiUptime != null ? ` · up ${apiUptime >= 3600 ? `${Math.floor(apiUptime / 3600)}h ` : apiUptime >= 60 ? `${Math.floor(apiUptime / 60)}m ` : ""}${apiUptime % 60 < 60 ? `${apiUptime % 60}s` : ""} · server-side auth, RBAC & audit` : ""}`
                   : apiHealth === "offline"
-                    ? "Running on localStorage demo data. Start the backend with npm run server to enable real auth, server-side RBAC and the append-only audit trail."
+                    ? "Backend unreachable — reconnecting. All admin actions require the live API."
                     : "Reaching the backend…"}
               </small>
             </div>
@@ -889,13 +774,7 @@ export function SuperAdminPage() {
                         <small>{d.memberName} · {d.reason} · {ago(d.updatedAt)}</small>
                       </div>
                       {allow("risk.resolve") && (
-                        <button type="button" className="ghost-btn sm" onClick={() => {
-                          const u = getUsers().find(x => x.id === d.userId);
-                          if (!u) return;
-                          handleResolveDispute(d.userId, d.memberName,
-                            { name: u.name, business: u.business || "", email: u.email, accountType: u.accountType === "personal" ? "personal" : "business" },
-                            d.id, d.merchant);
-                        }}>
+                        <button type="button" className="ghost-btn sm" onClick={() => handleResolveDispute(d.memberName, d.id, d.merchant)}>
                           {d.status === "submitted" ? "Start review" : "Resolve & refund"}
                         </button>
                       )}
