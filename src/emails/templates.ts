@@ -571,6 +571,32 @@ const welcome: EmailTemplate = {
   }),
 };
 
+const kycChanges: EmailTemplate = {
+  id: "kyc-changes",
+  name: "Verification changes requested",
+  category: "account",
+  subject: "Changes needed · your verification review",
+  preheader: "Our compliance team reviewed your documents — one update is needed.",
+  html: emailShell({
+    subject: "Changes needed · your verification review",
+    preheader: "Our compliance team reviewed your documents — one update is needed.",
+    content: `
+      ${eyebrow("Account verification")}
+      ${h1("We need one change before approving")}
+      ${p("Thanks for submitting your verification — our compliance team reviewed everything and one document needs another look. The note below explains exactly what to update.")}
+      ${pill("Changes requested", "amber")}
+      ${details([
+        ["Reviewed by", "Veyra compliance team"],
+        ["What to update", "Proof of address — document is older than 3 months"],
+        ["Your documents", "Kept on file — no need to re-upload the others"],
+        ["Where to continue", "Identity verification in your dashboard"],
+      ])}
+      ${btn("Update my documents", `${APP}/kyc`)}
+      ${note("Your other documents stay on file. Most follow-ups are approved within one business day of resubmitting.")}
+    `,
+  }),
+};
+
 const kycApproved: EmailTemplate = {
   id: "kyc-approved",
   name: "Verification approved",
@@ -739,6 +765,7 @@ export const emailTemplates: EmailTemplate[] = [
   welcome,
   kycApproved,
   kycAction,
+  kycChanges,
   teamInvite,
   statementReady,
   savingsGoal,

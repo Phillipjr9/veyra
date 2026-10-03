@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useAuth } from "./auth";
+import { useAuth, getUsers } from "./auth";
 
 /* ============================================================
    Types
@@ -138,6 +138,19 @@ export type SecuritySession = {
 export type KycStatus = "not_started" | "requested" | "in_review" | "approved" | "needs_attention";
 /** Document categories a compliance review can ask a member for. */
 export type KycRequirement = "identity" | "address" | "selfie" | "funds";
+/** What the member actually submitted, kept for compliance review. */
+export type KycSubmission = {
+  legalName: string;
+  dob: string;
+  country: string;
+  documentType: string;
+  source: string;
+  taxId: string;
+  registration?: string;
+  industry?: string;
+  documents: Array<{ key: string; label: string; name: string }>;
+  submittedAt: number;
+};
 export type KycRecord = {
   status: KycStatus;
   completeness: number;
@@ -151,6 +164,8 @@ export type KycRecord = {
   requestReason?: string;
   /** Which document categories the admin asked for. */
   requirements?: KycRequirement[];
+  /** Set when the member submits the wizard for review. */
+  submission?: KycSubmission;
 };
 /** Admin-initiated verification request payload. */
 export type KycRequest = {
@@ -597,6 +612,22 @@ function normalize(raw: unknown, p: Profile): Account {
       requirements: Array.isArray(kyc.requirements)
         ? kyc.requirements.filter((q): q is KycRequirement => q === "identity" || q === "address" || q === "selfie" || q === "funds")
         : undefined,
+      submission: kyc.submission && typeof kyc.submission === "object" ? {
+        legalName: typeof kyc.submission.legalName === "string" ? kyc.submission.legalName : "",
+        dob: typeof kyc.submission.dob === "string" ? kyc.submission.dob : "",
+        country: typeof kyc.submission.country === "string" ? kyc.submission.country : "",
+        documentType: typeof kyc.submission.documentType === "string" ? kyc.submission.documentType : "",
+        source: typeof kyc.submission.source === "string" ? kyc.submission.source : "",
+        taxId: typeof kyc.submission.taxId === "string" ? kyc.submission.taxId : "",
+        registration: typeof kyc.submission.registration === "string" ? kyc.submission.registration : undefined,
+        industry: typeof kyc.submission.industry === "string" ? kyc.submission.industry : undefined,
+        documents: Array.isArray(kyc.submission.documents)
+          ? kyc.submission.documents
+              .filter(d => Boolean(d) && typeof d === "object" && typeof (d as { name?: unknown }).name === "string")
+              .map(d => ({ key: String((d as { key: unknown }).key), label: String((d as { label: unknown }).label), name: String((d as { name: unknown }).name) }))
+          : [],
+        submittedAt: typeof kyc.submission.submittedAt === "number" ? kyc.submission.submittedAt : 0,
+      } : undefined,
     },
   };
 }
@@ -682,21 +713,83 @@ export function requestKycForUser(userId: string, profile: Profile, req: KycRequ
 
 /** Reads a member's KYC status without seeding or mutating their store. */
 export function peekKycForUser(userId: string): Pick<KycRecord, "status" | "completeness" | "requestedAt"> {
+  const kyc = readStoredAccount(userId)?.kyc;
+  if (!kyc || typeof kyc !== "object") return { status: "not_started", completeness: 0 };
+  const allowed: KycStatus[] = ["not_started", "requested", "in_review", "approved", "needs_attention"];
+  return {
+    status: allowed.includes(kyc.status as KycStatus) ? (kyc.status as KycStatus) : "not_started",
+    completeness: typeof kyc.completeness === "number" ? kyc.completeness : 0,
+    requestedAt: typeof kyc.requestedAt === "number" ? kyc.requestedAt : undefined,
+  };
+}
+
+/** Parses a member's stored account without side effects (null if absent). */
+function readStoredAccount(userId: string): Partial<Account> | null {
   try {
     const raw = localStorage.getItem(storageKey(userId));
-    if (!raw) return { status: "not_started", completeness: 0 };
-    const parsed = JSON.parse(raw) as Partial<Account>;
-    const kyc = parsed.kyc;
-    if (!kyc || typeof kyc !== "object") return { status: "not_started", completeness: 0 };
-    const allowed: KycStatus[] = ["not_started", "requested", "in_review", "approved", "needs_attention"];
-    return {
-      status: allowed.includes(kyc.status as KycStatus) ? (kyc.status as KycStatus) : "not_started",
-      completeness: typeof kyc.completeness === "number" ? kyc.completeness : 0,
-      requestedAt: typeof kyc.requestedAt === "number" ? kyc.requestedAt : undefined,
-    };
+    return raw ? (JSON.parse(raw) as Partial<Account>) : null;
   } catch {
-    return { status: "not_started", completeness: 0 };
+    return null;
   }
+}
+
+/** One pending review in the admin KYC queue. */
+export type KycQueueItem = {
+  userId: string;
+  name: string;
+  email: string;
+  business: string;
+  accountType: "personal" | "business";
+  kyc: KycRecord;
+};
+
+/** All member verifications awaiting compliance review (oldest first). */
+export function listKycQueue(): KycQueueItem[] {
+  const users = getUsers().filter(u => u.role !== "superadmin");
+  const items: KycQueueItem[] = [];
+  for (const u of users) {
+    const kyc = readStoredAccount(u.id)?.kyc;
+    if (!kyc || kyc.status !== "in_review") continue;
+    items.push({
+      userId: u.id,
+      name: u.name,
+      email: u.email,
+      business: u.business || "",
+      accountType: u.accountType === "personal" ? "personal" : "business",
+      kyc: kyc as KycRecord,
+    });
+  }
+  return items.sort((a, b) => (a.kyc.submission?.submittedAt ?? a.kyc.lastUpdated) - (b.kyc.submission?.submittedAt ?? b.kyc.lastUpdated));
+}
+
+/** Admin decision on a member's verification: approve or request changes. */
+export function resolveKycForUser(
+  userId: string,
+  profile: Profile,
+  decision: "approved" | "needs_attention",
+  note: string,
+  adminName: string,
+): void {
+  const account = load(userId, profile);
+  const approved = decision === "approved";
+  const attribution = `Reviewed by ${adminName}.`;
+  const next: Account = {
+    ...account,
+    kyc: {
+      ...account.kyc,
+      status: decision,
+      completeness: approved ? 100 : account.kyc.completeness,
+      lastUpdated: Date.now(),
+      nextStep: approved
+        ? "Identity verified — all account limits are unlocked."
+        : note || "One or more documents need attention before approval can continue.",
+      ...(approved ? { requestedAt: undefined, requestedBy: undefined, requestReason: undefined, requirements: undefined } : {}),
+    },
+    notifications: pushNote(account, approved
+      ? { title: "Identity verification approved", detail: `${note || "Your identity is verified and all account limits are now unlocked."} ${attribution}`, type: "security" }
+      : { title: "Verification changes requested", detail: `${note || "Our compliance team needs another look at one or more documents."} ${attribution}`, type: "security" }),
+  };
+  save(userId, next);
 }
 
 /* ============================================================

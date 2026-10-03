@@ -6,7 +6,7 @@ import {
   FileText, Activity, AlertOctagon, UserCheck, Mail
 } from "lucide-react";
 import { useAuth, getUsers } from "../lib/auth";
-import { useAcct, money, longDate, requestKycForUser, peekKycForUser, type KycRequirement } from "../lib/store";
+import { useAcct, money, longDate, requestKycForUser, peekKycForUser, listKycQueue, resolveKycForUser, type KycQueueItem, type KycRequirement } from "../lib/store";
 import { useToast } from "../components/Toast";
 
 export function SuperAdminPage() {
@@ -14,7 +14,7 @@ export function SuperAdminPage() {
   const { account, advanceDispute, toggleFreeze, exportCSV, adminAdjustBalance } = useAcct();
   const toast = useToast();
 
-  const [activeTab, setActiveTab] = useState<"overview" | "users" | "ledger" | "cards" | "disputes" | "system">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "users" | "kyc" | "ledger" | "cards" | "disputes" | "system">("overview");
   const [searchTerm, setSearchTerm] = useState("");
   const [systemFrozen, setSystemFrozen] = useState(false);
   const [interestRate, setInterestRate] = useState("4.25");
@@ -27,6 +27,8 @@ export function SuperAdminPage() {
   const [kycReqs, setKycReqs] = useState<KycRequirement[]>(["identity", "address"]);
   const [kycReason, setKycReason] = useState("");
   const [kycTick, setKycTick] = useState(0);
+  const [kycReview, setKycReview] = useState<KycQueueItem | null>(null);
+  const [kycDecisionNote, setKycDecisionNote] = useState("");
 
   // Protect route
   if (user?.role !== "superadmin" && user?.email !== "admin@veyra.com") {
@@ -49,6 +51,31 @@ export function SuperAdminPage() {
       u.business.toLowerCase().includes(searchTerm.toLowerCase())
     );
   }, [allUsers, searchTerm]);
+
+  /** Member verifications submitted for compliance review. */
+  const kycQueue = useMemo(() => listKycQueue(), [kycTick, activeTab]);
+
+  /** Approve or request changes on a member's verification. */
+  const handleKycDecision = (decision: "approved" | "needs_attention") => {
+    if (!kycReview) return;
+    resolveKycForUser(kycReview.userId, {
+      name: kycReview.name,
+      business: kycReview.business,
+      email: kycReview.email,
+      accountType: kycReview.accountType,
+    }, decision, kycDecisionNote.trim(), user?.name || "Veyra compliance");
+    const member = kycReview.name;
+    setKycReview(null);
+    setKycDecisionNote("");
+    setKycTick(t => t + 1);
+    toast({
+      tone: decision === "approved" ? "success" : "info",
+      title: decision === "approved" ? "Verification approved" : "Changes requested",
+      description: decision === "approved"
+        ? `${member} is verified — all account limits are unlocked.`
+        : `${member} was asked to update their verification documents.`,
+    });
+  };
 
   const handleSystemHaltToggle = () => {
     setSystemFrozen(prev => !prev);
@@ -149,6 +176,11 @@ export function SuperAdminPage() {
           <strong className={`kpi-val ${disputes.length > 0 ? "warn-red" : ""}`}>{disputes.length}</strong>
           <small className="kpi-sub"><ShieldAlert size={12} /> Awaiting arbitrator review</small>
         </div>
+        <div className="admin-kpi-card">
+          <span className="kpi-label">Pending KYC Reviews</span>
+          <strong className={`kpi-val ${kycQueue.length > 0 ? "warn-red" : ""}`}>{kycQueue.length}</strong>
+          <small className="kpi-sub"><UserCheck size={12} /> Submitted verifications</small>
+        </div>
       </div>
 
       {/* Admin Tabs */}
@@ -156,6 +188,7 @@ export function SuperAdminPage() {
         {[
           { id: "overview", label: "Executive Overview", icon: <Activity size={15} /> },
           { id: "users", label: `User Directory (${allUsers.length})`, icon: <Users size={15} /> },
+          { id: "kyc", label: `KYC Queue (${kycQueue.length})`, icon: <UserCheck size={15} /> },
           { id: "ledger", label: `Transaction Log (${txns.length})`, icon: <FileText size={15} /> },
           { id: "cards", label: `Card Fleet (${cards.length})`, icon: <CreditCard size={15} /> },
           { id: "disputes", label: `Arbitration (${disputes.length})`, icon: <ShieldAlert size={15} /> },
@@ -346,6 +379,71 @@ export function SuperAdminPage() {
                 </tbody>
               </table>
             </div>
+          </section>
+        </div>
+      )}
+
+      {/* TAB 2B: KYC VERIFICATION QUEUE */}
+      {activeTab === "kyc" && (
+        <div className="admin-tab-pane">
+          <section className="panel admin-panel">
+            <div className="panel-head">
+              <div>
+                <h2>KYC Verification Queue</h2>
+                <span className="panel-sub">Review submitted identities and unlock account limits</span>
+              </div>
+            </div>
+
+            {kycQueue.length > 0 ? (
+              <div className="admin-table-wrap">
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th>Member</th>
+                      <th>Account</th>
+                      <th>Submitted</th>
+                      <th>Legal name</th>
+                      <th>Document</th>
+                      <th>Files</th>
+                      <th>Source of funds</th>
+                      <th className="ta-r">Compliance Decision</th>
+                    </tr>
+                  </thead>
+                  <tbody key={kycTick}>
+                    {kycQueue.map(q => (
+                      <tr key={q.userId}>
+                        <td><strong>{q.name}</strong><br /><small>{q.email}</small></td>
+                        <td>
+                          <span className={`chip ${q.accountType === "personal" ? "chip-green" : "chip-violet"}`}>
+                            {q.accountType.toUpperCase()}
+                          </span>
+                        </td>
+                        <td><small>{q.kyc.submission ? longDate(q.kyc.submission.submittedAt) : "—"}</small></td>
+                        <td>{q.kyc.submission?.legalName ?? "—"}</td>
+                        <td><small>{q.kyc.submission?.documentType ?? q.kyc.documentType}</small></td>
+                        <td><small>{q.kyc.submission?.documents.filter(d => d.name).length ?? 0} uploaded</small></td>
+                        <td><small>{q.kyc.submission?.source ?? "—"}</small></td>
+                        <td className="ta-r">
+                          <button
+                            type="button"
+                            className="solid-btn sm"
+                            onClick={() => { setKycReview(q); setKycDecisionNote(""); }}
+                          >
+                            <Search size={13} /> Review
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <UserCheck size={28} />
+                <strong>Verification Queue is Empty</strong>
+                <p>No members have submitted identity documents for review. Requests you send appear in the User Directory.</p>
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -613,6 +711,81 @@ export function SuperAdminPage() {
               <Mail size={14} /> Open email template studio
             </a>
           </section>
+        </div>
+      )}
+
+      {/* KYC Review & Decision Modal */}
+      {kycReview && (
+        <div className="modal-scrim" onClick={() => setKycReview(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Verification review: {kycReview.name}</h3>
+            </div>
+            <div className="dash-form">
+              {(() => {
+                const s = kycReview.kyc.submission;
+                const rows: Array<[string, string]> = s ? [
+                  ["Legal name", s.legalName],
+                  ["Date of birth", s.dob || "—"],
+                  ["Country", s.country],
+                  ["Document type", s.documentType],
+                  ["Tax ID (last 4)", s.taxId ? `•••• ${s.taxId}` : "—"],
+                  ["Source of funds", s.source],
+                  ...(s.registration ? [["Registration", s.registration] as [string, string]] : []),
+                  ...(s.industry ? [["Industry", s.industry] as [string, string]] : []),
+                  ["Submitted", longDate(s.submittedAt)],
+                ] : [["Status", "No submission details — member was moved to review manually."]];
+                return (
+                  <>
+                    <div className="kyc-review-rows">
+                      {rows.map(([label, value]) => (
+                        <div key={label}><span>{label}</span><strong>{value}</strong></div>
+                      ))}
+                    </div>
+                    {s && s.documents.length > 0 && (
+                      <div className="kyc-doc-review-list">
+                        <label>Submitted documents</label>
+                        {s.documents.map(d => (
+                          <div key={d.key} className="kyc-doc-review-item">
+                            <FileText size={14} />
+                            <span>{d.label}</span>
+                            <small>{d.name || "—"}</small>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+
+              <label htmlFor="adm-kyc-note">Note to the member (required for changes)</label>
+              <textarea
+                id="adm-kyc-note"
+                rows={3}
+                placeholder="e.g. The address document is older than 3 months — please upload a recent utility bill."
+                value={kycDecisionNote}
+                onChange={e => setKycDecisionNote(e.target.value)}
+              />
+
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  disabled={kycDecisionNote.trim().length === 0}
+                  onClick={() => handleKycDecision("needs_attention")}
+                >
+                  <RefreshCw size={14} /> Request changes
+                </button>
+                <button
+                  type="button"
+                  className="solid-btn"
+                  onClick={() => handleKycDecision("approved")}
+                >
+                  <Check size={14} /> Approve verification
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

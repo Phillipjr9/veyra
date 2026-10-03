@@ -2574,6 +2574,18 @@ export function KYCPage() {
       country: form.country,
       nextStep: "Documents submitted — our compliance team is verifying your details. Most reviews complete within 1–2 business days.",
       requestedAt: undefined,
+      submission: {
+        legalName: form.legalName,
+        dob: form.dob,
+        country: form.country,
+        documentType: form.documentType,
+        source: form.source,
+        taxId: form.taxId,
+        registration: isBusiness ? form.registration : undefined,
+        industry: isBusiness ? form.industry : undefined,
+        documents: tiles.map(t => ({ key: t.key, label: t.label, name: uploads[t.key] ?? "" })),
+        submittedAt: Date.now(),
+      },
     });
     toast({ tone: "success", title: "Verification submitted", description: "We'll email you as soon as the review completes." });
   };
@@ -2583,10 +2595,8 @@ export function KYCPage() {
   return (
     <div className="app-page">
       <PageHeader eyebrow="Identity verification · Compliance · Account limits" title="Identity verification">
-        {status !== "approved" && status !== "in_review" && (
-          <button type="button" className="ghost-btn sm" onClick={() => updateKyc({ status: "needs_attention", completeness: Math.max(40, kyc.completeness - 10), nextStep: "Our compliance team needs one more document before your review can continue." })}>
-            <ShieldAlert size={14} /> Simulate admin follow-up
-          </button>
+        {status === "in_review" && (
+          <Link to="/app" className="ghost-btn sm"><LayoutDashboard size={14} /> Back to dashboard</Link>
         )}
       </PageHeader>
 

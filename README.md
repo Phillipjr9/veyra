@@ -2,7 +2,7 @@
 
 A high-fidelity demo banking product: marketing site, personal & business dashboards,
 cards, transfers, invoicing, Scout AI savings, statements, a Super Admin console —
-and a 24-template transactional email system — built on one design system.
+and a 25-template transactional email system — built on one design system.
 
 > **Fictional product.** No real accounts, cards or payments. Banking copy is
 > illustrative only.
@@ -98,8 +98,12 @@ and `APP_BASE` in `src/emails/design.ts` to your real domains.
 2. The member sees a non-dismissible alert banner atop every dashboard page
    (who requested, why, which documents) with a **Verify identity** CTA.
 3. The member completes a 3-step wizard (details → documents → review & submit)
-   at `/app/kyc` (also reachable via ⌘K and Security Center).
-4. Status is visible to the admin in the user directory (`peekKycForUser`).
+   at `/app/kyc` (also reachable via ⌘K and Security Center). The submission
+   (details + uploaded documents) is stored on the account.
+4. The submission lands in **SuperAdmin → KYC Queue**: review the full
+   submission, then **Approve** (limits unlock, member notified) or
+   **Request changes** (member's banner shows the admin's note).
+5. Status is visible to the admin in the user directory (`peekKycForUser`).
 
 State lives in `KycRecord` (`src/lib/store.tsx`); `requestKycForUser()` writes
 the request cross-account with an in-app notification.
