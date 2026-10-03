@@ -1766,8 +1766,15 @@
 .admin-app .stat, .admin-app .routing-card { background: #111721; border-color: #1e2634; color: #e8ecf3; }
 .admin-app .app-head, .admin-app .superadmin-page > header { border: 0; }
 
+.cr-burger { display: none; width: 34px; height: 34px; place-items: center; border: 1px solid #232c3b; border-radius: 6px; background: #131a25; color: #dbe2ec; }
+.cr-scrim { display: none; }
+
 @media (max-width: 900px) {
   .admin-app { grid-template-columns: minmax(0, 1fr); }
-  .cr-rail { position: fixed; left: 0; top: 0; width: 232px; transform: translateX(-104%); transition: transform .28s var(--ease); }
+  .cr-rail { position: fixed; left: 0; top: 0; z-index: 90; width: 236px; transform: translateX(-104%); transition: transform .28s var(--ease); }
+  .admin-app.rail-open .cr-rail { transform: none; }
+  .admin-app.rail-open .cr-scrim { display: block; position: fixed; inset: 0; z-index: 85; border: 0; background: rgba(4, 6, 10, .66); }
   .cr-rail-item { height: 38px; }
+  .cr-burger { display: grid; }
+  .cr-main { padding: 14px 14px 48px; }
 }

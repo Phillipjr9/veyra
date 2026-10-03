@@ -154,8 +154,16 @@
 }
 @media (max-width: 720px) {
   .bshell-main { padding: 16px 14px 96px; }
-  .bshell-bar { padding: 0 14px; gap: 10px; }
+  .bshell-bar { padding: 0 14px; gap: 8px; }
   .bshell-bar-actions .bshell-act:not(.primary) { display: none; }
+  /* Keep the company name on one line; the plan/account line is desktop detail. */
+  .bshell-org strong { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bshell-org small { display: none; }
+  .bshell-org-icon { display: none; }
+  /* Sparklines need width to read; at this size they render as stray strokes. */
+  .b-kpi-spark { display: none; }
+  .b-kpi { min-height: 0; padding-bottom: 16px; }
+  .b-kpi-value { font-size: 20px; }
   .b-kpis { grid-template-columns: minmax(0, 1fr); }
   .b-controls { grid-template-columns: minmax(0, 1fr); }
   .bshell-fab { position: fixed; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 85; display: inline-flex; align-items: center; gap: 8px; height: 46px; padding: 0 18px; border: 0; border-radius: 999px; background: #12161f; color: #fff; font-size: 13px; font-weight: 600; box-shadow: 0 14px 34px rgba(12,16,24,.32); }

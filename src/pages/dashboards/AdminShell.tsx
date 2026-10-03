@@ -7,9 +7,9 @@
  * treasury, dark rail on light canvas) dashboards but the data it reports — an
  * operator should know which surface they are on from across the room.
  */
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Activity, LogOut, Radio } from "lucide-react";
+import { Activity, LogOut, Menu, Radio, X } from "lucide-react";
 import { Logo } from "../../components/common";
 
 export type AdminModule = { id: string; label: string; icon: ReactNode; perm?: string; count?: number };
@@ -27,12 +27,13 @@ export function AdminShell({
   uptimeSec: number | null;
   children: ReactNode;
 }) {
+  const [railOpen, setRailOpen] = useState(false);
   const uptime = uptimeSec === null ? null : uptimeSec > 3600
     ? `${Math.floor(uptimeSec / 3600)}h ${Math.floor((uptimeSec % 3600) / 60)}m`
     : `${Math.floor(uptimeSec / 60)}m ${uptimeSec % 60}s`;
 
   return (
-    <div className="admin-app">
+    <div className={`admin-app ${railOpen ? "rail-open" : ""}`}>
       <aside className="cr-rail" aria-label="Admin modules">
         <div className="cr-rail-brand">
           <Logo to="/app/superadmin" inverse />
@@ -64,8 +65,13 @@ export function AdminShell({
         </div>
       </aside>
 
+      <button type="button" className="cr-scrim" aria-label="Close modules" onClick={() => setRailOpen(false)} />
+
       <div className="cr-body">
         <header className="cr-bar">
+          <button type="button" className="cr-burger" onClick={() => setRailOpen(o => !o)} aria-expanded={railOpen} aria-label="Toggle modules">
+            {railOpen ? <X size={18} /> : <Menu size={18} />}
+          </button>
           <div className="cr-bar-left">
             <span className="cr-env">PRODUCTION</span>
             <span className="cr-sep" />
@@ -80,7 +86,7 @@ export function AdminShell({
             <span className="cr-avatar"><img src={user.avatarUrl || "/images/avatar-3d-default.svg"} alt="" /></span>
           </div>
         </header>
-        <main className="cr-main">{children}</main>
+        <main className="cr-main" onClick={() => railOpen && setRailOpen(false)}>{children}</main>
       </div>
     </div>
   );

@@ -174,6 +174,11 @@
   .p-hero { padding: 22px; border-radius: 24px; }
   .p-strip-btn { margin-left: 0; }
   .p-strip-dot { display: none; }
+  /* The cash-back strip stacks instead of squeezing its copy into a column. */
+  .p-rewards { align-items: flex-start; gap: 12px; padding: 16px; }
+  .p-rewards-copy { flex: 1 1 100%; order: 1; }
+  .p-rewards-icon { order: 0; }
+  .p-rewards-btn { order: 2; width: 100%; justify-content: center; }
   .pshell-tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 95; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid rgba(24,23,29,.1); background: rgba(255,253,249,.96); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
   .pshell-tab { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 0; border-radius: 14px; color: #7b7684; font-size: 10.5px; font-weight: 600; }
   .pshell-tab.on { background: #f1ecff; color: var(--violet); }
