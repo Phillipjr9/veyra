@@ -14,6 +14,10 @@ export default defineConfig({
   server: {
     host: true,
     allowedHosts: true,
+    // Preview frames hold their document for a long time; without this a tab can
+    // keep running a bundle from before the last fix and look broken after the
+    // code is already repaired. Dev only — the build is unaffected.
+    headers: { "Cache-Control": "no-store" },
     // Dev proxy: run `npm run server` (port 8787) and the frontend talks to
     // the real Express API via relative /api URLs — no CORS, no localhost in browser code.
     proxy: {

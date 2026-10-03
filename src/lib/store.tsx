@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiReachability, probeApi, getToken } from "./api";
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiReachability, probeApi, getToken, ApiError, endSession } from "./api";
 import { useToast } from "../components/Toast";
 import { useAuth } from "./auth";
 
@@ -543,6 +543,14 @@ function useAccountState() {
         setAccountError(null);
       } catch (err) {
         if (cancelled) return;
+        // A rejected session is not an account problem: end it so the login
+        // form asks for credentials instead of parking the member on an error
+        // card they cannot act on. (This also covers the case where the request
+        // went out with no token at all — blocked storage, cleared profile.)
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          endSession();
+          return;
+        }
         setAccountError(err instanceof Error ? err.message : "Could not load your account.");
       }
     })();

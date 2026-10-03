@@ -568,7 +568,12 @@ export function DashboardLayout() {
       <div className="route-loading" style={{ flexDirection: "column", gap: 12, padding: 24, textAlign: "center" }}>
         <strong style={{ fontSize: 16 }}>We couldn't load your account</strong>
         <span style={{ color: "var(--muted)", fontSize: 13.5, maxWidth: 420, lineHeight: 1.6 }}>{accountError}</span>
-        <button type="button" className="solid-btn sm" onClick={() => window.location.reload()}>Retry</button>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
+          <button type="button" className="solid-btn sm" onClick={() => window.location.reload()}>Retry</button>
+          {/* Belt and braces: whatever went wrong with the session, the member
+              can always get back to a sign-in form from here. */}
+          <button type="button" className="ghost-btn sm" onClick={logout}>Sign in again</button>
+        </div>
       </div>
     );
   }

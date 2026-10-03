@@ -80,6 +80,18 @@ function sessionRejected(hadToken: boolean): void {
 }
 
 /**
+ * Ends the session outright. Used when a 401 arrives on a request that carried
+ * no token while the app believes someone is signed in: that combination can
+ * only mean the session is unusable (the browser dropped the token — blocked
+ * storage, a cleared profile — or it was never there), so the caller must not
+ * render a dead end. The login form takes over and says why.
+ */
+export function endSession(): void {
+  clearToken();
+  unauthorizedListeners.forEach(listener => listener());
+}
+
+/**
  * Tri-state reachability, read synchronously from the last probe (null → the
  * first probe hasn't resolved). Callers that must decide whether to *send*
  * something treat "unknown" as "try it" — the request itself is the better
