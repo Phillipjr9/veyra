@@ -58,6 +58,9 @@ const FONTS_LINK =
 export const ASSET_BASE = "https://veyra.com";
 const LOGO_URL = `${ASSET_BASE}/images/email/logo-mark.png`;
 
+/** Absolute base URL of the authenticated app — used for email CTA links. */
+export const APP_BASE = "https://app.veyra.com";
+
 /** Escapes user-supplied strings so injected names/merchants can't break markup. */
 export const esc = (s: string): string =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -195,10 +198,10 @@ const FOOTER = (extraLinks: string | undefined) => `
   <tr>
     <td align="center" style="padding:30px 24px 36px;font-family:${FONT_BODY};font-size:12px;line-height:1.7;color:${T.muted};">
       Questions? Our team is available 24/7 in the
-      <a href="#" style="color:${T.violetDark};font-weight:600;text-decoration:none;">help center</a>
+      <a href="${APP_BASE}/support-desk" style="color:${T.violetDark};font-weight:600;text-decoration:none;">help center</a>
       or right from the app.
       <br>
-      <a href="#" style="color:${T.violetDark};font-weight:600;text-decoration:none;">Manage notification settings</a>
+      <a href="${APP_BASE}/settings" style="color:${T.violetDark};font-weight:600;text-decoration:none;">Manage notification settings</a>
       ${extraLinks ? `&nbsp;&nbsp;&#183;&nbsp;&nbsp;${extraLinks}` : ""}
       <br><br>
       You're receiving this email because you have a Veyra account.

@@ -11,7 +11,7 @@
  * these builders, swap the sample values for real data, and send.
  */
 import {
-  emailShell, eyebrow, h1, p, amount, pill, details, btn, textLink, note, progress,
+  APP_BASE, emailShell, eyebrow, h1, p, amount, pill, details, btn, textLink, note, progress,
 } from "./design";
 
 export type EmailCategory = "security" | "transfers" | "cards" | "invoices" | "scout" | "account";
@@ -25,7 +25,7 @@ export interface EmailTemplate {
   html: string;
 }
 
-const APP = "https://app.veyra.com";
+const APP = APP_BASE;
 
 /* ============================================================ SECURITY */
 
@@ -69,7 +69,7 @@ const passwordReset: EmailTemplate = {
       ${eyebrow("Account access")}
       ${h1("Reset your password")}
       ${p("Hi Hana — we received a request to reset the password for your Veyra account. Choose a new password using the button below.")}
-      ${btn("Choose a new password", `${APP}/reset-password?token=sample`)}
+      ${btn("Choose a new password", `${APP}/forgot-password`)}
       ${details([
         ["Requested from", "Chrome on macOS"],
         ["Date & time", "Oct 2, 2026 · 9:41 AM PT"],
@@ -646,7 +646,7 @@ const teamInvite: EmailTemplate = {
         ["Invited by", "Hana Park · hana@parkandco.com"],
         ["Invitation expires", "In 7 days"],
       ])}
-      ${btn("Accept invitation", `${APP}/invite/accept`)}
+      ${btn("Accept invitation", `${APP}/invite/accept?email=june%40parkandco.com&business=Park%20%26%20Co%20Studio&role=Team%20member`)}
       ${note("You'll create your own password when you accept — Hana's credentials are never shared with you.")}
     `,
   }),

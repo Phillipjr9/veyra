@@ -387,3 +387,75 @@ export function ForgotPasswordPage() {
     </AuthShell>
   );
 }
+
+/* ============================================================
+   Team invite acceptance (linked from the "You're invited" email)
+   ============================================================ */
+export function InviteAcceptPage() {
+  const { signup, user } = useAuth();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const email = params.get("email") ?? "";
+  const business = params.get("business") ?? "";
+  const role = params.get("role") ?? "Team member";
+  const [form, setForm] = useState({ name: "", password: "" });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Already signed in — nothing to accept, straight to the dashboard.
+  if (user) { navigate("/app", { replace: true }); return null; }
+
+  const valid = email.includes("@") && business.trim().length > 0;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    if (form.password.length < 8) return setError("Use at least 8 characters for your password.");
+    setBusy(true);
+    try {
+      await signup({ name: form.name, business, accountType: "business", email, password: form.password, plan: "Pro" });
+      navigate("/app?welcome=1", { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally { setBusy(false); }
+  }
+
+  if (!valid) {
+    return (
+      <AuthShell title="Invitation not found" sub="This invitation link is incomplete or has expired."
+        foot={<>Want an account anyway? <Link to="/signup">Open one now</Link></>}>
+        <div className="reset-success">
+          <Building2 />
+          <p>Ask your team admin to resend the invitation, or open a Veyra account on your own.</p>
+          <Link className="auth-submit" to="/signup">Open an account</Link>
+        </div>
+      </AuthShell>
+    );
+  }
+
+  return (
+    <AuthShell title={`Join ${business} on Veyra`} sub="Create your password to accept the invitation."
+      foot={<>Already have a Veyra account? <Link to="/login">Sign in</Link></>}>
+      <form className="auth-form" onSubmit={submit}>
+        <div className="invite-summary">
+          <Building2 size={16} />
+          <div>
+            <strong>{business}</strong>
+            <small>{role} · invited to {email}</small>
+          </div>
+        </div>
+        <label htmlFor="inv-name">Your legal name</label>
+        <input id="inv-name" required autoComplete="name" placeholder="June Okafor" value={form.name}
+          onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+        <label htmlFor="inv-pass">Create a password</label>
+        <input id="inv-pass" type="password" required autoComplete="new-password" placeholder="At least 8 characters" value={form.password}
+          onChange={e => setForm(f => ({ ...f, password: e.target.value }))} />
+        {error && <p className="form-error">{error}</p>}
+        <button className="auth-submit" type="submit" disabled={busy}>
+          {busy ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />} Accept invitation
+        </button>
+        <p className="auth-legal">You'll get your own password — the person who invited you never sees it.</p>
+      </form>
+    </AuthShell>
+  );
+}

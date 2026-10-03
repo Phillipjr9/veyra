@@ -7,7 +7,7 @@ import { MoneyFlowProvider } from "./components/MoneyFlow";
 import { ToastProvider } from "./components/Toast";
 import { Header, Footer } from "./components/Chrome";
 import Landing from "./Landing";
-import { LoginPage, SignupPage, ForgotPasswordPage } from "./pages/Auth";
+import { LoginPage, SignupPage, ForgotPasswordPage, InviteAcceptPage } from "./pages/Auth";
 import {
   PlatformPage, ScoutPage, PricingPage, SecurityPage, SupportPage,
   ContactPage, AboutPage, CareersPage, LegalPage, NotFoundPage,
@@ -75,6 +75,7 @@ function Shell() {
         <Route path="/login" element={<RedirectIfAuthed><LoginPage /></RedirectIfAuthed>} />
         <Route path="/signup" element={<RedirectIfAuthed><SignupPage /></RedirectIfAuthed>} />
         <Route path="/forgot-password" element={<RedirectIfAuthed><ForgotPasswordPage /></RedirectIfAuthed>} />
+        <Route path="/invite/accept" element={<RedirectIfAuthed><InviteAcceptPage /></RedirectIfAuthed>} />
 
         <Route
           path="/app"
