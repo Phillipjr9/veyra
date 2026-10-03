@@ -11,6 +11,11 @@
  * Fonts are linked in <head> (rendered by Apple Mail, iOS, Thunderbird and
  * other web-font-capable clients); everyone else falls back to the same
  * system stacks used on the website.
+ *
+ * The logo is a hosted PNG (ASSET_BASE + /images/email/logo-mark.png) rather
+ * than inline SVG — Gmail and Outlook strip <svg> elements, so a raster mark
+ * plus the styled "Veyra" wordmark is the only combination that renders
+ * everywhere. The wordmark also covers clients that block remote images.
  */
 
 /* ---------- Tokens (keep in sync with src/index.css) ---------- */
@@ -43,18 +48,19 @@ export const FONT_BODY = "'DM Sans', -apple-system, 'Segoe UI', Helvetica, Arial
 const FONTS_LINK =
   "https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&display=swap";
 
+/**
+ * Absolute base URL for hosted email assets (logo images). Emails can't use
+ * relative paths — point this at your production domain or CDN before sending.
+ * The 2x logo lives at public/images/email/logo-mark.png; serve it from e.g.
+ * https://veyra.com/images/email/logo-mark.png. The in-app studio rewrites
+ * this base to a relative path so previews load assets from the app itself.
+ */
+export const ASSET_BASE = "https://veyra.com";
+const LOGO_URL = `${ASSET_BASE}/images/email/logo-mark.png`;
+
 /** Escapes user-supplied strings so injected names/merchants can't break markup. */
 export const esc = (s: string): string =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-/* ---------- Inline Veyra mark (no external images in email) ---------- */
-const MARK = (size = 26, color = T.violet) => `
-<svg width="${size}" height="${size}" viewBox="0 0 36 36" fill="none" aria-hidden="true" style="display:block;">
-  <path d="M6.5 8.5h4.2a7.3 7.3 0 0 1 7.3 7.3v12" stroke="${color}" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M29.5 8.5h-4.2a7.3 7.3 0 0 0-7.3 7.3" stroke="${color}" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M13.2 23.2H18" stroke="${color}" stroke-width="2.6" stroke-linecap="round" opacity=".68"/>
-  <circle cx="18" cy="29" r="1.7" fill="${color}"/>
-</svg>`;
 
 /* ---------- Building blocks ---------- */
 
@@ -175,7 +181,9 @@ const HEADER = `
   <tr>
     <td style="padding:0 0 22px;">
       <table role="presentation" cellpadding="0" cellspacing="0"><tr>
-        <td width="38" style="padding-right:11px;">${MARK()}</td>
+        <td width="38" style="padding-right:11px;">
+          <img src="${LOGO_URL}" width="26" height="26" alt="Veyra" style="display:block;width:26px;height:26px;border:0;outline:none;text-decoration:none;">
+        </td>
         <td style="font-family:${FONT_DISPLAY};font-size:22px;font-weight:700;letter-spacing:-1.3px;color:${T.ink};">Veyra</td>
       </tr></table>
     </td>
@@ -186,10 +194,16 @@ const FOOTER = (extraLinks: string | undefined) => `
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;">
   <tr>
     <td align="center" style="padding:30px 24px 36px;font-family:${FONT_BODY};font-size:12px;line-height:1.7;color:${T.muted};">
+      Questions? Our team is available 24/7 in the
+      <a href="#" style="color:${T.violetDark};font-weight:600;text-decoration:none;">help center</a>
+      or right from the app.
+      <br>
       <a href="#" style="color:${T.violetDark};font-weight:600;text-decoration:none;">Manage notification settings</a>
       ${extraLinks ? `&nbsp;&nbsp;&#183;&nbsp;&nbsp;${extraLinks}` : ""}
       <br><br>
-      Veyra Financial, Inc. &#183; 548 Market Street, San Francisco, CA 94104
+      You're receiving this email because you have a Veyra account.
+      <br>
+      Veyra Financial, Inc. &#183; 100 Market Street, Suite 400, San Francisco, CA
       <br>
       Veyra is a financial technology company, not a bank. Banking services would be provided by partner institutions, Members FDIC.
       <br>

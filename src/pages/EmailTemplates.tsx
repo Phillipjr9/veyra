@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Monitor, Smartphone, Copy, ExternalLink, Info } from "lucide-react";
 import { emailTemplates, emailCategories, type EmailCategory } from "../emails/templates";
+import { ASSET_BASE } from "../emails/design";
 import { useToast } from "../components/Toast";
 import "../styles/emails.css";
 
@@ -39,6 +40,10 @@ export function EmailTemplatesPage() {
 
   const active = emailTemplates.find(t => t.id === activeId) ?? emailTemplates[0];
 
+  // Email assets use absolute URLs for real sends; rewrite them to relative
+  // paths so the iframe preview and standalone view load the logo from this app.
+  const previewHtml = (html: string) => html.split(`${ASSET_BASE}/`).join("/");
+
   const copyHtml = async () => {
     try {
       await navigator.clipboard.writeText(active.html);
@@ -49,7 +54,7 @@ export function EmailTemplatesPage() {
   };
 
   const openStandalone = () => {
-    const blob = new Blob([active.html], { type: "text/html" });
+    const blob = new Blob([previewHtml(active.html)], { type: "text/html" });
     window.open(URL.createObjectURL(blob), "_blank", "noopener");
   };
 
@@ -138,7 +143,7 @@ export function EmailTemplatesPage() {
                 key={active.id + (mobile ? "-m" : "-d")}
                 title={`${active.name} email preview`}
                 className={`email-frame ${mobile ? "mobile" : ""}`}
-                srcDoc={active.html}
+                srcDoc={previewHtml(active.html)}
                 sandbox=""
               />
             </div>
@@ -150,9 +155,11 @@ export function EmailTemplatesPage() {
           <span>
             Templates live in <code>src/emails/</code> (design tokens in <code>design.ts</code>, templates in{" "}
             <code>templates.ts</code>) and render with the product palette — Manrope for headings, DM Sans for body,
-            violet <code>#7558dc</code> accents on paper <code>#f5f2eb</code>. Fonts are web-linked with system
-            fallbacks for email clients that block web fonts; exported HTML files sit in <code>emails/</code> for
-            hand-off to your sending provider.
+            violet <code>#7558dc</code> accents on paper <code>#f5f2eb</code>. The logo is a hosted PNG
+            (<code>public/images/email/logo-mark.png</code>) because Gmail and Outlook strip inline SVG; set{" "}
+            <code>ASSET_BASE</code> in <code>design.ts</code> to your sending domain before hooking up a provider.
+            Fonts are web-linked with system fallbacks for clients that block web fonts; exported HTML files sit in{" "}
+            <code>emails/</code> for hand-off.
           </span>
         </div>
       </section>
