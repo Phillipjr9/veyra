@@ -97,6 +97,7 @@ emails/                 Exported standalone HTML (build:emails)
 scripts/
   test-permissions.ts  RBAC mirror unit tests (14 checks)
   check-emails.mjs     Email template validation (25 checks)
+  check-api-coverage.mjs  Route coverage: every server route has a caller (1 check)
   build-emails.ts      Email export
 public/images/email/    Hosted logo PNG for emails (Gmail/Outlook-safe)
 server/
@@ -109,7 +110,7 @@ server/
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   112-check integration suite (boots the real server)
+  scripts/test-api.ts   119-check integration suite (boots the real server)
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -153,7 +154,8 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 105-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 119-check integration suite (fresh DB, ephemeral port)
+npm run check:routes      # fails if a server route has no caller in the app
 npm run typecheck:server  # strict NodeNext typecheck
 ```
 
@@ -173,6 +175,28 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Secrets | `TOKEN_SECRET` env required in production (refuses to boot on the dev fallback) |
 | Password reset | Single-use SHA-256-hashed tokens, 30-minute expiry, reset revokes all sessions |
 | Bootstrap | First Super Admin created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` — no seeded accounts in production |
+
+### Route coverage
+
+`npm run check:routes` diffs the routes declared in `server/src/app.ts` against
+every call site in the app (`src/lib/*`, `src/pages/*`, `src/components/*`,
+including lookup tables and `fetch` downloads) and fails on either kind of
+drift: a server route nobody calls, or a client call with no route behind it.
+Reads that already ship inside the `GET /api/me/state` / `GET /api/admin/state`
+snapshots are the only allowlisted exceptions, spelled out in the script.
+
+Every member mutation is optimistic in the UI and replayed against the API, then
+reconciled with the refreshed snapshot: the server is authoritative, so a
+rejected action (insufficient funds, halted rails, restricted account) rolls the
+optimistic state back and surfaces the server's error. Records created client
+side get a local id until the create response returns the server's id
+(`adoptId`/`resolveId` in `src/lib/store.tsx`), so a follow-up action taken in
+the same breath — pay this invoice, move money out of this pocket — still hits
+the right row.
+
+Console CSV exports are generated server-side from the database (full ledger,
+not the console's window) via `GET /api/admin/reports/:kind.csv` and
+`GET /api/admin/audit/export.csv`, downloaded with the session token.
 
 ### API surface (summary)
 
@@ -217,7 +241,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + API integration (112) = 151 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + API integration (119) = 159 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

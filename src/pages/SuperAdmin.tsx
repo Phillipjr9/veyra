@@ -6,11 +6,11 @@ import {
   TrendingUp, UserCheck, UserRound, Users, Wallet,
 } from "lucide-react";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
+  Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
-import { apiGet, apiPost, apiPut } from "../lib/api";
+import { apiGet, apiGetText, apiPost, apiPut } from "../lib/api";
 import {
   money, longDate, downloadFile,
   type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
@@ -52,9 +52,6 @@ const ago = (ts: number) => {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 };
-
-const csv = (rows: Array<Array<string | number>>) =>
-  rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
 
 /** Audit entry as served by GET /api/admin/state (append-only, server-side). */
 type AuditEntry = {
@@ -370,23 +367,29 @@ export function SuperAdminPage() {
         .catch((err: Error) => toast({ tone: "error", title: "Broadcast failed", description: err.message }));
   };
 
-  const handleExport = (kind: "customers" | "accounts" | "transactions" | "kyc" | "audit") => {
-    if (!guard("transactions.export", "export data")) return;
+  /**
+   * Every export is generated server-side from the database in full (the
+   * console snapshot only carries a window of the ledger). Each download needs
+   * the permission its route enforces, so the guard below mirrors the API.
+   */
+  const EXPORTS = {
+    customers: { permission: "reports.view", path: "/api/admin/reports/customers.csv", file: "veyra-customers" },
+    accounts: { permission: "reports.view", path: "/api/admin/reports/accounts.csv", file: "veyra-accounts" },
+    transactions: { permission: "reports.view", path: "/api/admin/reports/transactions.csv", file: "veyra-ledger" },
+    kyc: { permission: "reports.view", path: "/api/admin/reports/kyc.csv", file: "veyra-kyc" },
+    audit: { permission: "audit.view", path: "/api/admin/audit/export.csv", file: "veyra-audit" },
+  } as const satisfies Record<string, { permission: Permission; path: string; file: string }>;
+
+  const handleExport = async (kind: keyof typeof EXPORTS) => {
+    const spec = EXPORTS[kind];
+    if (!guard(spec.permission, "export data")) return;
     const date = new Date().toISOString().slice(0, 10);
-    if (kind === "customers") {
-      downloadFile(`veyra-customers-${date}.csv`, csv([["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Role"], ...users.map(u => [u.id, u.name, u.email, u.phone || "", u.business || "", u.accountType, u.plan, u.role ?? "user"])]), "text/csv");
-    } else if (kind === "accounts") {
-      downloadFile(`veyra-accounts-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "Balance", "Pending", "Cards", "Frozen cards", "KYC", "Status", "Last activity"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.balance.toFixed(2), a.pendingBalance.toFixed(2), a.cards, a.frozenCards, a.kycStatus, a.accountStatus, a.lastActivity ? longDate(a.lastActivity) : "Never"])]), "text/csv");
-    } else if (kind === "transactions") {
-      downloadFile(`veyra-ledger-${date}.csv`, csv([["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"], ...allTxns.map(t => [longDate(t.date), t.memberName, t.merchant, t.category, t.method ?? "", t.amount.toFixed(2), t.status ?? "cleared", t.reference ?? ""])]), "text/csv");
-    } else if (kind === "kyc") {
-      downloadFile(`veyra-kyc-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Requested at"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.kycStatus, `${a.kycStatus === "not_started" ? 0 : a.kycStatus === "approved" ? 100 : 72}%`, a.lastActivity ? longDate(a.lastActivity) : "—"])]), "text/csv");
-    } else {
-      // Audit trail (append-only, DB-enforced) exported straight from the API.
-      fetch("/api/admin/audit/export.csv")
-        .then(r => r.text())
-        .then(text => downloadFile(`veyra-audit-${date}.csv`, text, "text/csv"))
-        .catch(() => toast({ tone: "error", title: "Export failed", description: "The audit export couldn't be downloaded." }));
+    try {
+      const csvText = await apiGetText(spec.path);
+      downloadFile(`${spec.file}-${date}.csv`, csvText, "text/csv");
+    } catch (err) {
+      toast({ tone: "error", title: "Export failed", description: err instanceof Error ? err.message : "The export couldn't be downloaded." });
+      return;
     }
     toast({ tone: "success", title: "Export ready", description: `${kind[0].toUpperCase() + kind.slice(1)} CSV downloaded.` });
   };
@@ -551,7 +554,7 @@ export function SuperAdminPage() {
                     <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
                     <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
                     <Tooltip
-                      formatter={(value: number | string, name: string) => [money(Number(value), false), name === "inflow" ? "Inflow" : "Outflow"]}
+                      formatter={(value, name) => [money(Number(value), false), name === "inflow" ? "Inflow" : "Outflow"]}
                       contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)", boxShadow: "0 18px 38px rgba(24,23,29,.12)" }}
                     />
                     <Area type="monotone" dataKey="outflow" stackId="1" stroke="#c2b4ff" strokeWidth={2.2} fill="rgba(117,88,220,0.14)" />
@@ -576,7 +579,7 @@ export function SuperAdminPage() {
                         {channelMix.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                       </Pie>
                       <Tooltip
-                        formatter={(value: number | string) => [`${value}%`, "Share"]}
+                        formatter={(value) => [`${Number(value)}%`, "Share"]}
                         contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)" }}
                       />
                     </PieChart>

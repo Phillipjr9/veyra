@@ -577,10 +577,11 @@ function useAccountState() {
     ref.current = next;
     setAccount(next);
   }, [name, business, email, accountType]);
-  const enqueue = useCallback((run: () => Promise<unknown>) => {
+  const enqueue = useCallback((run: () => Promise<unknown>, onResult?: (result: unknown) => void) => {
     syncQueue.current = syncQueue.current.then(async () => {
       try {
-        await run();
+        const result = await run();
+        onResult?.(result);
         await refreshFromServer();
       } catch (err) {
         toast({ tone: "error", title: "Action not saved", description: err instanceof Error ? err.message : "The backend rejected this action." });
@@ -588,8 +589,28 @@ function useAccountState() {
       }
     });
   }, [toast, refreshFromServer]);
-  const syncPost = useCallback((path: string, body?: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPost(path, body)); }, [enqueue]);
-  const syncPatch = useCallback((path: string, body: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPatch(path, body)); }, [enqueue]);
+
+  /**
+   * Records created optimistically get a client-side id; the server assigns its
+   * own. `adoptId` remembers the mapping (from the create response) and
+   * `resolveId` applies it, so a follow-up action taken before the refreshed
+   * snapshot lands — pay this invoice, move money out of this pocket, remove
+   * this payee — still targets the row the server actually stored.
+   */
+  const idAliases = useRef(new Map<string, string>());
+  const resolveId = useCallback((id: string) => idAliases.current.get(id) ?? id, []);
+  const adoptId = useCallback((localId: string, serverId?: unknown) => {
+    if (typeof serverId !== "string" || !serverId || serverId === localId) return;
+    if (idAliases.current.size > 500) idAliases.current.clear();
+    idAliases.current.set(localId, serverId);
+  }, []);
+
+  const syncPost = useCallback((path: string, body?: unknown, onResult?: (result: unknown) => void) => {
+    if (apiOnline() && getToken()) enqueue(() => apiPost(path, body), onResult);
+  }, [enqueue]);
+  const syncPatch = useCallback((path: string, body: unknown, onResult?: (result: unknown) => void) => {
+    if (apiOnline() && getToken()) enqueue(() => apiPatch(path, body), onResult);
+  }, [enqueue]);
   const syncPut = useCallback((path: string, body: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPut(path, body)); }, [enqueue]);
   const syncDelete = useCallback((path: string) => { if (apiOnline() && getToken()) enqueue(() => apiDelete(path)); }, [enqueue]);
 
@@ -939,9 +960,12 @@ function useAccountState() {
         ],
         notifications: pushNote(a, { title: `${inv.client} paid ${money(inv.amount)}`, detail: `Invoice #${inv.id} is settled and the funds are available.`, type: "invoice" }),
       }));
+      // Settling an invoice credits the account server-side (atomic) and writes
+      // the matching ledger row; the snapshot below replaces the optimistic one.
+      syncPost(`/api/me/invoices/${resolveId(id)}/paid`);
       return inv;
     },
-    [commit],
+    [commit, resolveId, syncPost],
   );
 
   const createInvoice = useCallback(
@@ -962,9 +986,14 @@ function useAccountState() {
         invoices: [invoice, ...a.invoices],
         notifications: pushNote(a, { title: `Invoice #${invoice.id} sent`, detail: `${money(invoice.amount)} to ${invoice.client} · due in ${input.dueDays} days.`, type: "invoice" }),
       }));
+      syncPost(
+        "/api/me/invoices",
+        { client: input.client, clientEmail: input.clientEmail, amount: invoice.amount, dueDays: input.dueDays, description: input.description },
+        (result) => adoptId(invoice.id, (result as { invoice?: { id?: string } } | null)?.invoice?.id),
+      );
       return invoice;
     },
-    [commit],
+    [adoptId, commit, syncPost],
   );
 
   const sendReminder = useCallback(
@@ -972,9 +1001,10 @@ function useAccountState() {
       const inv = ref.current?.invoices.find(i => i.id === id);
       if (!inv) return null;
       commit(a => ({ ...a, notifications: pushNote(a, { title: `Reminder sent to ${inv.client}`, detail: `We emailed ${inv.clientEmail} about invoice #${inv.id}.`, type: "invoice" }) }));
+      syncPost(`/api/me/invoices/${resolveId(id)}/remind`);
       return inv;
     },
-    [commit],
+    [commit, resolveId, syncPost],
   );
 
   const redeemPerk = useCallback(
@@ -993,20 +1023,35 @@ function useAccountState() {
         team: [...a.team, member],
         notifications: pushNote(a, { title: `Invite sent to ${input.name}`, detail: `${input.role} · ${input.monthlyLimit ? `${money(input.monthlyLimit, false)} monthly limit` : "view-only access"}.`, type: "security" }),
       }));
+      syncPost(
+        "/api/me/team",
+        { name: member.name, email: member.email, role: member.role, monthlyLimit: member.monthlyLimit },
+        (result) => adoptId(member.id, (result as { member?: { id?: string } } | null)?.member?.id),
+      );
       return member;
     },
-    [commit],
+    [adoptId, commit, syncPost],
   );
 
-  const removeTeamMember = useCallback((id: string) => commit(a => ({ ...a, team: a.team.filter(m => m.id !== id || m.role === "Owner") })), [commit]);
+  const removeTeamMember = useCallback((id: string) => {
+    commit(a => ({ ...a, team: a.team.filter(m => m.id !== id || m.role === "Owner") }));
+    // The server also refuses to remove the Owner (400) — the guard above keeps
+    // the optimistic state honest without a round trip.
+    syncDelete(`/api/me/team/${resolveId(id)}`);
+  }, [commit, resolveId, syncDelete]);
 
   const createSavingsPocket = useCallback(
     (input: PocketInput): SavingsPocket => {
       const pocket: SavingsPocket = { id: rid("pocket"), name: input.name.trim(), balance: 0, target: r2(input.target), color: input.color, icon: input.icon, createdAt: Date.now() };
       commit(a => ({ ...a, savingsPockets: [...a.savingsPockets, pocket] }));
+      syncPost(
+        "/api/me/pockets",
+        { name: pocket.name, target: pocket.target, color: pocket.color, icon: pocket.icon },
+        (result) => adoptId(pocket.id, (result as { pocket?: { id?: string } } | null)?.pocket?.id),
+      );
       return pocket;
     },
-    [commit],
+    [adoptId, commit, syncPost],
   );
 
   const transferSavings = useCallback(
@@ -1024,9 +1069,12 @@ function useAccountState() {
         savingsPockets: a.savingsPockets.map(p => p.id === pocketId ? { ...p, balance: r2(p.balance + (intoPocket ? value : -value)) } : p),
         transactions: [{ id: rid("txn"), merchant: pocket.name, category: "Operations", amount: intoPocket ? -value : value, reward: 0, scout: 0, date: Date.now(), note: intoPocket ? "Moved to savings pocket" : "Moved from savings pocket", method: "Internal", reference: makeReference(), status: "cleared" }, ...a.transactions],
       }));
+      // Money moves server-side in one transaction (with the overdraft check);
+      // a rejection rolls the optimistic balances back to the server's truth.
+      syncPost(`/api/me/pockets/${resolveId(pocketId)}/move`, { amount: value, direction });
       return true;
     },
-    [commit],
+    [commit, resolveId, syncPost],
   );
 
   const deleteSavingsPocket = useCallback(
@@ -1034,37 +1082,65 @@ function useAccountState() {
       const pocket = ref.current?.savingsPockets.find(p => p.id === id);
       if (!pocket) return 0;
       commit(a => ({ ...a, balance: r2(a.balance + pocket.balance), savingsPockets: a.savingsPockets.filter(p => p.id !== id) }));
+      // Closing a pocket refunds any remaining balance to checking server-side.
+      syncDelete(`/api/me/pockets/${resolveId(id)}`);
       return pocket.balance;
     },
-    [commit],
+    [commit, resolveId, syncDelete],
   );
 
   const addPayee = useCallback(
     (input: PayeeInput): Payee => {
       const payee: Payee = { id: rid("payee"), name: input.name.trim(), nickname: input.nickname?.trim() || undefined, bankName: input.bankName.trim(), routingNumber: input.routingNumber, accountLast4: input.accountLast4, accountType: input.accountType, verified: true, createdAt: Date.now() };
       commit(a => ({ ...a, payees: [...a.payees, payee] }));
+      syncPost(
+        "/api/me/payees",
+        { name: payee.name, nickname: payee.nickname ?? "", bankName: payee.bankName, routingNumber: payee.routingNumber, accountLast4: payee.accountLast4, accountType: payee.accountType },
+        (result) => adoptId(payee.id, (result as { payee?: { id?: string } } | null)?.payee?.id),
+      );
       return payee;
     },
-    [commit],
+    [adoptId, commit, syncPost],
   );
 
-  const removePayee = useCallback((id: string) => commit(a => ({ ...a, payees: a.payees.filter(p => p.id !== id) })), [commit]);
+  const removePayee = useCallback((id: string) => {
+    commit(a => ({ ...a, payees: a.payees.filter(p => p.id !== id) }));
+    syncDelete(`/api/me/payees/${resolveId(id)}`);
+  }, [commit, resolveId, syncDelete]);
 
   const addScheduledPayment = useCallback(
     (input: ScheduledInput): ScheduledPayment => {
       const payment: ScheduledPayment = { id: rid("bill"), ...input, payeeName: input.payeeName.trim(), amount: r2(input.amount), status: "active" };
       commit(a => ({ ...a, scheduledPayments: [...a.scheduledPayments, payment] }));
+      syncPost(
+        "/api/me/scheduled",
+        {
+          payeeId: payment.payeeId, payeeName: payment.payeeName, amount: payment.amount,
+          category: payment.category, frequency: payment.frequency, nextDate: payment.nextDate,
+          autopay: payment.autopay, memo: payment.memo,
+        },
+        (result) => adoptId(payment.id, (result as { payment?: { id?: string } } | null)?.payment?.id),
+      );
       return payment;
     },
-    [commit],
+    [adoptId, commit, syncPost],
   );
 
   const toggleScheduledPayment = useCallback(
-    (id: string) => commit(a => ({ ...a, scheduledPayments: a.scheduledPayments.map(p => p.id === id && p.status !== "completed" ? { ...p, status: p.status === "paused" ? "active" : "paused" } : p) })),
-    [commit],
+    (id: string) => {
+      const payment = ref.current?.scheduledPayments.find(p => p.id === id);
+      if (!payment || payment.status === "completed") return;
+      const status = payment.status === "paused" ? "active" : "paused";
+      commit(a => ({ ...a, scheduledPayments: a.scheduledPayments.map(p => p.id === id && p.status !== "completed" ? { ...p, status } : p) }));
+      syncPatch(`/api/me/scheduled/${resolveId(id)}`, { status });
+    },
+    [commit, resolveId, syncPatch],
   );
 
-  const removeScheduledPayment = useCallback((id: string) => commit(a => ({ ...a, scheduledPayments: a.scheduledPayments.filter(p => p.id !== id) })), [commit]);
+  const removeScheduledPayment = useCallback((id: string) => {
+    commit(a => ({ ...a, scheduledPayments: a.scheduledPayments.filter(p => p.id !== id) }));
+    syncDelete(`/api/me/scheduled/${resolveId(id)}`);
+  }, [commit, resolveId, syncDelete]);
 
   const payScheduledNow = useCallback(
     (id: string) => {
@@ -1079,9 +1155,11 @@ function useAccountState() {
         transactions: [{ id: rid("txn"), merchant: payment.payeeName, category: payment.category, amount: -payment.amount, reward: 0, scout: 0, date: Date.now(), note: payment.memo || "Scheduled payment", method: "ACH", reference: makeReference(), status: "cleared" }, ...a.transactions],
         notifications: pushNote(a, { title: `${money(payment.amount)} paid to ${payment.payeeName}`, detail: payment.frequency === "once" ? "One-time payment completed." : `Next payment ${shortDate(nextDate)}.`, type: "transfer" }),
       }));
+      // The server debits the account, advances next_date and writes the ledger row.
+      syncPost(`/api/me/scheduled/${resolveId(id)}/pay`);
       return true;
     },
-    [commit],
+    [commit, resolveId, syncPost],
   );
 
   const createDispute = useCallback(
@@ -1090,9 +1168,15 @@ function useAccountState() {
       if (!txn || txn.amount >= 0 || ref.current?.disputes.some(d => d.transactionId === txn.id && d.status !== "denied")) return null;
       const dispute: Dispute = { id: rid("dispute"), transactionId: txn.id, merchant: txn.merchant, amount: Math.abs(txn.amount), reason: input.reason, detail: input.detail?.trim() || undefined, status: "submitted", openedAt: Date.now(), updatedAt: Date.now() };
       commit(a => ({ ...a, disputes: [dispute, ...a.disputes], notifications: pushNote(a, { title: `Dispute opened for ${txn.merchant}`, detail: `${money(Math.abs(txn.amount))} is under review.`, type: "security" }) }));
+      // Files the case in the admin Risk & Fraud queue, where staff arbitrate it.
+      syncPost(
+        "/api/me/disputes",
+        { transactionId: txn.id, reason: dispute.reason, detail: dispute.detail ?? "" },
+        (result) => adoptId(dispute.id, (result as { dispute?: { id?: string } } | null)?.dispute?.id),
+      );
       return dispute;
     },
-    [commit],
+    [adoptId, commit, syncPost],
   );
 
   const revokeSession = useCallback((id: string) => {

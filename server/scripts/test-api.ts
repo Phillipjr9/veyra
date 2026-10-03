@@ -212,6 +212,14 @@ try {
   expect("member can open a dispute", memberDispute.status === 201);
   const disputeId = memberDispute.json.dispute.id;
 
+  // The app files disputes against a specific ledger row; the server enforces
+  // one open case per transaction (retries and second tabs included).
+  const raeOutflow = (await api("GET", "/api/me/state", rae)).json.account.transactions.find((t: any) => t.amount < 0);
+  const linkedDispute = await api("POST", "/api/me/disputes", rae, { transactionId: raeOutflow.id, reason: "Unauthorized charge", detail: "Card was in my possession." });
+  expect("member can dispute a specific transaction", linkedDispute.status === 201);
+  const duplicateDispute = await api("POST", "/api/me/disputes", rae, { transactionId: raeOutflow.id, reason: "Unauthorized charge", detail: "" });
+  expect("second filing for the same transaction rejected (409)", duplicateDispute.status === 409);
+
   const disputes = await api("GET", "/api/admin/risk/disputes", admin);
   expect("risk queue lists the filed dispute", disputes.status === 200 && disputes.json.disputes.length >= 1 &&
     disputes.json.disputes.some((d: any) => d.id === disputeId && d.status === "submitted"));
@@ -269,6 +277,12 @@ try {
     const report = await api("GET", `/api/admin/reports/${kind}.csv`, admin);
     expect(`report export: ${kind}`, report.status === 200 && report.text.includes(",") && (report.headers.get("content-type") ?? "").includes("text/csv"));
   }
+  const accountsCsv = await api("GET", "/api/admin/reports/accounts.csv", admin);
+  expect("accounts export carries the console columns", accountsCsv.text.split("\n")[0].includes("Frozen cards") &&
+    accountsCsv.text.split("\n")[0].includes("KYC") && accountsCsv.text.split("\n")[0].includes("Last activity"));
+  const kycCsv = await api("GET", "/api/admin/reports/kyc.csv", admin);
+  expect("kyc export carries requested/updated timestamps", kycCsv.text.split("\n")[0].includes("Requested at") &&
+    kycCsv.text.split("\n")[0].includes("Updated"));
   const auditCsv = await api("GET", "/api/admin/audit/export.csv", admin);
   expect("report export: audit (CSV)", auditCsv.status === 200 && auditCsv.text.includes(",") && (auditCsv.headers.get("content-type") ?? "").includes("text/csv"));
   const exportNoPerm = await api("GET", "/api/admin/reports/customers.csv", support);
@@ -395,6 +409,12 @@ try {
     (await api("GET", "/api/me/state", rae)).json.account.balance === balPreSched - 250);
   const paused = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, rae);
   expect("scheduled payment pause/resume toggle", paused.status === 200 && paused.json.status === "paused");
+  const resumed = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, rae, { status: "active" });
+  expect("explicit status wins over the toggle (app contract)", resumed.status === 200 && resumed.json.status === "active");
+  const badStatus = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, rae, { status: "cancelled" });
+  expect("unknown scheduled status rejected (400)", badStatus.status === 400);
+  const foreignSched = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, alex, { status: "paused" });
+  expect("cannot pause another member's payment (404)", foreignSched.status === 404);
 
   // Rewards redemption
   const rewardsPre = (await api("GET", "/api/me/state", rae)).json.account;

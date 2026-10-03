@@ -418,6 +418,12 @@ export function createApp(dbPath?: string) {
       : undefined;
     const cents = txn ? Math.abs(txn.amount_cents as number) : dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "A disputed transaction or amount is required." });
+    // One open case per transaction — the app hides the action, the server is
+    // the one that guarantees it (retries and second tabs included).
+    const alreadyOpen = txnId
+      ? db.prepare("SELECT id FROM disputes WHERE user_id = ? AND transaction_id = ? AND status != 'denied'").get(req.user!.id, txnId)
+      : undefined;
+    if (alreadyOpen) return void res.status(409).json({ error: "A dispute for this transaction is already open." });
     const id = rid("dsp");
     db.prepare(
       `INSERT INTO disputes (id, user_id, transaction_id, merchant, amount_cents, reason, detail, status, opened_at, updated_at)
@@ -759,7 +765,13 @@ export function createApp(dbPath?: string) {
     const payment = db.prepare("SELECT status FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { status: string } | undefined;
     if (!payment) return void res.status(404).json({ error: "Payment not found." });
     if (payment.status === "completed") return void res.status(400).json({ error: "Completed payments cannot be changed." });
-    const next = payment.status === "paused" ? "active" : "paused";
+    // Pause/resume. An explicit status wins (the app sends the state its
+    // optimistic update already applied); no body keeps the toggle behaviour.
+    const requested = req.body?.status;
+    if (requested !== undefined && requested !== "active" && requested !== "paused") {
+      return void res.status(400).json({ error: "status must be 'active' or 'paused'." });
+    }
+    const next = requested ?? (payment.status === "paused" ? "active" : "paused");
     db.prepare("UPDATE scheduled_payments SET status = ? WHERE id = ?").run(next, id);
     res.json({ status: next });
   }));
@@ -1293,18 +1305,28 @@ export function createApp(dbPath?: string) {
         ...db.prepare("SELECT id, name, email, phone, business, account_type, plan, status, role FROM users ORDER BY created_at").all()
           .map((r: any) => [r.id, r.name, r.email, r.phone, r.business, r.account_type, r.plan, r.status, r.role])];
     } else if (kind === "accounts") {
-      rows = [["User ID", "Member", "Account number", "Balance", "Pending", "Rewards"],
-        ...db.prepare(`SELECT a.user_id, u.name, a.account_number, a.balance_cents, a.pending_cents, a.rewards_cents
+      rows = [["User ID", "Member", "Email", "Business", "Type", "Account number", "Balance", "Pending", "Rewards", "Cards", "Frozen cards", "KYC", "Status", "Last activity"],
+        ...db.prepare(`SELECT a.user_id, u.name, u.email, u.business, u.account_type, u.status, a.account_number,
+                              a.balance_cents, a.pending_cents, a.rewards_cents,
+                              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
+                              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.frozen = 1) AS frozen_count,
+                              (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status,
+                              (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity
                        FROM accounts a JOIN users u ON u.id = a.user_id ORDER BY a.balance_cents DESC`).all()
-          .map((r: any) => [r.user_id, r.name, r.account_number, centsToDecimal(r.balance_cents), centsToDecimal(r.pending_cents), centsToDecimal(r.rewards_cents)])];
+          .map((r: any) => [r.user_id, r.name, r.email, r.business ?? "", r.account_type, r.account_number,
+            centsToDecimal(r.balance_cents), centsToDecimal(r.pending_cents), centsToDecimal(r.rewards_cents),
+            r.card_count, r.frozen_count, r.kyc_status ?? "not_started", r.status,
+            r.last_activity ? new Date(r.last_activity).toISOString() : "Never"])];
     } else if (kind === "transactions") {
       rows = [["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"],
         ...db.prepare(`SELECT t.*, u.name AS member FROM transactions t JOIN users u ON u.id = t.user_id ORDER BY t.created_at DESC`).all()
           .map((r: any) => [new Date(r.created_at).toISOString(), r.member, r.merchant, r.category, r.method, centsToDecimal(r.amount_cents), r.status, r.reference])];
     } else if (kind === "kyc") {
-      rows = [["User ID", "Member", "Status", "Completeness", "Updated"],
-        ...db.prepare(`SELECT k.user_id, u.name, k.status, k.completeness, k.updated_at FROM kyc_records k JOIN users u ON u.id = k.user_id`).all()
-          .map((r: any) => [r.user_id, r.name, r.status, `${r.completeness}%`, new Date(r.updated_at).toISOString()])];
+      rows = [["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Requested at", "Updated"],
+        ...db.prepare(`SELECT k.user_id, u.name, u.email, u.account_type, k.status, k.completeness, k.requested_at, k.updated_at
+                       FROM kyc_records k JOIN users u ON u.id = k.user_id`).all()
+          .map((r: any) => [r.user_id, r.name, r.email, r.account_type, r.status, `${r.completeness}%`,
+            r.requested_at ? new Date(r.requested_at).toISOString() : "—", new Date(r.updated_at).toISOString()])];
     } else {
       return void res.status(404).json({ error: "Unknown report. Use customers|accounts|transactions|kyc." });
     }

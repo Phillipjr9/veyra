@@ -74,6 +74,28 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   return json as T;
 }
 
+/**
+ * Authenticated download. Same auth header as `api()`, but returns the raw
+ * body (CSV/text) instead of JSON — used for server-generated exports, where
+ * the response is a file, not an API envelope.
+ */
+export async function apiGetText(path: string): Promise<string> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(path, { headers });
+  const text = await res.text();
+  if (!res.ok) {
+    let message = `Request failed (${res.status}).`;
+    try {
+      const json = JSON.parse(text) as { error?: string };
+      if (json?.error) message = json.error;
+    } catch { /* not a JSON error envelope */ }
+    throw new ApiError(res.status, message);
+  }
+  return text;
+}
+
 /** Convenience wrappers */
 export const apiGet = <T = unknown,>(path: string) => api<T>("GET", path);
 export const apiPost = <T = unknown,>(path: string, body?: unknown) => api<T>("POST", path, body);
