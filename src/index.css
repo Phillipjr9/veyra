@@ -532,7 +532,7 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
 .about-page { padding-top: 20px; }
 .personal-banking-page { padding-top: 45px; }
 .personal-account-showcase { min-height: 580px; position: relative; overflow: hidden; display: grid; place-items: center; border-radius: 28px; background: radial-gradient(circle at 50% 40%, #d9cff9, transparent 42%), linear-gradient(145deg, #eee9f8, #ded4f5); }
-.personal-card-demo { width: min(380px, 72%); transform: rotate(-7deg); }
+.personal-card-preview { width: min(380px, 72%); transform: rotate(-7deg); }
 .personal-balance, .personal-activity { position: absolute; padding: 18px; border: 1px solid rgba(255,255,255,.78); border-radius: 16px; background: rgba(255,253,249,.82); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 20px 45px rgba(55,38,91,.13); }
 .personal-balance { left: 7%; top: 13%; width: 230px; }
 .personal-balance > span { font-size: 11px; color: var(--muted); }
@@ -649,17 +649,6 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
 .auth-back:hover { color: var(--violet); }
 .auth-card h1 { margin: 26px 0 10px; font: 500 clamp(32px, 3.4vw, 42px)/1.1 var(--display); letter-spacing: -.055em; }
 .auth-sub { margin: 0 0 28px; font-size: 15px; color: var(--muted); }
-.demo-banner { width: 100%; display: flex; align-items: center; gap: 12px; margin-bottom: 24px; padding: 14px 16px; border: 1px dashed rgba(117,88,220,.45); border-radius: 13px; background: #ece7fb; text-align: left; transition: background .2s; }
-.demo-banner:hover { background: #e3dcfa; }
-.demo-banner > svg { color: var(--violet); }
-.demo-banner span { flex: 1; display: flex; flex-direction: column; gap: 3px; }
-.demo-banner strong { font-size: 13px; }
-.demo-banner small { font-size: 11px; color: #60568a; }
-.demo-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 24px; }
-.demo-options .demo-banner { min-width: 0; margin-bottom: 0; padding: 12px; }
-.demo-options .demo-banner > svg:last-child { display: none; }
-.demo-options .demo-banner span { min-width: 0; }
-.demo-options .demo-banner strong, .demo-options .demo-banner small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-choice-label { display: block; margin: 0 0 8px; font-size: 12px; font-weight: 600; color: #4e4b56; }
 .account-type-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 4px; }
 .account-type-toggle button { min-width: 0; display: flex; align-items: flex-start; gap: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 13px; background: var(--white); text-align: left; transition: border-color .2s, background .2s, box-shadow .2s; }
@@ -766,7 +755,7 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
   .auth-form-side { padding: 90px 24px 60px; }
   .value-grid { grid-template-columns: 1fr; }
   .personal-account-showcase { min-height: 680px; }
-  .personal-card-demo { width: min(360px, 80%); }
+  .personal-card-preview { width: min(360px, 80%); }
   .personal-balance { left: 5%; top: 8%; }
   .personal-activity { right: 5%; bottom: 8%; }
   .product-detail-row { grid-template-columns: 48px minmax(0,.8fr) minmax(0,1fr); gap: 20px; }
@@ -870,9 +859,9 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
   .field-row { grid-template-columns: 1fr; }
   .contact-form { padding: 24px; }
   .plan { padding: 26px; }
-  .demo-options, .account-type-toggle { grid-template-columns: 1fr; }
+  .account-type-toggle { grid-template-columns: 1fr; }
   .personal-account-showcase { min-height: 560px; border-radius: 20px; }
-  .personal-card-demo { width: 92%; transform: rotate(-4deg); }
+  .personal-card-preview { width: 92%; transform: rotate(-4deg); }
   .personal-balance { left: 14px; top: 18px; width: 205px; padding: 14px; }
   .personal-balance > strong { font-size: 24px; }
   .personal-activity { right: 14px; bottom: 18px; width: calc(100% - 28px); padding: 13px; }

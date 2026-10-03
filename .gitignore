@@ -3,6 +3,7 @@ node_modules
 *.log
 .env
 .env.*
+!.env.example
 
 # SQLite databases (server/veyra.db etc.)
 *.db

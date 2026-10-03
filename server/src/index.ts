@@ -8,7 +8,6 @@
  *   ADMIN_EMAIL    — first Super Admin account email
  *   ADMIN_PASSWORD — first Super Admin password (min 8 chars)
  *   ADMIN_NAME     — optional display name for the bootstrap admin
- *   DEMO_SEED=1    — also seed the demo identities (development only)
  *   CORS_ORIGIN    — allow a non-proxied browser origin
  */
 import { readFileSync, existsSync } from "node:fs";
@@ -28,22 +27,18 @@ import { resolve } from "node:path";
 
 import { createApp } from "./app.js";
 
-const DEMO_SEED = process.env.DEMO_SEED === "1" || process.env.DEMO_SEED === "true";
 const PORT = Number(process.env.PORT ?? 8787);
 
-const { app } = createApp(undefined, { demo: DEMO_SEED });
+const { app } = createApp(undefined);
 
 if (process.env.NODE_ENV === "production" && !process.env.TOKEN_SECRET) {
   console.error("Refusing to start: TOKEN_SECRET is required in production.");
   process.exit(1);
 }
-if (DEMO_SEED && process.env.NODE_ENV === "production") {
-  console.warn("WARNING: DEMO_SEED is enabled in a production environment — demo accounts exist.");
-}
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Veyra API listening on http://0.0.0.0:${PORT}`);
-  console.log(DEMO_SEED ? "Mode: development (demo identities seeded)" : "Mode: production (clean database)");
+  console.log("Mode: production (clean database — members sign up through the API)");
   if (!process.env.ADMIN_EMAIL) {
     console.log("No ADMIN_EMAIL set — create the first Super Admin by starting with ADMIN_EMAIL + ADMIN_PASSWORD.");
   }

@@ -3,9 +3,8 @@
  *
  * One template for every notification the product generates (see the
  * notification types in src/lib/store.tsx: scout / card / transfer /
- * security / invoice, plus account-lifecycle and auth events). Sample data
- * mirrors the in-app demo account (Park & Co Studio) so previews match the
- * product exactly.
+ * security / invoice, plus account-lifecycle and auth events). Sample values
+ * stand in for real account data in previews.
  *
  * Usage: `buildEmails()` returns render-ready documents. A backend can import
  * these builders, swap the sample values for real data, and send.
@@ -41,7 +40,7 @@ const signinAlert: EmailTemplate = {
     content: `
       ${eyebrow("Security alert")}
       ${h1("New sign-in to your account")}
-      ${p("Hi Hana — a new sign-in to your Veyra account was detected. Because two-factor authentication is on, it was verified with a one-time code.")}
+      ${p("Hi Rae — a new sign-in to your Veyra account was detected. Because two-factor authentication is on, it was verified with a one-time code.")}
       ${pill("Verified · 2FA", "green")}
       ${details([
         ["Device", "MacBook Pro"],
@@ -68,7 +67,7 @@ const passwordReset: EmailTemplate = {
     content: `
       ${eyebrow("Account access")}
       ${h1("Reset your password")}
-      ${p("Hi Hana — we received a request to reset the password for your Veyra account. Choose a new password using the button below.")}
+      ${p("Hi Rae — we received a request to reset the password for your Veyra account. Choose a new password using the button below.")}
       ${btn("Choose a new password", `${APP}/forgot-password`)}
       ${details([
         ["Requested from", "Chrome on macOS"],
@@ -155,7 +154,7 @@ const cardsFrozenAll: EmailTemplate = {
       ${details([
         ["Cards frozen", "Subscriptions •••• 2903, Advertising •••• 7741, Metal debit •••• 5118"],
         ["Action taken", "Oct 2, 2026 · 8:12 PM PT"],
-        ["Authorized by", "Hana Park (you)"],
+        ["Authorized by", "Rae Kim (you)"],
         ["Still active", "ACH transfers, bills, deposits"],
       ])}
       ${btn("Go to Security Center", `${APP}/security`)}
@@ -303,7 +302,7 @@ const cardIssued: EmailTemplate = {
         ["Type", "Virtual"],
         ["Monthly limit", "$4,000.00"],
         ["Category lock", "Software only"],
-        ["Cardholder", "Hana Park"],
+        ["Cardholder", "Rae Kim"],
         ["Issued", "Oct 2, 2026"],
       ])}
       ${btn("View card details", `${APP}/cards`)}
@@ -357,7 +356,7 @@ const cardFrozen: EmailTemplate = {
         ["Card", "Travel •••• 9086"],
         ["Action", "Freeze"],
         ["Taken", "Oct 2, 2026 · 6:18 PM PT"],
-        ["Authorized by", "Hana Park (you)"],
+        ["Authorized by", "Rae Kim (you)"],
         ["Monthly limit", "$3,000.00"],
         ["International use", "Enabled"],
       ])}
@@ -548,15 +547,15 @@ const welcome: EmailTemplate = {
   id: "welcome",
   name: "Welcome / account opened",
   category: "account",
-  subject: "Welcome to Veyra, Hana",
+  subject: "Welcome to Veyra, Rae",
   preheader: "Your business checking account is open. One step left to unlock everything.",
   html: emailShell({
-    subject: "Welcome to Veyra, Hana",
+    subject: "Welcome to Veyra, Rae",
     preheader: "Your business checking account is open. One step left to unlock everything.",
     content: `
       ${eyebrow("Welcome")}
       ${h1("Your Veyra account is open")}
-      ${p("Welcome aboard, Hana. Park & Co Studio now has a Veyra business checking account, a metal debit card on the way, and Scout keeping watch from day one.")}
+      ${p("Welcome aboard, Rae. Rae & Co Studio now has a Veyra business checking account, a metal debit card on the way, and Scout keeping watch from day one.")}
       ${details([
         ["Account", "Business checking •••• 9014"],
         ["Routing number", "091408735"],
@@ -612,7 +611,7 @@ const kycApproved: EmailTemplate = {
       ${p("We've verified your business registration and address. Every Veyra feature is now unlocked — wires, higher limits, unlimited cards and invoicing.")}
       ${pill("Approved", "green")}
       ${details([
-        ["Business", "Park & Co Studio"],
+        ["Business", "Rae & Co Studio"],
         ["Document verified", "Business registration"],
         ["Country", "United States"],
         ["Completed", "Oct 2, 2026 · 3:24 PM PT"],
@@ -656,24 +655,24 @@ const teamInvite: EmailTemplate = {
   id: "team-invite",
   name: "Team member invite",
   category: "account",
-  subject: "You're invited to join Park & Co Studio on Veyra",
-  preheader: "Hana Park invited you as a team member with a $2,000 monthly card limit.",
+  subject: "You're invited to join Rae & Co Studio on Veyra",
+  preheader: "Rae Kim invited you as a team member with a $2,000 monthly card limit.",
   html: emailShell({
-    subject: "You're invited to join Park & Co Studio on Veyra",
-    preheader: "Hana Park invited you as a team member with a $2,000 monthly card limit.",
+    subject: "You're invited to join Rae & Co Studio on Veyra",
+    preheader: "Rae Kim invited you as a team member with a $2,000 monthly card limit.",
     content: `
       ${eyebrow("Team invitation")}
-      ${h1("Join Park & Co Studio on Veyra")}
-      ${p("Hana Park has invited you to manage money together on Veyra. Accept to get your own card, see shared accounts, and help run the business's spending.")}
+      ${h1("Join Rae & Co Studio on Veyra")}
+      ${p("Rae Kim has invited you to manage money together on Veyra. Accept to get your own card, see shared accounts, and help run the business's spending.")}
       ${details([
-        ["Business", "Park & Co Studio"],
+        ["Business", "Rae & Co Studio"],
         ["Your role", "Team member"],
         ["Monthly card limit", "$2,000.00"],
-        ["Invited by", "Hana Park · hana@parkandco.com"],
+        ["Invited by", "Rae Kim · rae@raeandco.com"],
         ["Invitation expires", "In 7 days"],
       ])}
-      ${btn("Accept invitation", `${APP}/invite/accept?email=june%40parkandco.com&business=Park%20%26%20Co%20Studio&role=Team%20member`)}
-      ${note("You'll create your own password when you accept — Hana's credentials are never shared with you.")}
+      ${btn("Accept invitation", `${APP}/invite/accept?email=june%40raeandco.com&business=Park%20%26%20Co%20Studio&role=Team%20member`)}
+      ${note("You'll create your own password when you accept — Rae's credentials are never shared with you.")}
     `,
   }),
 };

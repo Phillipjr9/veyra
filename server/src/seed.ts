@@ -1,34 +1,25 @@
 /**
- * Database seeding — production-first.
+ * Database bootstrap — production only.
  *
- * DEFAULT (production): no demo data. The only user created is the Super
- * Admin bootstrap account from environment variables:
+ * Bootstraps platform settings, the default role grants and the first Super
+ * Admin account from environment variables:
  *
  *   ADMIN_EMAIL=ops@yourco.com
  *   ADMIN_PASSWORD=<at least 8 chars>
  *   ADMIN_NAME=Optional display name
  *
- * DEMO MODE (DEMO_SEED=1 or seed(db, { demo: true })): additionally seeds the
- * demo identities (Hana / Alex / compliance / support) with the full demo
- * dataset via seedMemberState() — used for development and the test suite.
+ * Nothing else is ever created here: members sign up through the API and
+ * start with a real, empty account.
  */
 import type { DatabaseSync } from "node:sqlite";
 import { hashPassword } from "./security.js";
 import { setSetting } from "./db.js";
 import { logAdminAction } from "./audit.js";
 import { ROLE_DEFAULTS, setRolePermissions } from "./rbac.js";
-import { seedMemberState } from "./state.js";
 
-const DAY = 86_400_000;
-
-export function seed(db: DatabaseSync, { force = false, demo = false }: { force?: boolean; demo?: boolean } = {}): void {
+export function seed(db: DatabaseSync, { force = false }: { force?: boolean } = {}): void {
   const count = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
   if (count > 0 && !force) {
-    // Upgrade path: a v1/v2 database (users exist, but no member-state rows).
-    if (demo) {
-      const prefs = (db.prepare("SELECT COUNT(*) AS n FROM preferences").get() as { n: number }).n;
-      if (prefs === 0) backfill(db);
-    }
     bootstrapAdmin(db);
     return;
   }
@@ -58,13 +49,9 @@ export function seed(db: DatabaseSync, { force = false, demo = false }: { force?
 
   bootstrapAdmin(db);
 
-  if (demo) seedDemoIdentities(db);
-
   logAdminAction(db, {
     adminId: "seed", adminName: "System", action: "system.seed", category: "System",
-    target: "platform", summary: demo
-      ? "Database seeded (demo mode: demo identities + platform settings)."
-      : "Database initialized (production mode: platform settings only).",
+    target: "platform", summary: "Database initialized (platform settings only).",
   });
 }
 
@@ -90,50 +77,4 @@ export function bootstrapAdmin(db: DatabaseSync): { email: string; created: bool
     target: `user:${email}`, summary: `Super Admin bootstrap account created from ADMIN_EMAIL (${email}).`,
   });
   return { email, created: true };
-}
-
-/** Demo identities — only when demo mode is explicitly enabled. */
-function seedDemoIdentities(db: DatabaseSync): void {
-  const now = Date.now();
-  const insertUser = db.prepare(
-    `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
-  );
-  const staff: Array<{ id: string; name: string; email: string; phone: string; business: string; role: string; password: string }> = [
-    {
-      id: "superadmin-master", name: "Chief System Admin", email: "admin@veyra.com", phone: "+1 (800) 555-0199",
-      business: "Veyra Financial HQ", role: "superadmin", password: "admin123",
-    },
-    {
-      id: "compliance", name: "Mira Osei", email: "compliance@veyra.com", phone: "+1 (555) 204-7781",
-      business: "Veyra Financial HQ", role: "compliance", password: "veyra123",
-    },
-    {
-      id: "support-desk", name: "Theo Park", email: "support@veyra.com", phone: "+1 (555) 204-7782",
-      business: "Veyra Financial HQ", role: "support", password: "veyra123",
-    },
-  ];
-  for (const u of staff) {
-    if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(u.email)) continue;
-    insertUser.run(u.id, u.name, u.email, u.phone, u.business, "business", u.role, "Pro", hashPassword(u.password), now - 90 * DAY);
-  }
-  if (!db.prepare("SELECT 1 FROM users WHERE email = 'demo@veyra.com'").get()) {
-    insertUser.run("demo", "Hana Park", "demo@veyra.com", "+1 (555) 389-2041", "Park & Co Studio", "business", "user", "Pro", hashPassword("veyra123"), now - 90 * DAY);
-    seedMemberState(db, "demo", { name: "Hana Park", business: "Park & Co Studio", email: "demo@veyra.com", accountType: "business" });
-  }
-  if (!db.prepare("SELECT 1 FROM users WHERE email = 'personal@veyra.com'").get()) {
-    insertUser.run("personal-demo", "Alex Morgan", "personal@veyra.com", "+1 (555) 714-8920", "", "personal", "user", "Pro", hashPassword("veyra123"), now - 90 * DAY);
-    seedMemberState(db, "personal-demo", { name: "Alex Morgan", business: "", email: "personal@veyra.com", accountType: "personal" });
-  }
-}
-
-/** v1 → v2 upgrade: recreate member state for the demo identities. */
-function backfill(db: DatabaseSync): void {
-  const rows = db.prepare("SELECT id, name, business, email, account_type FROM users WHERE id IN ('demo', 'personal-demo')").all() as Array<Record<string, unknown>>;
-  for (const row of rows) {
-    seedMemberState(db, String(row.id), {
-      name: String(row.name), business: String(row.business ?? ""), email: String(row.email),
-      accountType: row.account_type === "personal" ? "personal" : "business",
-    });
-  }
 }

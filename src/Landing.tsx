@@ -35,12 +35,12 @@ function HeroFinancialUI() {
         <aside className="dash-side">
           <Logo compact to={null} />
           <div className="side-icons"><span className="active"><BarChart3 /></span><span><WalletCards /></span><span><ReceiptText /></span><span><Send /></span></div>
-          <span className="avatar">HP</span>
+          <span className="avatar">RK</span>
         </aside>
         <div className="dash-main">
-          <div className="dash-head"><div><span>Good morning, Hana</span><h3>Overview</h3></div><button aria-label="Notifications"><Sparkles size={18} /></button></div>
+          <div className="dash-head"><div><span>Good morning, Rae</span><h3>Overview</h3></div><button aria-label="Notifications"><Sparkles size={18} /></button></div>
           <div className="balance-grid">
-            <div className="balance-block"><span>Total balance</span><strong>$84,290.42</strong><small><TrendingUp size={13} /> 8.4% this month</small><MiniChart /></div>
+            <div className="balance-block"><span>Total balance</span><strong>$96,412.08</strong><small><TrendingUp size={13} /> 8.4% this month</small><MiniChart /></div>
             <div className="reward-block"><span>Rewards earned</span><strong>$4,628.20</strong><div className="reward-orb"><Sparkles /></div><small>+$174.50 today</small></div>
           </div>
           <div className="transactions">

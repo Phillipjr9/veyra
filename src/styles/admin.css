@@ -76,22 +76,6 @@
   padding: 0 12px;
 }
 
-.demo-three-options {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr) !important;
-  gap: 8px !important;
-}
-
-.admin-demo-banner {
-  border-color: #e5a4a4 !important;
-  background: #fdf3f3 !important;
-  color: #8c2a2a !important;
-}
-
-.admin-demo-banner svg {
-  color: #c93b3b !important;
-}
-
 /* Recharts Custom Tooltip */
 .recharts-custom-tooltip {
   padding: 10px 14px;
@@ -703,9 +687,6 @@
   .admin-kpi-grid,
   .support-channels-strip {
     grid-template-columns: 1fr;
-  }
-  .demo-three-options {
-    grid-template-columns: 1fr !important;
   }
 }
 

@@ -454,7 +454,7 @@
 .shipping-details b, .shipping-details code { min-width: 0; font: 600 12px/1.4 var(--body); overflow-wrap: anywhere; }
 .shipping-details code { font-family: var(--mono); }
 .shipping-details b { display: flex; align-items: flex-start; gap: 5px; }
-.demo-shipping { align-self: flex-start; }
+.ship-action { align-self: flex-start; }
 
 /* ==========================================================================
    Transactions table

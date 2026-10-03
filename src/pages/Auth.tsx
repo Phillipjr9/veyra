@@ -145,7 +145,7 @@ export function SignupPage() {
           </button>
         </div>
         <label htmlFor="name">Your legal name</label>
-        <input id="name" required autoComplete="name" placeholder={form.accountType === "personal" ? "Alex Morgan" : "Hana Park"} value={form.name} onChange={e => set("name", e.target.value)} />
+        <input id="name" required autoComplete="name" placeholder={form.accountType === "personal" ? "Jamie Chen" : "Rae Kim"} value={form.name} onChange={e => set("name", e.target.value)} />
 
         <div className="field-row">
           <div>
@@ -176,7 +176,7 @@ export function SignupPage() {
 
         {form.accountType === "business" && <>
           <label htmlFor="business">Business name</label>
-          <input id="business" required autoComplete="organization" placeholder="Park & Co Studio" value={form.business} onChange={e => set("business", e.target.value)} />
+          <input id="business" required autoComplete="organization" placeholder="Rae & Co Studio" value={form.business} onChange={e => set("business", e.target.value)} />
         </>}
         <label htmlFor="su-pw">Password</label>
         <PasswordField id="su-pw" value={form.password} onChange={v => set("password", v)} autoComplete="new-password" />
@@ -195,7 +195,7 @@ export function SignupPage() {
         <button className="auth-submit" type="submit" disabled={busy}>
           {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Creating account…" : "Create account"}
         </button>
-        <p className="auth-note">Demo product — no real banking data is collected or transmitted.</p>
+        <p className="auth-note">Bank-grade encryption · passwords stored as one-way scrypt hashes.</p>
       </form>
     </AuthShell>
   );

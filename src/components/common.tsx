@@ -87,7 +87,7 @@ export function AnimatedNumber({ value, className, decimals = 0, suffix = "" }: 
  * Card artwork sized with container-query units so every element keeps its
  * proportions from a 140px floating card up to a full-width dashboard tile.
  */
-export function VirtualCard({ small = false, label = "Business", holder = "Hana Park", last4 = "2903", number, exp = "09/28", cvv, frozen = false, flipped = false, type = "virtual" }: {
+export function VirtualCard({ small = false, label = "Business", holder = "Rae Kim", last4 = "2903", number, exp = "09/28", cvv, frozen = false, flipped = false, type = "virtual" }: {
   small?: boolean; label?: string; holder?: string; last4?: string; number?: string; exp?: string; cvv?: string;
   frozen?: boolean; flipped?: boolean; type?: "virtual" | "physical";
 }) {

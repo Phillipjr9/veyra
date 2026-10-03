@@ -37,19 +37,6 @@ Admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` on boot; members create
 accounts through the signup flow and start with a real, empty account ($0
 balance, no cards, no history).
 
-**Development demo data** — set `DEMO_SEED=1` (or `DEMO_SEED=1 npm run server`)
-to additionally seed the demo identities with a full dataset for exploring and
-testing. Production boots clean; the flag also warns if set with
-`NODE_ENV=production`.
-
-| Demo identity (DEMO_SEED=1 only) | Email | Password |
-|---|---|---|
-| Business member | `demo@veyra.com` | `veyra123` |
-| Personal member | `personal@veyra.com` | `veyra123` |
-| Super Admin | `admin@veyra.com` | `admin123` |
-| Compliance officer | `compliance@veyra.com` | `veyra123` |
-| Support agent | `support@veyra.com` | `veyra123` |
-
 ## Super Admin control center
 
 `/app/superadmin` — permission-gated modules (RBAC in `src/lib/permissions.ts`):
@@ -114,14 +101,15 @@ scripts/
 public/images/email/    Hosted logo PNG for emails (Gmail/Outlook-safe)
 server/
   src/
-    index.ts            Bootstrap: .env loader, DEMO_SEED, production guards
+    index.ts            Bootstrap: .env loader, production guards
     app.ts              createApp() — REST routes + middleware
     db.ts               SQLite (WAL, FK on): migrations, audit triggers, tx helper
     security.ts         scrypt hashing, HS256 tokens, rate limiter, TOKEN_SECRET
     rbac.ts             Server-authoritative permission matrix (DB overrides)
     audit.ts            logAdminAction — the only write path to audit_log
-    seed.ts             Production bootstrap (env admin) + opt-in demo seed
-  scripts/test-api.ts   69-check integration suite (boots the real server)
+    seed.ts             Production bootstrap: settings, role grants, env admin
+    state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
+  scripts/test-api.ts   112-check integration suite (boots the real server)
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -210,7 +198,6 @@ npm run typecheck:server  # strict NodeNext typecheck
 | `PORT` | `8787` | API port |
 | `DB_PATH` | `server/veyra.db` | SQLite file (git-ignored) |
 | `CORS_ORIGIN` | `*` | Allow a specific browser origin |
-| `DEMO_SEED` | off | `1` = seed demo identities (development only) |
 
 Variables can live in a `.env` file (loaded automatically — see `.env.example`).
 
@@ -219,9 +206,8 @@ The database schema is created by versioned migrations in `server/src/db.ts`
 `notifications`, `audit_log`, `sessions`, `role_permissions`, `settings`;
 v2 adds `invoices`, `team_members`, `savings_pockets`, `payees`,
 `scheduled_payments`, `perks`, `security_sessions`, `preferences` and the full
-card model, so every member feature is server-backed). Demo members are seeded
-with the exact dataset the standalone frontend generates (`server/src/state.ts`),
-and every new signup starts with the same demo state.
+card model, so every member feature is server-backed). `server/src/state.ts`
+builds each member's Account snapshot straight from these tables.
 
 ## Scripts
 
@@ -231,7 +217,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + API integration (114) = 153 checks
+npm test               # permissions (14) + emails (25) + API integration (112) = 151 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

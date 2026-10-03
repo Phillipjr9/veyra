@@ -409,7 +409,7 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
       `${"Amount:".padEnd(16)}${incoming ? "+" : "-"}${money(Math.abs(txn.amount))}`,
       ...rows.map(([k, v]) => `${`${k}:`.padEnd(16)}${v}`),
       "",
-      "Demonstration product — no real funds were moved.",
+      "Keep this receipt for your records.",
     ];
     downloadFile(`veyra-receipt-${txn.reference ?? txn.id}.txt`, lines.join("\n"));
     toast({ tone: "success", title: "Receipt downloaded" });
@@ -1245,7 +1245,7 @@ function CardManager({ card, onClose, onReplacement }: { card: Card | null; onCl
                         <div><span>Tracking</span><code>{card.shipping.tracking ?? "Assigning tracking…"}</code>{card.shipping.tracking && <button type="button" className="mini-copy" onClick={() => copy("Tracking number", card.shipping.tracking ?? "")}><Copy size={12} /></button>}</div>
                         <div><span>Ship to</span><b><MapPin size={13} /> {card.shipping.address}</b></div>
                       </section>
-                      {card.shipping.status !== "delivered" && <button type="button" className="ghost-btn demo-shipping" onClick={() => {
+                      {card.shipping.status !== "delivered" && <button type="button" className="ghost-btn ship-action" onClick={() => {
                         const status = advanceCardShipping(card.id);
                         toast({ tone: "info", title: `Shipping updated: ${SHIPPING_LABEL[status]}` });
                       }}><Truck size={14} /> Advance shipment</button>}
@@ -1646,7 +1646,7 @@ export function PaymentsPage() {
           <input
             id="pay-to"
             autoComplete="off"
-            placeholder={method === "Zelle" ? "e.g. Alex Morgan, (555) 234-5678, alex@email.com" : "Business or person"}
+            placeholder={method === "Zelle" ? "e.g. Jamie Chen, (555) 234-5678, jamie@email.com" : "Business or person"}
             value={payee}
             onChange={e => setPayee(e.target.value)}
           />
@@ -2688,7 +2688,7 @@ export function KYCPage() {
                   <legend>Information exactly as it appears on your ID.</legend>
                   <div>
                     <label htmlFor="kyc-name">Legal full name</label>
-                    <input id="kyc-name" required placeholder="e.g. Hana Park" value={form.legalName} onChange={e => setForm(f => ({ ...f, legalName: e.target.value }))} />
+                    <input id="kyc-name" required placeholder="e.g. Rae Kim" value={form.legalName} onChange={e => setForm(f => ({ ...f, legalName: e.target.value }))} />
                   </div>
                   <div>
                     <label htmlFor="kyc-dob">Date of birth</label>

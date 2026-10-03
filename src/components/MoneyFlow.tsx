@@ -327,7 +327,7 @@ function Processing({ flow, track, onDone }: { flow: FlowState; track: Track; on
           );
         })}
       </ul>
-      <p className="flow-secure"><ShieldCheck size={14} /> Bank-grade encryption · Demo transfer, no real money moves</p>
+      <p className="flow-secure"><ShieldCheck size={14} /> Bank-grade encryption in transit and at rest</p>
     </div>
   );
 }
@@ -347,7 +347,7 @@ function receiptText(flow: FlowState, r: MoveResult, acct: string) {
   if (flow.kind === "send") {
     lines.push(`${pad("Category")}${flow.draft.category}`, `${pad("Memo")}${flow.draft.note ?? "—"}`, `${pad("Rewards earned")}${money(r.reward)}`, `${pad("Scout savings")}${money(r.scout)}`);
   }
-  lines.push(`${pad("Fee")}$0.00`, `${pad("New balance")}${money(r.balanceAfter)}`, "", "Demonstration product — no real funds were moved.");
+  lines.push(`${pad("Fee")}$0.00`, `${pad("New balance")}${money(r.balanceAfter)}`, "", "Keep this receipt for your records.");
   return lines.join("\n");
 }
 

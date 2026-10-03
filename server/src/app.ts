@@ -44,9 +44,9 @@ const MAX_TRANSFER_CENTS = 250_000_00;      // $250k per transfer
 const MAX_DEPOSIT_CENTS = 100_000_00;       // $100k per deposit
 const MAX_ADJUSTMENT_CENTS = 10_000_000_00; // $10M per admin adjustment
 
-export function createApp(dbPath?: string, opts: { demo?: boolean } = {}) {
+export function createApp(dbPath?: string) {
   const db = openDb(dbPath);
-  seed(db, { demo: opts.demo === true });
+  seed(db);
 
   const app = express();
   app.disable("x-powered-by");
