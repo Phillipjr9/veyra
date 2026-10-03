@@ -975,10 +975,28 @@ export function createApp(dbPath?: string) {
     if (!target) return void res.status(404).json({ error: "Member not found." });
     const cents = dollarsToCents(req.body?.amount ?? 0);
     const direction = req.body?.direction === "debit" ? "debit" : "credit";
+    const requestedDescription = String(req.body?.description ?? "").trim();
     const memo = String(req.body?.memo ?? "").trim();
+    const fallbackDescription = direction === "credit" ? "Direct deposit" : "ACH withdrawal";
+    const hasTransferDescription = requestedDescription.length > 0;
+    if (!memo && !hasTransferDescription) return void res.status(400).json({ error: "A transfer description or reference note is required." });
+    const sanitizeTransferDescription = (label: string) => {
+      const stripped = label
+        .replace(/\b(?:by|the|platform|bank|team|staff|super|admin|administrator)\b/gi, " ")
+        .replace(/\b(?:admin|administrator|staff|compliance|support|super admin)\b/gi, " ")
+        .replace(/\s+/g, " ")
+        .replace(/\s+[–—-]+\s+/g, " ")
+        .replace(/^[\s\-–—]+|[\s\-–—]+$/g, "")
+        .trim();
+      return stripped || fallbackDescription;
+    };
+    const normalizedDescription = (() => {
+      const label = sanitizeTransferDescription(requestedDescription || fallbackDescription);
+      const clean = label.replace(/\s+/g, " ").trim();
+      return clean.length > 80 ? clean.slice(0, 77).trim() + "..." : clean;
+    })();
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_ADJUSTMENT_CENTS) return void res.status(400).json({ error: "Adjustments are limited to $10,000,000." });
-    if (!memo) return void res.status(400).json({ error: "An audit reason is required." });
     try {
       const result = inTransaction(db, () => {
         const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(String(req.params.id)) as
@@ -990,19 +1008,20 @@ export function createApp(dbPath?: string) {
         if (after < 0) throw new Error("Withdrawal rejected — it would overdraw the member's account.");
         db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(after, now(), account.id);
         const txn = { id: rid("txn"), reference: rid("VYR").toUpperCase().replace("_", "-") };
+        const fullNote = memo ? `${normalizedDescription} — ${memo}` : normalizedDescription;
         db.prepare(
           `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, performed_by, created_at)
            VALUES (?, ?, ?, ?, 'Operations', 'Adjustment', ?, 'cleared', ?, ?, ?, ?)`,
-        ).run(txn.id, account.id, String(req.params.id), `Treasury adjustment (${direction})`, delta,
-          txn.reference, memo, req.user!.id, now());
+        ).run(txn.id, account.id, String(req.params.id), normalizedDescription, delta,
+          txn.reference, fullNote, req.user!.id, now());
         return { before: account.balance_cents, after, reference: txn.reference };
       });
       audit(req, "balance.adjust", "Financial", `user:${String(req.params.id)} · ${target.name}`,
-        `${direction === "credit" ? "Credited" : "Debited"} ${centsToDecimal(cents)} — ${memo}.`,
+        `${direction === "credit" ? "Credited" : "Debited"} ${centsToDecimal(cents)} — ${normalizedDescription}${memo ? ` · ${memo}` : ""}.`,
         centsToDecimal(result.before), centsToDecimal(result.after));
       notify(String(req.params.id), direction === "credit" ? "transfer" : "security",
         direction === "credit" ? "Funds credited by Veyra" : "Adjustment applied to your account",
-        `${direction === "credit" ? "+" : "−"}$${centsToDecimal(cents)} · ${memo}. New balance $${centsToDecimal(result.after)}.`);
+        `${direction === "credit" ? "+" : "−"}$${centsToDecimal(cents)} · ${normalizedDescription}${memo ? ` · ${memo}` : ""}. New balance $${centsToDecimal(result.after)}.`);
       res.json({ before: money(result.before), after: money(result.after), reference: result.reference });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Adjustment failed." });

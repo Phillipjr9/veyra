@@ -31,7 +31,8 @@ function SiteLayout({ children }: { children: React.ReactNode }) {
 function RedirectIfAuthed({ children }: { children: React.ReactNode }) {
   const { user, ready } = useAuth();
   if (!ready) return <div className="route-loading"><span className="spinner" /></div>;
-  return user ? <Navigate to="/app" replace /> : <>{children}</>;
+  if (!user) return <>{children}</>;
+  return <Navigate to={user.role && user.role !== "user" ? "/app/superadmin" : "/app"} replace />;
 }
 
 function BusinessOnly({ children }: { children: React.ReactNode }) {

@@ -86,8 +86,9 @@ export function LoginPage() {
     e.preventDefault();
     setBusy(true); setError("");
     try {
-      await login(email, password);
-      navigate(location.state?.from ?? "/app", { replace: true });
+      const me = await login(email, password);
+      const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
+      navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally { setBusy(false); }

@@ -5,6 +5,10 @@ import {
   Landmark, Lock, LogOut, Mail, Megaphone, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
   TrendingUp, UserCheck, UserRound, Users, Wallet,
 } from "lucide-react";
+import {
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
+  ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
 import { apiGet, apiPost, apiPut } from "../lib/api";
 import {
@@ -124,6 +128,7 @@ export function SuperAdminPage() {
   const [targetUser, setTargetUser] = useState<AdminUser | null>(null);
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustType, setAdjustType] = useState<"credit" | "debit">("credit");
+  const [adjustKind, setAdjustKind] = useState("direct_deposit");
   const [adjustMemo, setAdjustMemo] = useState("");
   // KYC
   const [kycModal, setKycModal] = useState(false);
@@ -217,16 +222,52 @@ export function SuperAdminPage() {
 
   /* ---------------- handlers (every mutation: permission check → action → audit → notify) ---------------- */
 
+  const adjustmentOptions = [
+    { id: "direct_deposit", label: "Direct deposit", credit: true, debit: false },
+    { id: "payroll", label: "Payroll", credit: true, debit: false },
+    { id: "ach_transfer", label: "ACH transfer", credit: true, debit: false },
+    { id: "wire_transfer", label: "Wire transfer", credit: true, debit: true },
+    { id: "refund", label: "Refund", credit: true, debit: false },
+    { id: "bonus_payout", label: "Bonus payout", credit: true, debit: false },
+    { id: "vendor_settlement", label: "Vendor settlement", credit: true, debit: false },
+    { id: "fee_reversal", label: "Fee reversal", credit: true, debit: false },
+    { id: "manual_adjustment", label: "Manual adjustment", credit: true, debit: true },
+    { id: "ach_withdrawal", label: "ACH withdrawal", credit: false, debit: true },
+    { id: "clawback", label: "Clawback", credit: false, debit: true },
+    { id: "treasury_top_up", label: "Treasury top up", credit: true, debit: false },
+  ] as const;
+
+  const validAdjustmentOptions = adjustmentOptions.filter(option =>
+    adjustType === "credit" ? option.credit : option.debit,
+  );
+
+  const fallbackAdjustment = adjustType === "credit"
+    ? "Direct deposit"
+    : "ACH withdrawal";
+
+  const activeAdjustment = validAdjustmentOptions.find(option => option.id === adjustKind) ?? {
+    id: adjustType === "credit" ? "direct_deposit" : "ach_withdrawal",
+    label: fallbackAdjustment,
+    credit: adjustType === "credit",
+    debit: adjustType === "debit",
+  };
+
   const handleCommitAdjustment = (e: React.FormEvent) => {
     e.preventDefault();
     const val = parseFloat(adjustAmount);
     if (!val || val <= 0 || !targetUser) return;
     if (!guard("customers.adjust_balance", "adjust balances")) return;
-    const memo = adjustMemo || "Administrative adjustment";
-          apiPost<{ before: { amount: string }; after: { amount: string } }>(`/api/admin/members/${targetUser.id}/adjust`, { direction: adjustType, amount: val, memo })
+    const description = activeAdjustment.label || fallbackAdjustment;
+    const memo = adjustMemo.trim();
+          apiPost<{ before: { amount: string }; after: { amount: string } }>(`/api/admin/members/${targetUser.id}/adjust`, {
+            direction: adjustType,
+            amount: val,
+            description,
+            memo: memo || description,
+          })
         .then(r => {
-          toast({ tone: "success", title: "Ledger adjustment committed", description: `${targetUser.name}: $${r.before.amount} → $${r.after.amount} · ref recorded on their statement.` });
-          setAdjustModal(false); setAdjustAmount(""); setAdjustMemo(""); refresh();
+          toast({ tone: "success", title: "Ledger adjustment committed", description: `${targetUser.name}: $${r.before.amount} → $${r.after.amount} · ${description} recorded on their statement.` });
+          setAdjustModal(false); setAdjustAmount(""); setAdjustKind("direct_deposit"); setAdjustMemo(""); refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Adjustment failed", description: err.message }));
   };
@@ -397,6 +438,22 @@ export function SuperAdminPage() {
 
   const activeMatrix = matrixDraft ?? Object.fromEntries(STAFF_ROLES.map(r => [r, rolePermissions(r)])) as Record<StaffRole, Permission[]>;
 
+  const adminNetFlow = [
+    { month: "Jan", inflow: 82000, outflow: 46000 },
+    { month: "Feb", inflow: 90000, outflow: 50000 },
+    { month: "Mar", inflow: 98000, outflow: 53000 },
+    { month: "Apr", inflow: 101000, outflow: 56000 },
+    { month: "May", inflow: 112000, outflow: 61000 },
+    { month: "Jun", inflow: 125000, outflow: 67000 },
+  ];
+
+  const channelMix = [
+    { name: "Card", value: 44, color: "#7558dc" },
+    { name: "ACH", value: 27, color: "#8fd3a4" },
+    { name: "Wire", value: 18, color: "#f0bf6a" },
+    { name: "Other", value: 11, color: "#c6d0ff" },
+  ];
+
   return (
     <div className="app-page superadmin-page">
       {/* Console header */}
@@ -412,7 +469,6 @@ export function SuperAdminPage() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flex: "none" }}>
-          <Link to="/app" className="ghost-btn sm"><Activity size={14} /> Member view</Link>
           <button type="button" className="ghost-btn sm" onClick={() => { logout(); navigate("/"); }}>
             <LogOut size={14} /> Sign out
           </button>
@@ -462,12 +518,81 @@ export function SuperAdminPage() {
               ["KYC pending", totals.kycPending, <UserCheck size={12} />, "Requests + queue"],
               ["Risk alerts", totals.riskAlerts, <ShieldAlert size={12} />, `${openDisputes.length} disputes · ${totals.restricted} restricted`],
             ] as Array<[string, string | number, React.ReactNode, string]>).map(([label, value, icon, sub]) => (
-              <div className="admin-kpi-card" key={label}>
+              <div
+                className={`admin-kpi-card ${label === "Total balances" ? "featured" : ""}`}
+                key={label}
+              >
                 <span className="kpi-label">{label}</span>
                 <strong className={`kpi-val ${label === "Risk alerts" && Number(totals.riskAlerts) > 0 ? "warn-red" : ""}`}>{value}</strong>
                 <small className="kpi-sub">{icon} {sub}</small>
               </div>
             ))}
+          </div>
+
+          <div className="admin-chart-grid">
+            <div className="admin-chart-panel admin-chart-main">
+              <div className="chart-panel-head">
+                <div>
+                  <span className="chart-panel-kicker">Cash flow</span>
+                  <h3>Net inflow vs operating outflow</h3>
+                </div>
+                <span className="chart-panel-badge positive">+18.4% QoQ</span>
+              </div>
+              <div className="chart-panel-body">
+                <ResponsiveContainer width="100%" height={250}>
+                  <AreaChart data={adminNetFlow} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="netflow-fill" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#7558dc" stopOpacity={0.32} />
+                        <stop offset="100%" stopColor="#7558dc" stopOpacity={0.04} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="rgba(24, 23, 29, 0.08)" strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
+                    <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
+                    <Tooltip
+                      formatter={(value: number | string, name: string) => [money(Number(value), false), name === "inflow" ? "Inflow" : "Outflow"]}
+                      contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)", boxShadow: "0 18px 38px rgba(24,23,29,.12)" }}
+                    />
+                    <Area type="monotone" dataKey="outflow" stackId="1" stroke="#c2b4ff" strokeWidth={2.2} fill="rgba(117,88,220,0.14)" />
+                    <Area type="monotone" dataKey="inflow" stackId="2" stroke="#7558dc" strokeWidth={2.5} fill="url(#netflow-fill)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="admin-chart-panel">
+              <div className="chart-panel-head">
+                <div>
+                  <span className="chart-panel-kicker">Funding mix</span>
+                  <h3>Volume by channel</h3>
+                </div>
+              </div>
+              <div className="chart-panel-body chart-panel-compact">
+                <div className="admin-pie-wrap">
+                  <ResponsiveContainer width="100%" height={170}>
+                    <PieChart>
+                      <Pie data={channelMix} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={35} outerRadius={58} paddingAngle={3}>
+                        {channelMix.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                      </Pie>
+                      <Tooltip
+                        formatter={(value: number | string) => [`${value}%`, "Share"]}
+                        contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)" }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="admin-mix-legend">
+                  {channelMix.map((item) => (
+                    <div key={item.name} className="admin-mix-item">
+                      <span className="admin-mix-dot" style={{ background: item.color }} />
+                      <span>{item.name}</span>
+                      <strong>{item.value}%</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className={`admin-api-strip ${apiHealth === "offline" ? "offline" : ""}`} role="status">
@@ -1125,20 +1250,26 @@ export function SuperAdminPage() {
       {adjustModal && targetUser && (
         <div className="modal-scrim" onClick={() => setAdjustModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h3>Treasury adjustment: {targetUser.name}</h3></div>
+            <div className="modal-head"><h3>Transfer funds: {targetUser.name}</h3></div>
             <form onSubmit={handleCommitAdjustment} className="dash-form">
               <label>Direction</label>
               <div className="card-type-toggle">
-                <button type="button" className={adjustType === "credit" ? "on" : ""} onClick={() => setAdjustType("credit")}>Deposit funds (+)</button>
-                <button type="button" className={adjustType === "debit" ? "on" : ""} onClick={() => setAdjustType("debit")}>Withdraw / clawback (−)</button>
+                <button type="button" className={adjustType === "credit" ? "on" : ""} onClick={() => { setAdjustType("credit"); if (!validAdjustmentOptions.some(opt => opt.id === adjustKind)) setAdjustKind("direct_deposit"); }}>Deposit funds (+)</button>
+                <button type="button" className={adjustType === "debit" ? "on" : ""} onClick={() => { setAdjustType("debit"); if (!validAdjustmentOptions.some(opt => opt.id === adjustKind)) setAdjustKind("ach_withdrawal"); }}>Withdraw / clawback (−)</button>
+              </div>
+              <label>Transaction type</label>
+              <div className="card-type-toggle">
+                {validAdjustmentOptions.map(option => (
+                  <button key={option.id} type="button" className={adjustKind === option.id ? "on" : ""} onClick={() => setAdjustKind(option.id)}>{option.label}</button>
+                ))}
               </div>
               <label htmlFor="adm-adj-amt">Amount ($ USD)</label>
               <div className="amount-input">
                 <span>$</span>
                 <input id="adm-adj-amt" type="number" min="1" step="0.01" required placeholder="0.00" value={adjustAmount} onChange={e => setAdjustAmount(e.target.value)} />
               </div>
-              <label htmlFor="adm-adj-memo">Audit reason (shown to the member and in the audit trail)</label>
-              <input id="adm-adj-memo" required placeholder="e.g. Wire deposit confirmation, fee reversal, provisional credit" value={adjustMemo} onChange={e => setAdjustMemo(e.target.value)} />
+              <label htmlFor="adm-adj-memo">Reference note (optional detail on the member transaction)</label>
+              <input id="adm-adj-memo" placeholder="e.g. June payroll, SaaS refund, wire confirmation" value={adjustMemo} onChange={e => setAdjustMemo(e.target.value)} />
               <p className="admin-before-after">
                 Current balance: <strong>{money(accountBy(targetUser.id)?.balance ?? 0)}</strong>
                 {adjustAmount && !isNaN(parseFloat(adjustAmount))
@@ -1147,7 +1278,7 @@ export function SuperAdminPage() {
               </p>
               <div className="modal-actions">
                 <button type="button" className="ghost-btn" onClick={() => setAdjustModal(false)}>Cancel</button>
-                <button type="submit" className="solid-btn">Commit adjustment</button>
+                <button type="submit" className="solid-btn">Commit transfer</button>
               </div>
             </form>
           </div>

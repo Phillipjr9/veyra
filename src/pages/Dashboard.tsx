@@ -98,6 +98,12 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   const location = useLocation();
   if (!ready) return <div className="route-loading"><span className="spinner" /></div>;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (user.role && user.role !== "user" && !location.pathname.startsWith("/app/superadmin")) {
+    return <Navigate to="/app/superadmin" replace />;
+  }
+  if (user.role === "user" && location.pathname.startsWith("/app/superadmin")) {
+    return <Navigate to="/app" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -680,6 +686,9 @@ export function DashboardLayout() {
     return () => { document.body.style.overflow = prev; };
   }, [navOpen]);
 
+  if (user?.role && user.role !== "user" && !location.pathname.startsWith("/app/superadmin")) {
+    return <Navigate to="/app/superadmin" replace />;
+  }
   if (accountError) {
     return (
       <div className="route-loading" style={{ flexDirection: "column", gap: 12, padding: 24, textAlign: "center" }}>
@@ -1521,6 +1530,7 @@ export function TransactionsPage() {
    Transfers
    ============================================================ */
 export function PaymentsPage() {
+  const { user } = useAuth();
   const { account, addPayee, removePayee } = useAcct();
   const { startSend, openDeposit } = useMoneyFlow();
   const toast = useToast();
@@ -1537,7 +1547,21 @@ export function PaymentsPage() {
   const [checkOpen, setCheckOpen] = useState(false);
   const [payeeForm, setPayeeForm] = useState({ name: "", nickname: "", bankName: "", routing: "", accountLast4: "", accountType: "Checking" as "Checking" | "Savings" });
   const recent = useMemo(() => (account ? recentPayees(account.transactions) : []), [account]);
-  if (!account) return null;
+
+  if (user?.role && user.role !== "user") {
+    return <Navigate to="/app/superadmin" replace />;
+  }
+  if (!account) {
+    return (
+      <div className="app-page">
+        <div className="panel" style={{ padding: "32px 24px", maxWidth: 560, margin: "32px auto" }}>
+          <h2>Send money</h2>
+          <p className="form-intro" style={{ marginBottom: 18 }}>Your account details are still loading, or this transfer page is only available to member accounts.</p>
+          <Link to="/app" className="solid-btn">Back to overview</Link>
+        </div>
+      </div>
+    );
+  }
 
   const value = Number.parseFloat(amount) || 0;
   const bank = account.bankDetails;
