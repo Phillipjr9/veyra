@@ -28,7 +28,11 @@ type AuthValue = {
    * session explains itself instead of dumping the user on a bare form.
    */
   sessionNotice: string;
+  /** The server's own wording for the rejection — shown small, for diagnosis. */
+  sessionDetail: string;
   dismissSessionNotice: () => void;
+  /** Forgets this browser's session entirely (every token store) and returns to the form. */
+  resetSession: () => void;
   login: (email: string, password: string) => Promise<User>;
   signup: (input: { name: string; phone?: string; business?: string; accountType: User["accountType"]; email: string; password: string; plan?: User["plan"] }) => Promise<void>;
   logout: () => void;
@@ -47,6 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [offline, setOffline] = useState(false);
   const [sessionNotice, setSessionNotice] = useState("");
+  const [sessionDetail, setSessionDetail] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -61,6 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           clearToken(); // revoked or expired — sign in again
           if (err instanceof ApiError && err.status === 401) {
             setSessionNotice("Your session ended — sign in again to pick up where you left off.");
+            setSessionDetail(err.message);
           }
         }
       }
@@ -68,19 +74,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
-  useEffect(() => onUnauthorized(() => {
+  useEffect(() => onUnauthorized(reason => {
     setUser(null);
     setSessionNotice("Your session ended — sign in again to pick up where you left off.");
+    setSessionDetail(reason);
   }), []);
 
-  const dismissSessionNotice = useCallback(() => setSessionNotice(""), []);
+  const dismissSessionNotice = useCallback(() => { setSessionNotice(""); setSessionDetail(""); }, []);
+
+  /** Clears every place a token could hide and drops back to the form. */
+  const resetSession = useCallback(() => {
+    clearToken();
+    setUser(null);
+    dismissSessionNotice();
+  }, [dismissSessionNotice]);
 
   const login = useCallback(async (email: string, password: string): Promise<User> => {
+    // A leftover token must not ride along with a sign-in attempt: if the server
+    // rejected the request, the automatic 401 handling would clear the session
+    // and claim it "ended" — confusing when the real cause is a typed password.
+    clearToken();
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
     setToken(token);
     setUser(me);
     setSessionNotice("");
+    setSessionDetail("");
     return me;
   }, []);
 
@@ -123,8 +142,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, sessionNotice, dismissSessionNotice, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, sessionNotice, dismissSessionNotice, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

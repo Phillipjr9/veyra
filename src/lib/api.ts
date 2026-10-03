@@ -35,18 +35,51 @@ function readStoredToken(): string | null {
   try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
 }
 
+/**
+ * Last-resort store: `window.name`.
+ *
+ * Preview frames are frequently sandboxed without same-origin access, which
+ * makes localStorage and sessionStorage throw — so a hard reload loses the
+ * session and the member is asked to sign in again on every reload, which
+ * reads as "I can never log in". `window.name` survives reloads of the frame
+ * and works in an opaque origin. It is only written when no real storage is
+ * available, and never overwrites a value we did not set, so a host page that
+ * uses window.name for its own purposes is left alone.
+ */
+const NAME_PREFIX = "veyra.token=";
+
+function readNameToken(): string | null {
+  try {
+    const name = window.name;
+    return typeof name === "string" && name.startsWith(NAME_PREFIX) ? name.slice(NAME_PREFIX.length) || null : null;
+  } catch { return null; }
+}
+
+function writeNameToken(token: string | null): void {
+  try {
+    const name = window.name;
+    if (token) {
+      if (name === "" || name.startsWith(NAME_PREFIX)) window.name = NAME_PREFIX + token;
+      return;
+    }
+    if (typeof name === "string" && name.startsWith(NAME_PREFIX)) window.name = "";
+  } catch { /* ignore */ }
+}
+
 export function getToken(): string | null {
-  return memoryToken ?? readStoredToken();
+  return memoryToken ?? readStoredToken() ?? readNameToken();
 }
 export function setToken(token: string): void {
   memoryToken = token;
   try { localStorage.setItem(TOKEN_KEY, token); return; } catch { /* fall through to session storage */ }
-  try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* memory-only session */ }
+  try { sessionStorage.setItem(TOKEN_KEY, token); return; } catch { /* fall through to window.name */ }
+  writeNameToken(token);
 }
 export function clearToken(): void {
   memoryToken = null;
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
   try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+  writeNameToken(null);
 }
 
 /** True when the browser refuses web storage (private mode, blocked third-party storage, sandboxed frame). */
@@ -65,7 +98,7 @@ export function storageBlocked(): boolean {
  * auth provider) send the user back to the login form instead of leaving a
  * dead-end error card on the page.
  */
-type UnauthorizedListener = () => void;
+type UnauthorizedListener = (reason: string) => void;
 const unauthorizedListeners = new Set<UnauthorizedListener>();
 
 export function onUnauthorized(listener: UnauthorizedListener): () => void {
@@ -73,10 +106,10 @@ export function onUnauthorized(listener: UnauthorizedListener): () => void {
   return () => unauthorizedListeners.delete(listener);
 }
 
-function sessionRejected(hadToken: boolean): void {
+function sessionRejected(hadToken: boolean, reason: string): void {
   if (!hadToken) return; // a failed sign-in attempt: the form reports it, nothing to clear
   clearToken();
-  unauthorizedListeners.forEach(listener => listener());
+  unauthorizedListeners.forEach(listener => listener(reason));
 }
 
 /**
@@ -86,9 +119,9 @@ function sessionRejected(hadToken: boolean): void {
  * storage, a cleared profile — or it was never there), so the caller must not
  * render a dead end. The login form takes over and says why.
  */
-export function endSession(): void {
+export function endSession(reason = ""): void {
   clearToken();
-  unauthorizedListeners.forEach(listener => listener());
+  unauthorizedListeners.forEach(listener => listener(reason));
 }
 
 /**
@@ -142,7 +175,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   let json: any = null;
   try { json = JSON.parse(text); } catch { /* non-JSON */ }
   if (!res.ok) {
-    if (res.status === 401) sessionRejected(Boolean(token));
+    if (res.status === 401) sessionRejected(Boolean(token), json?.error ?? "Session rejected.");
     throw new ApiError(res.status, json?.error ?? `Request failed (${res.status}).`);
   }
   return json as T;
@@ -160,7 +193,7 @@ export async function apiGetText(path: string): Promise<string> {
   const res = await fetch(path, { headers });
   const text = await res.text();
   if (!res.ok) {
-    if (res.status === 401) sessionRejected(Boolean(token));
+    if (res.status === 401) sessionRejected(Boolean(token), "Session rejected.");
     let message = `Request failed (${res.status}).`;
     try {
       const json = JSON.parse(text) as { error?: string };

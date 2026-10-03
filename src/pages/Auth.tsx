@@ -140,7 +140,7 @@ function DemoAccounts({ onPick, busyEmail }: { onPick: (email: string, password:
 }
 
 export function LoginPage() {
-  const { login, offline, sessionNotice, dismissSessionNotice } = useAuth();
+  const { login, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: string } };
@@ -206,8 +206,14 @@ export function LoginPage() {
           <div>
             <strong>Session ended</strong>
             <small>{sessionNotice}</small>
+            {sessionDetail && <small className="auth-notice-detail">Server said: {sessionDetail}</small>}
           </div>
-          <button type="button" onClick={dismissSessionNotice} aria-label="Dismiss">✕</button>
+          <div className="auth-notice-actions">
+            {/* Forgets the session everywhere it could be hiding (memory, both
+                web storages, the frame name) so the next attempt starts clean. */}
+            <button type="button" onClick={resetSession}>Reset session</button>
+            <button type="button" onClick={dismissSessionNotice} aria-label="Dismiss">✕</button>
+          </div>
         </div>
       )}
 

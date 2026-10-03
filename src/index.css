@@ -652,6 +652,9 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
 .auth-notice small { font-size: 11.5px; color: #8a7a4f; }
 .auth-notice > div { flex: 1; }
 .auth-notice button { flex: none; border: 0; background: none; font-size: 12px; color: #a99367; }
+.auth-notice-detail { font-family: var(--mono); font-size: 10.5px; opacity: .85; }
+.auth-notice-actions { display: flex; align-items: center; gap: 10px; }
+.auth-notice-actions button:first-child { padding: 5px 9px; border: 1px solid rgba(138,106,31,.3); border-radius: 8px; font-weight: 600; }
 .auth-storage-note { margin: 12px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--muted); }
 
 /* ---- One-click demo sign-in (dev only — see DEMO_ACCOUNTS in pages/Auth.tsx) ---- */
