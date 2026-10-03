@@ -12,7 +12,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError } from "./db.js";
-import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, TOKEN_TTL_MS } from "./security.js";
+import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
   PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS, type Permission, type StaffRole,
@@ -172,18 +172,30 @@ export function createApp(dbPath?: string) {
 
   app.post("/api/auth/login", wrap((req, res) => {
     const ip = req.ip ?? "unknown";
-    if (!rateLimit(`login:${ip}`)) return void res.status(429).json({ error: "Too many attempts — try again in a minute." });
     const { email, password } = req.body ?? {};
     if (typeof email !== "string" || typeof password !== "string") {
       return void res.status(400).json({ error: "Email and password are required." });
+    }
+    // Only failed credentials spend the budget, so signing in successfully —
+    // repeatedly, from a shared address, which is how a preview proxy looks to
+    // the server — can never lock anyone out. Two buckets: one per account
+    // (stops guessing a password) and a looser one per address (stops spraying
+    // many accounts).
+    const accountKey = `login:acct:${email.trim().toLowerCase()}`;
+    const ipKey = `login:ip:${ip}`;
+    if (failureBudgetExceeded(accountKey, 6) || failureBudgetExceeded(ipKey, 30)) {
+      return void res.status(429).json({ error: "Too many failed attempts — wait a minute, then try again." });
     }
     const row = db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").get(email) as
       | (AuthedUser & { password_hash: string; account_type: string })
       | undefined;
     // Constant-ish response regardless of which factor failed.
     if (!row || !verifyPassword(password, row.password_hash)) {
+      recordFailure(accountKey);
+      recordFailure(ipKey);
       return void res.status(401).json({ error: "Email or password doesn't match our records." });
     }
+    clearFailures(accountKey);
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, row.id, now(), now() + TOKEN_TTL_MS);

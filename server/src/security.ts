@@ -78,6 +78,10 @@ export function resetRateLimits(): void {
   attempts.clear();
 }
 
+/**
+ * Counts every call against a budget — for endpoints where any request is work
+ * worth throttling (password-reset requests).
+ */
 export function rateLimit(key: string, limit = 8, windowMs = 60_000): boolean {
   const entry = attempts.get(key);
   const t = Date.now();
@@ -87,4 +91,34 @@ export function rateLimit(key: string, limit = 8, windowMs = 60_000): boolean {
   }
   entry.count += 1;
   return entry.count <= limit;
+}
+
+/**
+ * Sign-in budget: only *failed* attempts spend it.
+ *
+ * A correct password must never use up someone's allowance — otherwise a member
+ * who signs in a few times (or clicks the demo buttons) locks themselves out of
+ * an endpoint that is working perfectly, and behind a proxy every visitor
+ * shares one bucket. `rateLimit` (count everything) is kept for endpoints where
+ * every request is work; these three are for credential checks, where the
+ * failures are the thing worth limiting.
+ */
+const failureWindowMs = 60_000;
+
+export function failureBudgetExceeded(key: string, limit: number): boolean {
+  const entry = attempts.get(key);
+  if (!entry || entry.resetAt < Date.now()) return false;
+  return entry.count >= limit;
+}
+
+export function recordFailure(key: string): void {
+  const entry = attempts.get(key);
+  const t = Date.now();
+  if (!entry || entry.resetAt < t) attempts.set(key, { count: 1, resetAt: t + failureWindowMs });
+  else entry.count += 1;
+}
+
+/** Called when credentials are correct: the streak is over, so forgive it. */
+export function clearFailures(key: string): void {
+  attempts.delete(key);
 }
