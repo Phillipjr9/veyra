@@ -14,7 +14,8 @@
     "check:routes": "node scripts/check-api-coverage.mjs",
     "audit:routes": "tsx server/scripts/audit-routes.ts",
     "typecheck": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit",
-    "typecheck:server": "tsc -p server/tsconfig.json --noEmit"
+    "typecheck:server": "tsc -p server/tsconfig.json --noEmit",
+    "demo:seed": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "@types/express": "^5.0.6",

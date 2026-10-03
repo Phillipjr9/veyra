@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
@@ -72,6 +72,72 @@ function AuthProviders({ onGoogle, onPasskey }: { onGoogle: () => void; onPasske
   );
 }
 
+/**
+ * One-click demo sign-in.
+ *
+ * These are the accounts the local database holds: two members seeded by
+ * `npm run seed:demo` (personal and business) and the Super Admin the server
+ * bootstraps from ADMIN_EMAIL / ADMIN_PASSWORD in .env. Clicking a row fills
+ * the form and signs in, so switching between the three dashboards is one
+ * click instead of typing a password.
+ *
+ * Only rendered in demo mode — any `npm run dev` session, or a built bundle
+ * opened with `?demo=1` — so production traffic never sees credentials in the
+ * page. Before a real launch, change ADMIN_PASSWORD and delete this block
+ * (the seed script warns if the admin password drifts from this list).
+ */
+const DEMO_ACCOUNTS: Array<{ id: string; label: string; detail: string; email: string; password: string; icon: typeof UserRound }> = [
+  { id: "personal", label: "Personal", detail: "Everyday money · goals, cash back, cards", email: "demo.personal@veyra.dev", password: "veyra-demo-2026", icon: UserRound },
+  { id: "business", label: "Business", detail: "Lagos Logistics Ltd · treasury, invoices, team", email: "demo.business@veyra.dev", password: "veyra-demo-2026", icon: Building2 },
+  { id: "admin", label: "Super Admin", detail: "Platform oversight console", email: "admin@veyra.dev", password: "veyra-admin-2026", icon: ShieldCheck },
+];
+
+const demoModeEnabled = (): boolean => {
+  if (import.meta.env.DEV) return true;
+  const { search, hash } = window.location;
+  return /[?&]demo=1(&|$)/.test(search) || /[?&]demo=1(&|$)/.test(hash);
+};
+
+/** The demo-credential panel: one click per account, filled and submitted. */
+function DemoAccounts({ onPick, busyEmail }: { onPick: (email: string, password: string) => void; busyEmail: string }) {
+  return (
+    <section className="demo-logins" aria-label="Demo accounts">
+      <header className="demo-logins-head">
+        <strong><Sparkles size={14} /> Demo accounts</strong>
+        <span>One click signs you in — dev only</span>
+      </header>
+      <div className="demo-logins-list">
+        {DEMO_ACCOUNTS.map((account, i) => {
+          const Icon = account.icon;
+          const busyNow = busyEmail === account.email;
+          return (
+            <motion.button
+              key={account.id}
+              type="button"
+              className="demo-login"
+              disabled={Boolean(busyEmail)}
+              onClick={() => onPick(account.email, account.password)}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.05 + i * 0.05, duration: 0.35 }}
+            >
+              <span className="demo-login-icon"><Icon size={16} /></span>
+              <span className="demo-login-copy">
+                <strong>{account.label}</strong>
+                <small>{account.detail}</small>
+                <code>{account.email} · {account.password}</code>
+              </span>
+              <span className="demo-login-go">
+                {busyNow ? <Loader2 className="spin" size={15} /> : <>Sign in <ArrowRight size={14} /></>}
+              </span>
+            </motion.button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function LoginPage() {
   const { login, offline } = useAuth();
   const toast = useToast();
@@ -81,17 +147,34 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState("");
+  const demos = demoModeEnabled();
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true); setError("");
+  async function signIn(asEmail: string, asPassword: string) {
+    setError("");
     try {
-      const me = await login(email, password);
+      const me = await login(asEmail, asPassword);
       const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
       navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
-    } finally { setBusy(false); }
+    }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    await signIn(email, password);
+    setBusy(false);
+  }
+
+  /** One click: show the credentials in the form, then sign in with them. */
+  async function useDemo(asEmail: string, asPassword: string) {
+    setEmail(asEmail);
+    setPassword(asPassword);
+    setDemoBusy(asEmail);
+    await signIn(asEmail, asPassword);
+    setDemoBusy("");
   }
 
   const handleGoogle = () => {
@@ -125,6 +208,8 @@ export function LoginPage() {
           </div>
         </div>
       )}
+
+      {demos && <DemoAccounts onPick={useDemo} busyEmail={demoBusy} />}
 
       <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
 

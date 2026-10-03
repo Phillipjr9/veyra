@@ -37,6 +37,30 @@ Admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` on boot; members create
 accounts through the signup flow and start with a real, empty account ($0
 balance, no cards, no history).
 
+
+### Demo accounts (one-click sign-in)
+
+Run `npm run server` and `npm run demo:seed` once, then the login page shows a
+**Demo accounts** panel that signs you straight into each of the three
+dashboards — no typing:
+
+| Button | Account | What it opens |
+|---|---|---|
+| Personal | `demo.personal@veyra.dev` / `veyra-demo-2026` | Personal dashboard (goals, cash back, card) |
+| Business | `demo.business@veyra.dev` / `veyra-demo-2026` | Business dashboard (treasury, invoices, team) |
+| Super Admin | `admin@veyra.dev` / `veyra-admin-2026` | Admin console (from `ADMIN_EMAIL`/`ADMIN_PASSWORD`) |
+
+`demo:seed` creates the two members through the public API and gives each one
+history for its dashboard; the Super Admin is bootstrapped by the server from
+`.env`. Re-running is safe — an account with activity is left alone, and the
+script warns if the admin password no longer matches the panel.
+
+The panel is **dev-only**: it renders when `import.meta.env.DEV` is true (any
+`npm run dev` session) or when a build is opened with `?demo=1`. Production
+builds without that flag never ship the credentials. Before a real launch,
+change `ADMIN_PASSWORD` and delete the `DEMO_ACCOUNTS` block in
+`src/pages/Auth.tsx`.
+
 ## Super Admin control center
 
 `/app/superadmin` — permission-gated modules (RBAC in `src/lib/permissions.ts`):
