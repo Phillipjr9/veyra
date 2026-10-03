@@ -5,6 +5,7 @@ import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound,
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
+import { storageBlocked } from "../lib/api";
 import { useToast } from "../components/Toast";
 
 function AuthShell({ title, sub, children, foot }: { title: string; sub: string; children: ReactNode; foot: ReactNode }) {
@@ -139,7 +140,7 @@ function DemoAccounts({ onPick, busyEmail }: { onPick: (email: string, password:
 }
 
 export function LoginPage() {
-  const { login, offline } = useAuth();
+  const { login, offline, sessionNotice, dismissSessionNotice } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: string } };
@@ -199,6 +200,17 @@ export function LoginPage() {
   return (
     <AuthShell title="Welcome back" sub="Sign in to your personal or business Veyra account."
       foot={<>New to Veyra? <Link to="/signup">Create an account</Link></>}>
+      {sessionNotice && !offline && (
+        <div className="auth-notice" role="status">
+          <ShieldCheck size={18} />
+          <div>
+            <strong>Session ended</strong>
+            <small>{sessionNotice}</small>
+          </div>
+          <button type="button" onClick={dismissSessionNotice} aria-label="Dismiss">✕</button>
+        </div>
+      )}
+
       {offline && (
         <div className="otp-banner-box" role="alert" style={{ marginBottom: 14 }}>
           <ShieldCheck size={20} className="text-green" />
@@ -222,6 +234,12 @@ export function LoginPage() {
         <button className="auth-submit" type="submit" disabled={busy}>
           {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Signing in…" : "Sign in"}
         </button>
+        {storageBlocked() && (
+          <p className="auth-storage-note">
+            This browser blocks web storage (preview frames and private mode often do), so sign-in works for this
+            tab only — a reload asks again.
+          </p>
+        )}
       </form>
     </AuthShell>
   );

@@ -15,14 +15,68 @@ const HEALTH_TIMEOUT_MS = 2500;
 let cachedOnline: boolean | null = null;
 let probe: Promise<boolean> | null = null;
 
+/**
+ * The token lives in memory first, and is mirrored into web storage when the
+ * browser allows it.
+ *
+ * The memory copy is not a cache — it is the source of truth for the page's
+ * lifetime. Preview frames (and any browser with third-party storage blocked,
+ * Safari's ITP, or private mode) make `localStorage.setItem` throw, and a
+ * swallowed write used to leave the app rendering a signed-in shell while
+ * every request went out with no Authorization header, which the API answers
+ * with 401 "Authentication required." — surfacing as "We couldn't load your
+ * account". Keeping the token in memory means sign-in works in those contexts;
+ * it just doesn't survive a reload, which `storageBlocked()` lets the UI say.
+ */
+let memoryToken: string | null = null;
+
+function readStoredToken(): string | null {
+  try { const t = localStorage.getItem(TOKEN_KEY); if (t) return t; } catch { /* storage blocked */ }
+  try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+
 export function getToken(): string | null {
-  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+  return memoryToken ?? readStoredToken();
 }
 export function setToken(token: string): void {
-  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* storage unavailable */ }
+  memoryToken = token;
+  try { localStorage.setItem(TOKEN_KEY, token); return; } catch { /* fall through to session storage */ }
+  try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* memory-only session */ }
 }
 export function clearToken(): void {
+  memoryToken = null;
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
+}
+
+/** True when the browser refuses web storage (private mode, blocked third-party storage, sandboxed frame). */
+export function storageBlocked(): boolean {
+  try {
+    const probeKey = "veyra.storage-probe";
+    localStorage.setItem(probeKey, "1");
+    localStorage.removeItem(probeKey);
+    return false;
+  } catch { return true; }
+}
+
+/**
+ * Sign-out of last resort: any request rejected with 401 means the session the
+ * app is holding is not usable, so the token is dropped and listeners (the
+ * auth provider) send the user back to the login form instead of leaving a
+ * dead-end error card on the page.
+ */
+type UnauthorizedListener = () => void;
+const unauthorizedListeners = new Set<UnauthorizedListener>();
+
+export function onUnauthorized(listener: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(listener);
+  return () => unauthorizedListeners.delete(listener);
+}
+
+function sessionRejected(hadToken: boolean): void {
+  if (!hadToken) return; // a failed sign-in attempt: the form reports it, nothing to clear
+  clearToken();
+  unauthorizedListeners.forEach(listener => listener());
 }
 
 /**
@@ -75,7 +129,10 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   const text = await res.text();
   let json: any = null;
   try { json = JSON.parse(text); } catch { /* non-JSON */ }
-  if (!res.ok) throw new ApiError(res.status, json?.error ?? `Request failed (${res.status}).`);
+  if (!res.ok) {
+    if (res.status === 401) sessionRejected(Boolean(token));
+    throw new ApiError(res.status, json?.error ?? `Request failed (${res.status}).`);
+  }
   return json as T;
 }
 
@@ -91,6 +148,7 @@ export async function apiGetText(path: string): Promise<string> {
   const res = await fetch(path, { headers });
   const text = await res.text();
   if (!res.ok) {
+    if (res.status === 401) sessionRejected(Boolean(token));
     let message = `Request failed (${res.status}).`;
     try {
       const json = JSON.parse(text) as { error?: string };
