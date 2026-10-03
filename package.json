@@ -8,10 +8,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:emails": "tsx scripts/build-emails.ts",
-    "test": "tsx scripts/test-kyc.ts && tsx scripts/test-admin.ts && node scripts/check-emails.mjs"
+    "test": "tsx scripts/test-kyc.ts && tsx scripts/test-admin.ts && node scripts/check-emails.mjs && tsx server/scripts/test-api.ts",
+    "server": "tsx server/src/index.ts",
+    "test:api": "tsx server/scripts/test-api.ts",
+    "typecheck:server": "tsc -p server/tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@types/express": "^5.0.6",
     "clsx": "2.1.1",
+    "express": "^5.2.1",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "lucide-react": "^1.49.0",

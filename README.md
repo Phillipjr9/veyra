@@ -1,8 +1,9 @@
 # Veyra
 
 A high-fidelity demo banking product: marketing site, personal & business dashboards,
-cards, transfers, invoicing, Scout AI savings, statements, a Super Admin console —
-and a 25-template transactional email system — built on one design system.
+cards, transfers, invoicing, Scout AI savings, statements, a Super Admin console,
+a 25-template transactional email system — and a real Express + SQLite backend —
+built on one design system.
 
 > **Fictional product.** No real accounts, cards or payments. Banking copy is
 > illustrative only.
@@ -12,14 +13,21 @@ and a 25-template transactional email system — built on one design system.
 - **React 19 + TypeScript + Vite 7** (single-file production build via `vite-plugin-singlefile`)
 - **Tailwind CSS 4** (preflight only) + hand-written semantic CSS design system
 - **Motion** (animation), **Recharts** (charts), **lucide-react** (icons)
-- **react-router-dom v7** (HashRouter), localStorage persistence (no backend)
+- **react-router-dom v7** (HashRouter)
+- **Backend:** Express 5 + `node:sqlite` (`server/`) — scrypt auth, server-enforced
+  RBAC, atomic financial ops, append-only audit trail (see **Backend** below)
 
 ## Getting started
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
+npm run dev        # frontend → http://localhost:5173
+npm run server     # API      → http://localhost:8787 (in a second terminal)
 ```
+
+The frontend runs standalone on its localStorage demo; start `npm run server`
+too and it transparently uses the real API (`/api` is proxied in dev, and the
+Super Admin console shows live backend health in **System Status**).
 
 ### Demo logins (password: `123456`)
 
@@ -92,6 +100,17 @@ src/
 emails/                 Exported standalone HTML (build:emails)
 scripts/                Email export + tests
 public/images/email/    Hosted logo PNG for emails (Gmail/Outlook-safe)
+server/
+  src/
+    index.ts            Bootstrap: PORT, seed, production secret guard
+    app.ts              createApp() — ~35 REST routes + middleware
+    db.ts               SQLite (WAL, FK on): migrations, audit triggers, tx helper
+    security.ts         scrypt hashing, HS256 tokens, rate limiter, TOKEN_SECRET
+    rbac.ts             Server-authoritative permission matrix (DB overrides)
+    audit.ts            logAdminAction — the only write path to audit_log
+    seed.ts             Idempotent demo seed (same identities as the frontend)
+  scripts/test-api.ts   69-check integration suite (boots the real server)
+  tsconfig.json         NodeNext strict typecheck
 ```
 
 ## Email system
@@ -127,16 +146,67 @@ and `APP_BASE` in `src/emails/design.ts` to your real domains.
 State lives in `KycRecord` (`src/lib/store.tsx`); `requestKycForUser()` writes
 the request cross-account with an in-app notification.
 
+## Backend
+
+A real Express 5 + SQLite API lives in `server/` — same demo identities as the
+frontend, same permission matrix as `src/lib/permissions.ts`, but enforced
+server-side on every admin route.
+
+```bash
+npm run server            # http://localhost:8787 (seed runs automatically)
+npm run test:api          # 69-check integration suite (fresh DB, ephemeral port)
+npm run typecheck:server  # strict NodeNext typecheck
+```
+
+### What it enforces
+
+| Concern | Implementation |
+|---|---|
+| Passwords | scrypt (`s2$salt$hash`), never plaintext or reversible |
+| Sessions | HS256 bearer tokens (12 h) with a `sessions` table — logout and admin revocation kill them instantly |
+| Login abuse | In-memory rate limit: 8 attempts / 60 s / email+IP |
+| RBAC | 17 permissions × 5 roles, resolved **fresh from the DB on every request** (role changes take effect immediately, no re-login) |
+| Money | Integer cents everywhere; every mutation inside `BEGIN IMMEDIATE` |
+| Audit trail | `audit_log` is append-only **by database trigger** — `UPDATE`/`DELETE` raise `ABORT` |
+| Financial limits | $250 k transfer cap, $100 k deposit cap, $10 M admin adjustment cap |
+| Account states | `restricted` members can deposit but not transfer; `payment_rails: halted` blocks all transfers with 503 |
+| Overdrafts | Rejected — balances can never go negative |
+| Secrets | `TOKEN_SECRET` env required in production (refuses to boot on the dev fallback) |
+
+### API surface (summary)
+
+- **Auth** — `POST /api/auth/login · register · logout`, `GET /api/auth/me`, `GET /api/health`
+- **Member** — `GET /api/me/account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes`
+- **Admin** — `GET /api/admin/overview · members · staff · roles · audit`, member detail/adjust/status,
+  KYC request/queue/decision, risk dispute queue + advance, role matrix get/put/reset,
+  broadcasts, CSV reports (customers/accounts/transactions/kyc/audit), settings (incl. emergency halt)
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `8787` | API port |
+| `DB_PATH` | `server/veyra.db` | SQLite file (git-ignored) |
+| `TOKEN_SECRET` | dev fallback | HMAC key for bearer tokens — **required in production** |
+| `CORS_ORIGIN` | — | Allow a non-proxied browser origin |
+
+The database schema is created by versioned migrations in `server/src/db.ts`
+(`users`, `accounts`, `transactions`, `cards`, `kyc_records`, `disputes`,
+`notifications`, `audit_log`, `sessions`, `role_permissions`, `settings`).
+
 ## Scripts
 
 ```bash
-npm run dev            # dev server
+npm run dev            # frontend dev server
+npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
-npm test               # KYC flow (18) + admin control center (39) + email validation (25)
+npm run typecheck:server  # strict typecheck of server/
+npm test               # KYC (18) + admin console (39) + emails (25) + API integration (69) = 151 checks
 ```
 
-> **Demo limitation:** there is no backend or database — auth, accounts and the
-> audit trail persist to localStorage. Permission checks run in the store/action
-> layer (the closest analog to server-side enforcement); production needs the
-> same checks on a real server.
+> **Note:** the frontend still persists its own demo state to localStorage when
+> running standalone, so the marketing/demo experience works with zero setup.
+> The real backend (`npm run server`) exposes the same surface — auth, accounts,
+> RBAC, audit, reports — with server-side enforcement; wiring the frontend's
+> data layer to it fully is the remaining integration step.

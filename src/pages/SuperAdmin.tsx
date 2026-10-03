@@ -67,6 +67,31 @@ export function SuperAdminPage() {
   const [tick, setTick] = useState(0);
   const refresh = () => setTick(t => t + 1);
 
+  // Backend API health (real Express + SQLite server — see server/)
+  const [apiHealth, setApiHealth] = useState<"checking" | "online" | "offline">("checking");
+  const [apiUptime, setApiUptime] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const ping = async () => {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 2500);
+        const res = await fetch("/api/health", { signal: ctrl.signal });
+        clearTimeout(timer);
+        const body = await res.json();
+        if (!cancelled) {
+          setApiHealth(res.ok && body?.ok ? "online" : "offline");
+          setApiUptime(typeof body?.uptimeSec === "number" ? body.uptimeSec : null);
+        }
+      } catch {
+        if (!cancelled) { setApiHealth("offline"); setApiUptime(null); }
+      }
+    };
+    ping();
+    const iv = setInterval(ping, 30_000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, []);
+
   // Customers
   const [searchTerm, setSearchTerm] = useState("");
   // Transactions
@@ -408,6 +433,24 @@ export function SuperAdminPage() {
                 <small className="kpi-sub">{icon} {sub}</small>
               </div>
             ))}
+          </div>
+
+          <div className={`admin-api-strip ${apiHealth === "offline" ? "offline" : ""}`} role="status">
+            <span className={`status-pill ${apiHealth === "online" ? "active" : apiHealth === "offline" ? "overdue" : ""}`}>
+              <span className="dot" />
+              {apiHealth === "online" ? "API online" : apiHealth === "offline" ? "API offline" : "Checking…"}
+            </span>
+            <div className="admin-api-copy">
+              <strong>Veyra API · Express + SQLite</strong>
+              <small>
+                {apiHealth === "online"
+                  ? `Real backend connected${apiUptime != null ? ` · up ${apiUptime >= 3600 ? `${Math.floor(apiUptime / 3600)}h ` : apiUptime >= 60 ? `${Math.floor(apiUptime / 60)}m ` : ""}${apiUptime % 60 < 60 ? `${apiUptime % 60}s` : ""} · server-side auth, RBAC & audit` : ""}`
+                  : apiHealth === "offline"
+                    ? "Running on localStorage demo data. Start the backend with npm run server to enable real auth, server-side RBAC and the append-only audit trail."
+                    : "Reaching the backend…"}
+              </small>
+            </div>
+            {apiHealth === "online" && <Landmark size={16} style={{ color: "var(--green)", marginLeft: "auto", flexShrink: 0 }} />}
           </div>
 
           <div className="admin-grid-split">

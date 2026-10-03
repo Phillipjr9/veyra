@@ -3,3 +3,9 @@ node_modules
 *.log
 .env
 .env.*
+
+# SQLite databases (server/veyra.db etc.)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
