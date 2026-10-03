@@ -73,7 +73,7 @@ export function createApp(dbPath?: string) {
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Veyra-Token",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     });
     if (_req.method === "OPTIONS") return res.sendStatus(204);
@@ -104,19 +104,45 @@ export function createApp(dbPath?: string) {
     };
   }
 
-  function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  /**
+   * The bearer token is accepted from `Authorization: Bearer …` **or** from the
+   * `X-Veyra-Token` header.
+   *
+   * The second header is not decoration: preview hosts and other reverse
+   * proxies sometimes consume or rewrite `Authorization` for their own access
+   * control, so the app's token never reaches this process and every
+   * authenticated request fails with "Authentication required." — a sign-in
+   * loop that looks like a client bug from the outside. A custom header passes
+   * through untouched, so the client sends both and works either way.
+   */
+  function bearerToken(req: Request): { token: string | null; via: string | null } {
     const header = req.headers.authorization;
-    if (!header?.startsWith("Bearer ")) return void res.status(401).json({ error: "Authentication required." });
-    const payload = verifyToken(header.slice(7));
-    if (!payload) return void res.status(401).json({ error: "Invalid or expired token." });
+    if (header?.startsWith("Bearer ")) return { token: header.slice(7), via: "authorization" };
+    const custom = req.headers["x-veyra-token"];
+    if (typeof custom === "string" && custom.trim()) return { token: custom.trim(), via: "x-veyra-token" };
+    return { token: null, via: null };
+  }
+
+  function requireAuth(req: Request, res: Response, next: NextFunction): void {
+    const { token, via } = bearerToken(req);
+    // `code` lets the client react precisely (and explain itself) instead of
+    // treating every 401 as the same thing.
+    if (!token) return void res.status(401).json({ error: "Authentication required.", code: "no_token" });
+    const payload = verifyToken(token);
+    if (!payload) return void res.status(401).json({ error: "Invalid or expired token.", code: "bad_token" });
     const session = db.prepare("SELECT revoked, expires_at FROM sessions WHERE token_id = ?").get(payload.jti) as
       | { revoked: number; expires_at: number }
       | undefined;
     if (!session || session.revoked || session.expires_at < Date.now()) {
-      return void res.status(401).json({ error: "Session revoked — sign in again." });
+      return void res.status(401).json({ error: "Session revoked — sign in again.", code: "session_revoked" });
     }
     const user = loadUser(payload.sub);
-    if (!user) return void res.status(401).json({ error: "Account no longer exists." });
+    if (!user) return void res.status(401).json({ error: "Account no longer exists.", code: "no_account" });
+    if (process.env.NODE_ENV !== "production" && via === "x-veyra-token") {
+      // Worth knowing in dev: it means a proxy between the browser and this
+      // process is eating the Authorization header.
+      console.warn(`[auth] ${req.method} ${req.path}: Authorization was missing — authenticated via X-Veyra-Token`);
+    }
     req.user = user;
     next();
   }

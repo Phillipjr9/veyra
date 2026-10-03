@@ -200,19 +200,40 @@ export function describeAuthError(err: unknown, action = "sign in"): { message: 
  */
 type ApiOptions = { handleUnauthorized?: boolean };
 
+/**
+ * Auth headers for a request carrying `token`.
+ *
+ * Both `Authorization` and a custom `X-Veyra-Token` are sent. Reverse proxies —
+ * including preview hosts — sometimes consume or strip `Authorization` for
+ * their own access control, which makes every authenticated request fail with
+ * "Authentication required." even though the client attached the token. The
+ * custom header is ignored by such proxies and read by the API, so the session
+ * works either way.
+ */
+function authHeaders(token: string, only?: "custom"): Record<string, string> {
+  return only === "custom" ? { "X-Veyra-Token": token } : { Authorization: `Bearer ${token}`, "X-Veyra-Token": token };
+}
+
 /** Authenticated JSON request. Throws ApiError with the server's message on failure. */
 export async function api<T = unknown>(method: string, path: string, body?: unknown, opts: ApiOptions = {}): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
   const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(path, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
+  const send = (only?: "custom") => {
+    const headers: Record<string, string> = { "Content-Type": "application/json", ...(token ? authHeaders(token, only) : {}) };
+    return fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  };
+  let res = await send();
+  let text = await res.text();
   let json: any = null;
   try { json = JSON.parse(text); } catch { /* non-JSON */ }
+
+  // The server saw no token at all while this client sent one: a proxy dropped
+  // the header. Retry once over the header proxies leave alone.
+  if (res.status === 401 && json?.code === "no_token" && token) {
+    res = await send("custom");
+    text = await res.text();
+    try { json = JSON.parse(text); } catch { /* non-JSON */ }
+  }
+
   if (!res.ok) {
     if (res.status === 401 && opts.handleUnauthorized !== false) sessionRejected(Boolean(token), json?.error ?? "Session rejected.");
     throw new ApiError(res.status, json?.error ?? `Request failed (${res.status}).`);
@@ -226,11 +247,14 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
  * the response is a file, not an API envelope.
  */
 export async function apiGetText(path: string): Promise<string> {
-  const headers: Record<string, string> = {};
   const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(path, { headers });
-  const text = await res.text();
+  const send = (only?: "custom") => fetch(path, { headers: token ? authHeaders(token, only) : {} });
+  let res = await send();
+  let text = await res.text();
+  if (res.status === 401 && token && text.includes("no_token")) {
+    res = await send("custom");
+    text = await res.text();
+  }
   if (!res.ok) {
     if (res.status === 401) sessionRejected(Boolean(token), "Session rejected.");
     let message = `Request failed (${res.status}).`;
