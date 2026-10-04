@@ -1,5 +1,4 @@
 import { HashRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
-import { useEffect, useRef, useState } from "react";
 import { MotionConfig } from "motion/react";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { AccountProvider } from "./lib/store";
@@ -40,35 +39,6 @@ function RedirectIfAuthed({ children }: { children: React.ReactNode }) {
 function BusinessOnly({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   return user?.accountType === "business" ? <>{children}</> : <Navigate to="/app" replace />;
-}
-
-/**
- * The Arena development preview is deliberately frictionless: visiting the
- * admin URL opens the isolated preview Super Admin session without presenting
- * a login form. `preview-access` is server-gated by PREVIEW_ACCOUNTS and is
- * unavailable in production, so this never creates a production auth bypass.
- */
-function DemoSuperAdminRoute() {
-  const { ready, previewLogin } = useAuth();
-  const [error, setError] = useState<string | null>(null);
-  const started = useRef(false);
-
-  useEffect(() => {
-    if (!ready || started.current) return;
-    started.current = true;
-    previewLogin("superadmin").catch(err => {
-      setError(err instanceof Error ? err.message : "The demo Super Admin workspace is unavailable.");
-    });
-  }, [ready, previewLogin]);
-
-  if (error) return (
-    <div className="route-loading" style={{ flexDirection: "column", gap: 12, padding: 24, textAlign: "center" }} role="alert">
-      <strong style={{ fontSize: 16 }}>Demo Super Admin is unavailable</strong>
-      <span style={{ color: "var(--muted)", maxWidth: 460, lineHeight: 1.55 }}>{error}</span>
-    </div>
-  );
-  if (!ready || !started.current) return <div className="route-loading"><span className="spinner" /></div>;
-  return <SuperAdminPage />;
 }
 
 function Shell() {
@@ -113,7 +83,7 @@ function Shell() {
             A bootstrap Super Admin is an operator identity, not a checking
             account holder; requiring a member account here previously left a
             valid admin session on a perpetual empty/loading dashboard. */}
-        <Route path="/app/superadmin" element={import.meta.env.DEV ? <DemoSuperAdminRoute /> : <RequireAuth><SuperAdminPage /></RequireAuth>} />
+        <Route path="/app/superadmin" element={import.meta.env.DEV ? <SuperAdminPage /> : <RequireAuth><SuperAdminPage /></RequireAuth>} />
 
         <Route
           path="/app"

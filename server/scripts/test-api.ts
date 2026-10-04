@@ -523,6 +523,13 @@ try {
 
   // Preview profiles are only opt-in, and issue ordinary revocable sessions.
   process.env.PREVIEW_ACCOUNTS = "true";
+  // Development preview intentionally exposes only the admin console without
+  // a browser login. This is server-gated and never applies in production.
+  const anonymousPreviewAdmin = await api("GET", "/api/admin/state");
+  expect("preview admin console is available without authentication", anonymousPreviewAdmin.status === 200 &&
+    anonymousPreviewAdmin.json.users.some((u: any) => u.id === "preview_superadmin"));
+  const stalePreviewAdmin = await api("GET", "/api/admin/state", "forged.token.here");
+  expect("preview admin ignores a stale bearer and opens the demo console", stalePreviewAdmin.status === 200);
   const previewBusiness = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
   const previewAdmin = await api("POST", "/api/auth/preview-access", undefined, { persona: "superadmin" });
   expect("preview role shortcuts create a business workspace", previewBusiness.status === 200 && previewBusiness.json.user.business === "Northstar Studio" && previewBusiness.json.user.role === "user" &&

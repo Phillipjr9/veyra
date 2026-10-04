@@ -139,7 +139,20 @@ export function createApp(dbPath?: string) {
     // stale bearer header survives in blocked storage, it cannot override a
     // newer preview role choice. Non-browser API clients still use bearer.
     const candidates = [...new Set([cookie, bearer].filter((value): value is string => Boolean(value)))];
-    if (!candidates.length) return void res.status(401).json({ error: "Authentication required." });
+    if (!candidates.length) {
+      // The Arena/Vite demo console is deliberately browseable without a
+      // browser login. It is not a production backdoor: previewAccessEnabled
+      // requires PREVIEW_ACCOUNTS=true and returns false in production.
+      if (previewAccessEnabled() && req.path.startsWith("/api/admin")) {
+        ensurePreviewProfiles(db);
+        const demoAdmin = loadUser(previewUserId("superadmin"));
+        if (demoAdmin) {
+          req.user = demoAdmin;
+          return next();
+        }
+      }
+      return void res.status(401).json({ error: "Authentication required." });
+    }
 
     for (const token of candidates) {
       const payload = verifyToken(token);
@@ -153,6 +166,17 @@ export function createApp(dbPath?: string) {
       req.user = user;
       req.authToken = token;
       return next();
+    }
+    // If a preview tab retained an expired bearer during hot reload, fall
+    // through to the same intentionally anonymous demo identity instead of
+    // stranding the visible admin console behind a stale credential.
+    if (previewAccessEnabled() && req.path.startsWith("/api/admin")) {
+      ensurePreviewProfiles(db);
+      const demoAdmin = loadUser(previewUserId("superadmin"));
+      if (demoAdmin) {
+        req.user = demoAdmin;
+        return next();
+      }
     }
     return void res.status(401).json({ error: "Invalid or expired token." });
   }
