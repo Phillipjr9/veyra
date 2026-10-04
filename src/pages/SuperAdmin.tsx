@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import {
   Activity, AlertOctagon, AlertTriangle, BadgeCheck, Bell, Check, ClipboardList, Clock3, Download, FileText,
-  KeyRound, Landmark, Lock, LogOut, Mail, Megaphone, MessageSquare, Plus, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
+  ExternalLink, KeyRound, Landmark, Lock, LogOut, Mail, Megaphone, MessageSquare, Plus, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
   TrendingUp, UserCheck, UserPlus, UserRound, Users, Wallet,
 } from "lucide-react";
 import {
@@ -21,6 +21,7 @@ import {
   PERMISSIONS, PERMISSION_LABELS, type Permission, type Role, type StaffRole,
 } from "../lib/permissions";
 import { useToast } from "../components/Toast";
+import { Logo } from "../components/common";
 
 type AdminUser = User & { role?: UserRole };
 type TabId =
@@ -687,7 +688,52 @@ export function SuperAdminPage() {
 
   return (
     <div className="app-page superadmin-page">
-      {/* Console header */}
+      {/* Console chrome.
+          The hero below is the page's banner and scrolls away with it, which
+          used to leave a long tab with no brand, no status and no way out. This
+          bar stays: brand (links back to the member app), platform health, the
+          global controls, and who is signed in. */}
+      <header className="admin-topbar">
+        <div className="admin-topbar-left">
+          <Logo to="/app" />
+          <span className="admin-topbar-tag">Control center</span>
+        </div>
+        <div className="admin-topbar-right">
+          <span
+            className={`admin-topbar-health ${apiHealth}`}
+            title={systemFrozen ? "Payment rails halted" : "Payment rails available"}
+          >
+            <span className={`admin-health-dot ${apiHealth}`} />
+            <b>{apiHealth === "online" ? "Online" : apiHealth === "offline" ? "Degraded" : "Checking"}</b>
+          </span>
+          <button type="button" className="admin-refresh-btn" onClick={refresh} aria-label="Refresh console data">
+            <RefreshCw size={14} /><span>Refresh</span>
+          </button>
+          {allow("settings.manage") && (
+            <button
+              type="button"
+              className={`admin-emergency-btn ${systemFrozen ? "active-halt" : ""}`}
+              onClick={() => setHaltConfirm(true)}
+              aria-label={systemFrozen ? "Resume payment rails" : "Halt payment rails"}
+            >
+              <AlertTriangle size={14} /><span>{systemFrozen ? "Rails halted" : "Emergency halt"}</span>
+            </button>
+          )}
+          <Link to="/app" className="admin-topbar-exit">Member view <ExternalLink size={12} /></Link>
+          <span className="admin-topbar-id" title={`${user?.name ?? "Operator"} · ${user?.email ?? ""}`}>
+            <span className="admin-topbar-avatar" aria-hidden="true">
+              {(user?.name ?? "Operator").split(" ").filter(Boolean).map(part => part[0]).slice(0, 2).join("").toUpperCase()}
+            </span>
+            <span className="admin-topbar-id-copy">
+              <b>{user?.name ?? "Operator"}</b>
+              <small>{ROLE_LABELS[role]}</small>
+            </span>
+          </span>
+          <button type="button" className="admin-signout-btn" onClick={() => { logout(); navigate("/"); }} aria-label="Sign out"><LogOut size={15} /></button>
+        </div>
+      </header>
+
+      {/* Console hero — the banner for the console as a whole */}
       <header className="app-head admin-head admin-command-header">
         <div className="admin-command-copy">
           <span className="admin-master-badge">
@@ -697,17 +743,11 @@ export function SuperAdminPage() {
           <p>Real-time authority over member safety, money movement and platform configuration.</p>
           <div className="admin-command-meta">
             <span className="admin-role-chip">{ROLE_LABELS[role]}</span>
-            <span className="admin-identity">{user?.name ?? "Preview operator"} · {user?.email ?? "demo mode"}</span>
+            <span className="admin-identity">{systemFrozen ? "Payment rails halted platform-wide" : "All payment rails available"}</span>
+            {/* The phone top bar has room for the avatar only; the operator's
+                own name and email belong somewhere they can be read. */}
+            <span className="admin-identity admin-identity-phone">{user?.name ?? "Operator"} · {user?.email ?? ""}</span>
           </div>
-        </div>
-        <div className="admin-command-actions">
-          <div className="admin-command-health">
-            <span className={`admin-health-dot ${apiHealth}`} />
-            <span><b>{apiHealth === "online" ? "Platform online" : apiHealth === "offline" ? "Connection degraded" : "Checking platform"}</b><small>{systemFrozen ? "Payment rails halted" : "Payment rails available"}</small></span>
-          </div>
-          <button type="button" className="admin-refresh-btn" onClick={refresh}><RefreshCw size={14} /> Refresh</button>
-          {allow("settings.manage") && <button type="button" className={`admin-emergency-btn ${systemFrozen ? "active-halt" : ""}`} onClick={() => setHaltConfirm(true)}><AlertTriangle size={14} /> {systemFrozen ? "Rails halted" : "Emergency halt"}</button>}
-          <button type="button" className="admin-signout-btn" onClick={() => { logout(); navigate("/"); }} aria-label="Sign out"><LogOut size={15} /></button>
         </div>
       </header>
 

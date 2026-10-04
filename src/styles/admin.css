@@ -1764,6 +1764,10 @@
 .admin-before-after { margin: 2px 0 6px; font-size: 12.5px; color: var(--muted); }
 .admin-before-after strong { color: var(--ink); font-variant-numeric: tabular-nums; }
 .emergency-action.t-danger > svg:first-child { background: #9d4040; color: #fff; }
+/* The shared .emergency-action row reserves only 16px for a chevron; the console
+   puts a status pill there instead, so give that slot real width or it bleeds
+   past the card edge (41px of page overflow at 390px). */
+.superadmin-page .emergency-action { grid-template-columns: 36px minmax(0, 1fr) auto; }
 
 /* Mobile — tables scroll inside their wrap, headers stack, modals fit */
 @media (max-width: 900px) {
@@ -1781,6 +1785,9 @@
   .admin-profile { flex-direction: column; }
   .modal { width: 94vw; max-width: 94vw; max-height: 92vh; overflow-y: auto; }
   .admin-tab-btn span { font-size: 12px; }
+  /* Stack the rail status under the label so the copy keeps full width. */
+  .superadmin-page .emergency-action { grid-template-columns: 36px minmax(0, 1fr); row-gap: 8px; }
+  .superadmin-page .emergency-action > .status-pill { grid-column: 2; justify-self: start; }
 }
 
 /* ---- Backend API health strip (dashboard) ---- */
@@ -1841,6 +1848,128 @@
     radial-gradient(circle at 0% 12%, rgba(117, 88, 220, .13), transparent 27%),
     linear-gradient(180deg, #f8f7f3 0%, #f4f2ed 38%, #f6f4ef 100%);
 }
+/* --------------------------------------------------------------------------
+   Console chrome (top bar)
+   The console's persistent header: brand, platform status, global controls and
+   the operator's identity. It sits above the hero banner and stays on screen
+   while a tab scrolls, so the console always has a way back and a way out.
+   -------------------------------------------------------------------------- */
+.admin-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid rgba(29, 69, 57, .12);
+  border-radius: 16px;
+  background: rgba(255, 253, 249, .9);
+  box-shadow: 0 10px 26px rgba(28, 39, 35, .06);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.admin-topbar-left,
+.admin-topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* Controls never shrink: a squeezed icon button is a miss, not a style. */
+.admin-topbar button,
+.admin-topbar .admin-topbar-health { flex: none; }
+
+.admin-topbar .logo { font-size: 20px; }
+
+.admin-topbar-tag {
+  padding: 4px 7px;
+  border: 1px solid rgba(42, 111, 84, .22);
+  border-radius: 7px;
+  background: #e6f4eb;
+  color: #246b47;
+  font: 800 9.5px var(--mono);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.admin-topbar-health {
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid rgba(29, 69, 57, .14);
+  border-radius: 11px;
+  background: #fff;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.admin-topbar-health.online { color: #246b47; }
+.admin-topbar-health.offline { color: #a33d3d; }
+.admin-topbar-health.checking { color: #8a5a1f; }
+
+/* The hero's controls were styled for its dark banner; in the light bar they
+   take the console's ink colours and the halt stays unmistakably red. */
+.admin-topbar .admin-refresh-btn,
+.admin-topbar .admin-signout-btn {
+  height: 38px;
+  border-color: rgba(29, 69, 57, .16);
+  background: #fff;
+  color: #2c4b41;
+}
+.admin-topbar .admin-refresh-btn:hover,
+.admin-topbar .admin-signout-btn:hover { border-color: rgba(29, 69, 57, .34); background: #f2f7f4; }
+.admin-topbar .admin-emergency-btn {
+  height: 38px;
+  border-color: rgba(180, 60, 60, .34);
+  background: #fff;
+  color: #a33d3d;
+}
+.admin-topbar .admin-emergency-btn:hover { background: #fbeeee; }
+.admin-topbar .admin-emergency-btn.active-halt { border-color: #c33e45; background: #c33e45; color: #fff; }
+
+.admin-topbar-exit {
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 11px;
+  color: #2d7658;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background .2s;
+}
+.admin-topbar-exit:hover { background: #eef6f1; }
+
+.admin-topbar-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(29, 69, 57, .12);
+  min-width: 0;
+}
+.admin-topbar-avatar {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2a7056, #1d4b3c);
+  color: #fff;
+  font: 800 11px var(--mono);
+  letter-spacing: .02em;
+}
+.admin-topbar-id-copy { display: flex; flex-direction: column; min-width: 0; }
+.admin-topbar-id-copy b,
+.admin-topbar-id-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-topbar-id-copy b { color: var(--ink); font-size: 12px; }
+.admin-topbar-id-copy small { color: var(--muted); font-size: 10.5px; }
+
 .admin-command-header {
   position: relative;
   isolation: isolate;
@@ -1881,6 +2010,10 @@
 .admin-command-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 9px 12px; margin-top: 16px; }
 .admin-command-header .admin-role-chip { border: 1px solid rgba(207, 255, 235, .16); background: rgba(184, 248, 218, .12); color: #b9f3d1; }
 .admin-command-header .admin-identity { color: #bad1ca; }
+/* Desktop reads the operator from the top bar; the phone bar has room for the
+   avatar only, so the hero carries the name there. */
+.admin-identity-phone { display: none; }
+@media (max-width: 700px) { .admin-identity-phone { display: inline; } }
 .admin-command-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 9px; max-width: 475px; }
 .admin-command-health { min-width: 164px; display: grid; grid-template-columns: 9px minmax(0,1fr); gap: 8px; align-items: center; padding: 9px 11px; border: 1px solid rgba(222,255,244,.15); border-radius: 11px; background: rgba(255,255,255,.07); }
 .admin-command-health b, .admin-command-health small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1888,7 +2021,7 @@
 .admin-health-dot { width: 8px; height: 8px; border-radius: 50%; background: #d5a857; box-shadow: 0 0 0 4px rgba(215,170,88,.12); }.admin-health-dot.online { background: #70d39d; box-shadow: 0 0 0 4px rgba(112,211,157,.14); }.admin-health-dot.offline { background: #eb8181; box-shadow: 0 0 0 4px rgba(235,129,129,.14); }
 .admin-refresh-btn, .admin-signout-btn { height: 39px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid rgba(222,255,244,.2); border-radius: 10px; background: rgba(255,255,255,.08); color: #eefcf7; font-size: 11.5px; font-weight: 700; transition: background .2s, border-color .2s, transform .2s; }.admin-refresh-btn { padding: 0 11px; }.admin-signout-btn { width: 39px; padding: 0; }.admin-refresh-btn:hover, .admin-signout-btn:hover { border-color: rgba(222,255,244,.42); background: rgba(255,255,255,.15); transform: translateY(-1px); }
 .admin-command-header .admin-emergency-btn { height: 39px; padding: 0 11px; border-color: rgba(255,166,166,.48); background: rgba(145,39,46,.37); color: #ffd6d6; font-size: 11.5px; }.admin-command-header .admin-emergency-btn:hover { background: rgba(187,50,57,.52); }.admin-command-header .admin-emergency-btn.active-halt { border-color: #ed8585; background: #c33e45; color: #fff; }
-.admin-tabs-nav { position: relative; margin-top: 0; margin-bottom: 18px; border-color: rgba(29,50,47,.10); border-radius: 18px; background: rgba(255,253,249,.84); box-shadow: 0 10px 26px rgba(28,39,35,.045); }
+.admin-tabs-nav { position: sticky; top: 62px; z-index: 80; margin-top: 0; margin-bottom: 18px; border-color: rgba(29,50,47,.10); border-radius: 18px; background: rgba(255,253,249,.84); box-shadow: 0 10px 26px rgba(28,39,35,.045); }
 .admin-tab-btn.on { border-color: rgba(42,111,84,.18); background: linear-gradient(135deg, #dff0e9, #eff8f4); color: #215d48; box-shadow: none; }.admin-tab-btn.on .admin-tab-count { background: #2a7056; color: #fff; }
 .admin-kpi-grid { gap: 13px; margin-top: 0; }
 .admin-kpi-card { min-height: 155px; padding: 19px 17px 16px; border-color: rgba(29,69,57,.11); background: linear-gradient(145deg, rgba(255,255,255,.96), rgba(250,252,250,.85)); box-shadow: 0 12px 28px rgba(28,51,44,.045); }.admin-kpi-card::before { background: radial-gradient(circle, rgba(54,135,102,.14), transparent 70%); }.admin-kpi-card.featured { border-color: rgba(43,111,87,.24); background: radial-gradient(circle at 100% 0%, rgba(94,199,158,.21), transparent 38%), linear-gradient(135deg, #e8f5ef, #ffffff); }.admin-kpi-card.featured::after { background: radial-gradient(circle, rgba(82,194,148,.18), transparent 68%); }.admin-kpi-card.featured .kpi-val { color: #1f6049; }
