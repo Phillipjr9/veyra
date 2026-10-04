@@ -308,7 +308,7 @@ export function createApp(dbPath?: string) {
     // for (scrypt + five inserts), so the budget counts only applications that
     // got this far — a typo costs nothing, a scripted sign-up run does not.
     const ip = req.ip ?? "unknown";
-    if (!rateLimit(`register:${ip}`, 10, 60 * 60_000)) {
+    if (!rateLimit(`register:${ip}`, 20, 60 * 60_000)) {
       return void res.status(429).json({ error: "Too many accounts opened from this connection — try again in an hour." });
     }
     const values = application.value;

@@ -767,12 +767,12 @@ try {
   // run of scripted sign-ups from one connection is what it exists to stop.
   resetRateLimits();
   const flood = [];
-  for (let i = 0; i < 11; i += 1) {
+  for (let i = 0; i < 21; i += 1) {
     const r = await register(`Flood ${String.fromCharCode(65 + i)}a`, `flood-${i}@member.test`, "member-pass-9", { accountType: "personal" });
     flood.push(r.status);
   }
   expect("scripted sign-up runs are throttled (429 after the budget)",
-    flood.slice(0, 10).every(s => s === 201) && flood[10] === 429);
+    flood.slice(0, 20).every(s => s === 201) && flood[20] === 429);
   const afterThrottle = await api("POST", "/api/auth/login", undefined, { email: "flood-0@member.test", password: "member-pass-9" });
   expect("an account created inside the budget still works", afterThrottle.status === 200);
   resetRateLimits(); // the suites below keep registering fixtures
