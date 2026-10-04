@@ -62,6 +62,9 @@ try {
   const health = await api("GET", "/api/health");
   expect("health check", health.status === 200 && health.json.ok === true);
 
+  const previewDisabled = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
+  expect("preview role shortcuts are unavailable unless explicitly enabled", previewDisabled.status === 404);
+
   const bootCount = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
   expect("clean database contains only the bootstrap admin", bootCount === 1);
 
@@ -464,6 +467,15 @@ try {
     a.userId === raeId && a.balance === raeMirror.balance && a.cards === raeMirror.cards.length));
   const memberState = await api("GET", "/api/admin/state", rae);
   expect("admin state blocked for members (403)", memberState.status === 403);
+
+  // Preview profiles are only opt-in, and issue ordinary revocable sessions.
+  process.env.PREVIEW_ACCOUNTS = "true";
+  const previewBusiness = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
+  const previewAdmin = await api("POST", "/api/auth/preview-access", undefined, { persona: "superadmin" });
+  expect("preview role shortcuts create a business workspace", previewBusiness.status === 200 && previewBusiness.json.user.business === "Northstar Studio" && previewBusiness.json.user.role === "user");
+  expect("preview role shortcuts issue a superadmin session", previewAdmin.status === 200 && previewAdmin.json.user.role === "superadmin" &&
+    (await api("GET", "/api/admin/state", previewAdmin.json.token)).status === 200);
+  delete process.env.PREVIEW_ACCOUNTS;
 
   console.log(failures === 0 ? "\nALL API INTEGRATION TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 } finally {

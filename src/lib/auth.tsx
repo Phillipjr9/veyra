@@ -22,6 +22,8 @@ type AuthValue = {
   /** True when the API could not be reached on the last probe. */
   offline: boolean;
   login: (email: string, password: string) => Promise<User>;
+  /** Development-preview role switcher; the server keeps this endpoint disabled outside an explicit preview runtime. */
+  previewLogin: (persona: "personal" | "business" | "superadmin") => Promise<User>;
   signup: (input: { name: string; phone?: string; business?: string; accountType: User["accountType"]; email: string; password: string; plan?: User["plan"] }) => Promise<void>;
   logout: () => void;
   updateUser: (patch: Partial<Pick<User, "name" | "phone" | "business" | "accountType" | "email" | "plan" | "role" | "avatarUrl">>) => void;
@@ -64,6 +66,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return me;
   }, []);
 
+  const previewLogin = useCallback<AuthValue["previewLogin"]>(async persona => {
+    const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/preview-access", { persona });
+    setToken(token);
+    setUser(me);
+    return me;
+  }, []);
+
   const signup = useCallback<AuthValue["signup"]>(async ({ name, phone = "", business = "", accountType, email, password, plan = "Pro" }) => {
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
@@ -101,8 +110,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, login, previewLogin, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, login, previewLogin, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

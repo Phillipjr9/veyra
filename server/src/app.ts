@@ -20,6 +20,7 @@ import {
 import { logAdminAction } from "./audit.js";
 import { seed } from "./seed.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
+import { ensurePreviewProfiles, previewAccessEnabled, previewUserId, type PreviewPersona } from "./preview.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -129,6 +130,24 @@ export function createApp(dbPath?: string) {
   });
 
   /* ============================== auth routes ============================== */
+
+  // Explicitly opt-in role shortcuts for a disposable local/Vite preview. The
+  // endpoint is absent in production and the matching UI is dev-build only.
+  app.post("/api/auth/preview-access", wrap((req, res) => {
+    if (!previewAccessEnabled()) return void res.sendStatus(404);
+    const persona = req.body?.persona;
+    if (persona !== "personal" && persona !== "business" && persona !== "superadmin") {
+      return void res.status(400).json({ error: "Choose a valid preview account." });
+    }
+    ensurePreviewProfiles(db);
+    const userId = previewUserId(persona as PreviewPersona);
+    const user = loadUser(userId);
+    if (!user) return void res.status(500).json({ error: "Preview profile was not created." });
+    const tokenId = randomUUID();
+    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .run(tokenId, user.id, now(), now() + TOKEN_TTL_MS);
+    res.json({ token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: fullUser(user.id) });
+  }));
 
   app.post("/api/auth/login", wrap((req, res) => {
     const ip = req.ip ?? "unknown";
