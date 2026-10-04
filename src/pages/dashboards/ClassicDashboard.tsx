@@ -5,7 +5,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
   Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
 import { Footer } from "../../components/Chrome";
@@ -321,22 +321,50 @@ function BalanceDelta({ value }: { value: number }) {
   );
 }
 
-function Sparkline({ data }: { data: number[] }) {
-  const max = Math.max(...data, 1);
-  const pts = data.map((d, i) => `${(i / Math.max(data.length - 1, 1)) * 100},${36 - (d / max) * 28}`).join(" ");
+/**
+ * The balance card's chart: one bar per transaction from the member's own
+ * ledger, oldest on the left, credits green and debits violet. Bar height is
+ * the transaction's real amount, so the shape is the activity — nothing here is
+ * invented, and hovering a bar names the merchant and amount behind it.
+ */
+function BalanceBars({ txns }: { txns: Txn[] }) {
+  const recent = [...txns].sort((a, b) => a.date - b.date).slice(-14);
+  const max = Math.max(...recent.map(t => Math.abs(t.amount)), 1);
+  const slot = 100 / Math.max(recent.length, 1);
+  const bar = Math.min(slot * 0.5, 5.2);
   return (
-    <svg className="spark" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
-      <defs>
-        <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="currentColor" stopOpacity=".28" />
-          <stop offset="1" stopColor="currentColor" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <motion.polygon points={`0,40 ${pts} 100,40`} fill="url(#spark-fill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6, duration: 0.8 }} />
-      <motion.polyline points={pts} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" strokeLinejoin="round"
-        initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.3, ease }} />
+    <svg className="spark" viewBox="0 0 100 40" preserveAspectRatio="none" role="img"
+      aria-label={`Activity from your ledger — last ${recent.length} transactions, ${money(recent.filter(t => t.amount > 0).reduce((sum, t) => sum + t.amount, 0), false)} in and ${money(Math.abs(recent.filter(t => t.amount < 0).reduce((sum, t) => sum + t.amount, 0)), false)} out`}>
+      <line x1="0" y1="39" x2="100" y2="39" className="balance-bars-axis" vectorEffect="non-scaling-stroke" />
+      {recent.map((t, i) => {
+        const credit = t.amount > 0;
+        // Linear against the largest amount in view, with a 2px floor so a small
+        // coffee does not disappear beside a payroll credit. The tooltip always
+        // carries the exact figure.
+        const h = (Math.abs(t.amount) / max) * 34;
+        const label = `${t.merchant} · ${credit ? "+" : "−"}${money(Math.abs(t.amount), false)} · ${shortDate(t.date)}`;
+        return (
+          <motion.rect key={t.id} x={(i * slot) + (slot - bar) / 2} y={38 - h} width={bar}
+            height={Math.max(h, 2.2)} rx={0.8} className={`balance-bar ${credit ? "in" : "out"}`}
+            initial={{ scaleY: 0 }} animate={{ scaleY: 1 }} style={{ transformOrigin: "50% 38px" }}
+            transition={{ duration: 0.55, delay: 0.12 + i * 0.04, ease }}>
+            <title>{label}</title>
+          </motion.rect>
+        );
+      })}
     </svg>
   );
+}
+
+/** Real month-over-month movement of the member's own transactions. */
+function monthOverMonth(txns: Txn[]) {
+  const DAY = 86_400_000;
+  const at = Date.now();
+  const between = (from: number, to: number) => txns.filter(t => t.date > from && t.date <= to).reduce((sum, t) => sum + t.amount, 0);
+  const last = between(at - 30 * DAY, at);
+  const prev = between(at - 60 * DAY, at - 30 * DAY);
+  if (prev === 0) return null;
+  return ((last - prev) / Math.abs(prev)) * 100;
 }
 
 function UsageBar({ spent, limit }: { spent: number; limit: number }) {
@@ -765,7 +793,6 @@ export function DashboardLayout() {
           ))}
         </nav>
         <div className="app-nav-foot">
-          <div className="acct-pill"><span className="dot-live" /> All systems operational</div>
           <div className="app-user">
             <span className="app-avatar avatar-with-image">
               <img src={user.avatarUrl || "/images/avatar-3d-default.svg"} alt="" />
@@ -921,6 +948,7 @@ export function Overview() {
   const upcoming = account.invoices.filter(i => i.status !== "paid").sort((a, b) => a.due - b.due).slice(0, 3);
   const totalIn = weeks.reduce((s, w) => s + w.inflow, 0);
   const totalOut = weeks.reduce((s, w) => s + w.outflow, 0);
+  const movement = useMemo(() => (account ? monthOverMonth(account.transactions) : null), [account]);
 
   const onRedeem = () => {
     const amount = redeemRewards();
@@ -951,10 +979,27 @@ export function Overview() {
           <div className="stat-top"><span>Available balance</span><span className="chip chip-green">Checking</span></div>
           <AnimatedMoney value={account.balance} className="stat-value" cents fromZero />
           <div className="stat-meta">
-            <span className="up"><TrendingUp size={12} /> 12.4% vs last month</span>
+            {movement === null ? (
+              <span>First month of activity</span>
+            ) : (
+              <span className={movement >= 0 ? "up" : "down"}>
+                {movement >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+                {movement >= 0 ? "+" : "−"}{Math.abs(movement).toFixed(1)}% vs last month
+              </span>
+            )}
             <span>Pending {money(account.pendingBalance)}</span>
           </div>
-          <div className="stat-spark"><Sparkline data={weeks.map(w => w.outflow + w.inflow * 0.2)} /></div>
+          <div className="stat-spark stat-bars">
+            <BalanceBars txns={account.transactions} />
+            <div className="stat-bars-head">
+              <span>
+                {account.transactions.length > 14
+                  ? `Last 14 of ${account.transactions.length}`
+                  : `${account.transactions.length} transaction${account.transactions.length === 1 ? "" : "s"}`}
+              </span>
+              <span className="stat-bars-legend"><i className="in" /> In <i className="out" /> Out</span>
+            </div>
+          </div>
         </motion.div>
 
         <motion.div className="stat stat-dark" {...rise(1)}>

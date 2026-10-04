@@ -21,7 +21,43 @@ export function openDb(path = DB_PATH): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   migrate(db);
+  ensureAccountNumbers(db);
   return db;
+}
+
+/**
+ * The 12-digit number every user's account is opened with.
+ *
+ * Generated rather than guessed: a collision is retried instead of surfacing the
+ * UNIQUE constraint as a 500, because a sign-up must always end with a usable
+ * account number. The last resort derives from the clock so it cannot loop.
+ */
+export function generateAccountNumber(db: DatabaseSync): string {
+  const taken = db.prepare("SELECT 1 FROM accounts WHERE account_number = ?");
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const candidate = Array.from({ length: 12 }, () => Math.floor(Math.random() * 10)).join("");
+    if (!taken.get(candidate)) return candidate;
+  }
+  return String(Date.now()).padStart(12, "0").slice(-12);
+}
+
+/**
+ * Boot sweep: nobody is left without an account row. Sign-up and the demo
+ * fixtures create one inline; this catches users who predate that — including
+ * any member whose row predates the number, and staff accounts created by the
+ * bootstrap.
+ */
+function ensureAccountNumbers(db: DatabaseSync): void {
+  const missing = db.prepare(
+    `SELECT u.id FROM users u LEFT JOIN accounts a ON a.user_id = u.id WHERE a.id IS NULL`,
+  ).all() as Array<{ id: string }>;
+  if (!missing.length) return;
+  const insert = db.prepare(
+    `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
+     VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
+  );
+  const ts = Date.now();
+  for (const row of missing) insert.run(row.id, generateAccountNumber(db), ts, ts);
 }
 
 function migrate(db: DatabaseSync): void {

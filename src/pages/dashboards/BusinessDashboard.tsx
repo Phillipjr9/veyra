@@ -59,7 +59,6 @@ export function BusinessChrome({ user, accountNumber, nav, notifications, onOpen
           ))}
         </nav>
         <div className="bshell-rail-foot">
-          <div className="bshell-status"><span className="dot-live" /> All systems operational</div>
           <button type="button" className="bshell-signout" onClick={onSignOut}><LogOut size={14} /> Sign out</button>
         </div>
       </aside>

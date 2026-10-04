@@ -415,9 +415,28 @@ function normalize(raw: unknown, p: Profile): Account {
 
   const kyc = (r.kyc && typeof r.kyc === "object" ? r.kyc : base.kyc) as Partial<KycRecord>;
 
+  // The account the money is addressed to. Read straight off the server payload:
+  // relying on a cached copy means a member signing in on a fresh browser sees
+  // blank routing and account numbers on their own account.
+  const rawBank = (r.bankDetails && typeof r.bankDetails === "object" ? r.bankDetails : {}) as Partial<BankAccountDetails>;
+  const bankDetails: BankAccountDetails = {
+    accountNumber: typeof rawBank.accountNumber === "string" && rawBank.accountNumber
+      ? rawBank.accountNumber
+      : base.bankDetails.accountNumber,
+    routingNumber: typeof rawBank.routingNumber === "string" && rawBank.routingNumber
+      ? rawBank.routingNumber
+      : base.bankDetails.routingNumber,
+    bankName: typeof rawBank.bankName === "string" && rawBank.bankName
+      ? rawBank.bankName
+      : base.bankDetails.bankName,
+    accountType: p.accountType === "personal" ? "Personal checking" : "Business checking",
+    holder: typeof rawBank.holder === "string" && rawBank.holder ? rawBank.holder : base.bankDetails.holder,
+  };
+
   return {
     ...base,
     version: SCHEMA_VERSION,
+    bankDetails,
     balance: num(r.balance, base.balance),
     pendingBalance: num(r.pendingBalance, base.pendingBalance),
     rewards: num(r.rewards, base.rewards),
@@ -489,6 +508,12 @@ export type KycQueueItem = {
 };
 
 /** Summary of one member's account (served by /api/admin/state). */
+/**
+ * Per-deposit ceiling, in dollars — mirrors MAX_DEPOSIT_CENTS in the API so the
+ * client refuses an over-limit deposit instead of being told no afterwards.
+ */
+export const MAX_DEPOSIT = 100_000;
+
 export type PlatformAccount = {
   userId: string;
   name: string;
@@ -496,6 +521,9 @@ export type PlatformAccount = {
   business: string;
   accountType: "personal" | "business";
   hasAccount: boolean;
+  /** The 12-digit number the account is addressed by. Staff can correct it. */
+  accountNumber?: string | null;
+  routingNumber?: string | null;
   balance: number;
   pendingBalance: number;
   rewards: number;
@@ -692,6 +720,10 @@ function useAccountState() {
 
   const deposit = useCallback(
     (amount: number, source: string): MoveResult => {
+      // Hard stop, same ceiling as the API. The form blocks this first; this is
+      // the backstop for any other caller.
+      if (!(amount > 0)) throw new Error("Enter an amount to deposit.");
+      if (amount > MAX_DEPOSIT) throw new Error(`Deposits are limited to ${money(MAX_DEPOSIT, false)} per transaction.`);
       const before = ref.current?.balance ?? 0;
       const value = r2(amount);
       const result: MoveResult = { reference: makeReference(), date: Date.now(), amount: value, balanceBefore: before, balanceAfter: r2(before + value), reward: 0, scout: 0 };

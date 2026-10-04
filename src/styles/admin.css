@@ -1795,3 +1795,5 @@
   .cr-burger { display: grid; }
   .cr-main { padding: 14px 14px 48px; }
 }
+
+.acct-number-line code { font-size: 11px; letter-spacing: .04em; }

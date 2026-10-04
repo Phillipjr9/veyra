@@ -114,6 +114,7 @@ const BASELINE: Policy[] = [
   { method: "GET", path: "/api/admin/members/:id", auth: true, perm: "customers.view" },
   { method: "POST", path: "/api/admin/members/:id/adjust", auth: true, perm: "customers.adjust_balance" },
   { method: "POST", path: "/api/admin/members/:id/status", auth: true, perm: "accounts.set_status" },
+  { method: "PATCH", path: "/api/admin/members/:id/account-number", auth: true, perm: "accounts.edit_number" },
   { method: "POST", path: "/api/admin/kyc/request", auth: true, perm: "kyc.request" },
   { method: "GET", path: "/api/admin/kyc/queue", auth: true, perm: "kyc.review" },
   { method: "POST", path: "/api/admin/kyc/:userId/decision", auth: true, perm: "kyc.review" },

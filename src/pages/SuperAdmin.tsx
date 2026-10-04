@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import {
-  Activity, AlertTriangle, BadgeCheck, Bell, Check, Download, FileText,
+  Activity, AlertCircle, AlertTriangle, BadgeCheck, Bell, Check, Download, FileText, Hash,
   Landmark, Lock, LogOut, Mail, Megaphone, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
   TrendingUp, UserCheck, UserRound, Users, Wallet, X,
 } from "lucide-react";
@@ -10,7 +10,7 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
-import { apiGet, apiGetText, apiPost, apiPut } from "../lib/api";
+import { apiGet, apiGetText, apiPatch, apiPost, apiPut } from "../lib/api";
 import {
   money, longDate, downloadFile,
   type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
@@ -147,6 +147,10 @@ export function SuperAdminPage() {
   const [adjustType, setAdjustType] = useState<"credit" | "debit">("credit");
   const [adjustKind, setAdjustKind] = useState("direct_deposit");
   const [adjustMemo, setAdjustMemo] = useState("");
+  // Account number (the 12-digit number the member's money is addressed to)
+  const [acctModal, setAcctModal] = useState(false);
+  const [acctNumber, setAcctNumber] = useState("");
+  const [acctSaving, setAcctSaving] = useState(false);
   // KYC
   const [kycModal, setKycModal] = useState(false);
   const [kycReqs, setKycReqs] = useState<KycRequirement[]>(["identity", "address"]);
@@ -292,6 +296,37 @@ export function SuperAdminPage() {
           setAdjustModal(false); setAdjustAmount(""); setAdjustKind("direct_deposit"); setAdjustMemo(""); refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Adjustment failed", description: err.message }));
+  };
+
+  const openAccountNumber = (u: AdminUser) => {
+    setTargetUser(u);
+    setAcctNumber(accountBy(u.id)?.accountNumber ?? "");
+    setAcctModal(true);
+  };
+
+  const handleSaveAccountNumber = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetUser) return;
+    if (!guard("accounts.edit_number", "edit account numbers")) return;
+    const digits = acctNumber.replace(/[\s-]/g, "");
+    if (!/^\d{12}$/.test(digits)) {
+      toast({ tone: "error", title: "Account number not saved", description: "An account number is exactly 12 digits." });
+      return;
+    }
+    setAcctSaving(true);
+    apiPatch<{ accountNumber: string; changed: boolean }>(`/api/admin/members/${targetUser.id}/account-number`, { accountNumber: digits })
+      .then(r => {
+        toast({
+          tone: "success",
+          title: r.changed ? "Account number updated" : "Account number unchanged",
+          description: r.changed
+            ? `${targetUser.name} is now addressed as ${r.accountNumber}. The change is on the audit trail.`
+            : `${targetUser.name} already had ${r.accountNumber}.`,
+        });
+        setAcctModal(false); setAcctNumber(""); refresh();
+      })
+      .catch((err: Error) => toast({ tone: "error", title: "Account number not saved", description: err.message }))
+      .finally(() => setAcctSaving(false));
   };
 
   const handleRequestKyc = (e: React.FormEvent) => {
@@ -710,7 +745,13 @@ export function SuperAdminPage() {
                     const acct = accountBy(u.id);
                     return (
                       <tr key={u.id}>
-                        <td><strong>{u.name}</strong><br /><small><code>{u.id}</code></small></td>
+                        <td>
+                          <strong>{u.name}</strong><br />
+                          <small><code>{u.id}</code></small><br />
+                          <small className="acct-number-line">
+                            Acct <code>{acct?.accountNumber ?? "—"}</code>
+                          </small>
+                        </td>
                         <td><span className={`chip ${u.accountType === "personal" ? "chip-green" : "chip-violet"}`}>{u.accountType.toUpperCase()}</span></td>
                         <td><small>{u.email}<br />{u.phone || "—"}</small></td>
                         <td><small>{u.business || "Personal account"}</small></td>
@@ -725,6 +766,9 @@ export function SuperAdminPage() {
                             <button type="button" className="ghost-btn sm" onClick={() => openIdentity(u)}><FileText size={13} /> Application</button>
                             {allow("customers.adjust_balance") && (
                               <button type="button" className="solid-btn sm" onClick={() => { setTargetUser(u); setAdjustType("credit"); setAdjustModal(true); }}>Deposit / Withdraw</button>
+                            )}
+                            {allow("accounts.edit_number") && (
+                              <button type="button" className="ghost-btn sm" onClick={() => openAccountNumber(u)}><Hash size={13} /> Account no.</button>
                             )}
                             {allow("kyc.request") && (
                               <button type="button" className="ghost-btn sm" onClick={() => { setTargetUser(u); setKycReqs(["identity", "address"]); setKycModal(true); }}><UserCheck size={13} /> Request KYC</button>
@@ -1273,6 +1317,33 @@ export function SuperAdminPage() {
       {/* ============================ MODALS ============================ */}
 
       {/* Deposit / Withdraw (cross-account treasury adjustment) */}
+      {acctModal && targetUser && (
+        <div className="modal-scrim" onClick={() => setAcctModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head"><h3>Account number: {targetUser.name}</h3></div>
+            <form onSubmit={handleSaveAccountNumber} className="dash-form">
+              <p className="admin-before-after">
+                Current number: <strong><code>{accountBy(targetUser.id)?.accountNumber ?? "none on file"}</code></strong>
+                <br />
+                <small>Twelve digits. Members share this for ACH and wires, so a correction is recorded on the audit trail and the member is notified.</small>
+              </p>
+              <label htmlFor="adm-acct-no">New account number</label>
+              <input id="adm-acct-no" inputMode="numeric" autoComplete="off" maxLength={12} placeholder="12 digits"
+                value={acctNumber} onChange={e => setAcctNumber(e.target.value.replace(/[^\d\s-]/g, ""))} />
+              {acctNumber !== "" && !/^\d{12}$/.test(acctNumber.replace(/[\s-]/g, "")) && (
+                <p className="flow-field-error" role="alert"><AlertCircle size={14} /><span>An account number is exactly 12 digits.</span></p>
+              )}
+              <div className="modal-actions">
+                <button type="button" className="ghost-btn" onClick={() => setAcctModal(false)}>Cancel</button>
+                <button type="submit" className="solid-btn" disabled={acctSaving || !/^\d{12}$/.test(acctNumber.replace(/[\s-]/g, ""))}>
+                  {acctSaving ? "Saving…" : "Save account number"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {adjustModal && targetUser && (
         <div className="modal-scrim" onClick={() => setAdjustModal(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>

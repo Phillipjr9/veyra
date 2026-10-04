@@ -13,6 +13,10 @@ export const PERMISSIONS = [
   "customers.adjust_balance",
   "accounts.view",
   "accounts.set_status",
+  // Correcting the number printed on a member's statements. Separate from
+  // set_status: an operator who can restrict an account is not automatically
+  // trusted to rewrite where its money is addressed.
+  "accounts.edit_number",
   "transactions.view",
   "transactions.export",
   "kyc.request",

@@ -13,7 +13,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError } from "./db.js";
+import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError, generateAccountNumber } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
 import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
@@ -97,11 +97,21 @@ export function createApp(dbPath?: string) {
       "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at FROM users WHERE id = ?",
     ).get(userId) as Record<string, unknown> | undefined;
     if (!row) return null;
+    // The account the user just opened, so the sign-up response is already
+    // complete: the member never sees a blank account number.
+    const account = db.prepare(
+      "SELECT account_number, routing_number, bank_name FROM accounts WHERE user_id = ?",
+    ).get(userId) as Record<string, unknown> | undefined;
     return {
       id: String(row.id), name: String(row.name), email: String(row.email), phone: String(row.phone ?? ""),
       business: String(row.business ?? ""), accountType: row.account_type as "personal" | "business",
       avatarUrl: String(row.avatar_url ?? "/images/avatar-3d-default.svg"),
       role: row.role as string, plan: row.plan as "Starter" | "Pro", createdAt: row.created_at as number,
+      bankDetails: {
+        accountNumber: String(account?.account_number ?? ""),
+        routingNumber: String(account?.routing_number ?? ""),
+        bankName: String(account?.bank_name ?? ""),
+      },
     };
   }
 
@@ -258,7 +268,7 @@ export function createApp(dbPath?: string) {
     if (!application.ok) return void res.status(422).json({ error: application.error, field: application.field });
     const values = application.value;
     const id = rid("u");
-    const accountNumber = Array.from({ length: 12 }, () => Math.floor(Math.random() * 10)).join("");
+    const accountNumber = generateAccountNumber(db);
     inTransaction(db, () => {
       db.prepare(
         `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
@@ -1129,7 +1139,7 @@ export function createApp(dbPath?: string) {
     const q = String(req.query.q ?? "").toLowerCase();
     const rows = db.prepare(
       `SELECT u.id, u.name, u.email, u.phone, u.business, u.account_type, u.plan, u.status,
-              a.balance_cents, a.pending_cents, k.status AS kyc_status,
+              a.account_number, a.routing_number, a.balance_cents, a.pending_cents, k.status AS kyc_status,
               p.dob, p.ssn, p.city, p.state, p.id_type, p.submitted_at
        FROM users u
        LEFT JOIN accounts a ON a.user_id = u.id
@@ -1145,6 +1155,7 @@ export function createApp(dbPath?: string) {
       members: filtered.map(r => ({
         id: r.id, name: r.name, email: r.email, phone: r.phone, business: r.business,
         accountType: r.account_type, plan: r.plan, status: r.status,
+        accountNumber: r.account_number ?? null, routingNumber: r.routing_number ?? null,
         balance: money((r.balance_cents as number) ?? 0),
         pending: money((r.pending_cents as number) ?? 0),
         kycStatus: r.kyc_status ?? "not_started",
@@ -1242,6 +1253,46 @@ export function createApp(dbPath?: string) {
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Adjustment failed." });
     }
+  }));
+
+  /**
+   * Correct a member's account number.
+   *
+   * The number is printed on statements and handed out for ACH and wire, so a
+   * wrong one has to be fixable from the console rather than by a migration.
+   * Twelve digits, unique across the platform, and rewritten only for a member
+   * who exists — with the old value recorded in the audit log.
+   */
+  app.patch("/api/admin/members/:id/account-number", requireAuth, requirePerm("accounts.edit_number"), wrap((req, res) => {
+    const target = memberRow(String(req.params.id));
+    if (!target) return void res.status(404).json({ error: "Member not found." });
+    const digits = String(req.body?.accountNumber ?? "").replace(/[\s-]/g, "");
+    if (!/^\d{12}$/.test(digits)) {
+      return void res.status(400).json({ error: "An account number is exactly 12 digits." });
+    }
+    const clash = db.prepare("SELECT user_id FROM accounts WHERE account_number = ? AND user_id != ?")
+      .get(digits, String(req.params.id)) as { user_id: string } | undefined;
+    if (clash) return void res.status(409).json({ error: "That account number is already assigned to another account." });
+    const account = db.prepare("SELECT account_number FROM accounts WHERE user_id = ?")
+      .get(String(req.params.id)) as { account_number: string } | undefined;
+    const before = account?.account_number ?? "";
+    if (before === digits) return void res.json({ accountNumber: digits, changed: false });
+    if (account) {
+      db.prepare("UPDATE accounts SET account_number = ?, updated_at = ? WHERE user_id = ?")
+        .run(digits, now(), String(req.params.id));
+    } else {
+      // A member without an account row still gets a real account, not just a
+      // number floating in the console.
+      db.prepare(
+        `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
+         VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
+      ).run(String(req.params.id), digits, now(), now());
+    }
+    audit(req, "account.number", "Financial", `user:${String(req.params.id)} · ${target.name}`,
+      `Account number set to ${digits}.`, before || "(none)", digits);
+    notify(String(req.params.id), "security", "Your account number was updated",
+      `Veyra Support changed the account number on your checking account to ${digits}. If you did not expect this, contact us right away.`);
+    res.json({ accountNumber: digits, changed: true });
   }));
 
   /** Restrict / restore an account. Restriction blocks the member's transfers server-side. */
@@ -1641,7 +1692,7 @@ export function createApp(dbPath?: string) {
 
     const accounts = (db.prepare(`
       SELECT u.id, u.name, u.email, u.business, u.account_type, u.status,
-             a.balance_cents, a.pending_cents, a.rewards_cents,
+             a.account_number, a.routing_number, a.balance_cents, a.pending_cents, a.rewards_cents,
              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.frozen = 1) AS frozen_count,
              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
@@ -1657,6 +1708,8 @@ export function createApp(dbPath?: string) {
       userId: String(a.id), name: String(a.name), email: String(a.email), business: String(a.business ?? ""),
       accountType: a.account_type as "personal" | "business",
       hasAccount: a.balance_cents != null,
+      accountNumber: (a.account_number as string) ?? null,
+      routingNumber: (a.routing_number as string) ?? null,
       balance: Math.round((a.balance_cents as number ?? 0)) / 100,
       pendingBalance: Math.round((a.pending_cents as number ?? 0)) / 100,
       rewards: Math.round((a.rewards_cents as number ?? 0)) / 100,

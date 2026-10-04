@@ -22,7 +22,6 @@
 .bshell-link-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bshell-link-badge { padding: 1px 5px; border-radius: 4px; background: #2a3346; color: #b9a6ff; font-size: 9px; font-weight: 700; letter-spacing: .06em; }
 .bshell-rail-foot { padding-top: 10px; border-top: 1px solid #1d2433; display: flex; flex-direction: column; gap: 6px; }
-.bshell-status { display: flex; align-items: center; gap: 7px; padding: 4px 8px; font-size: 11px; color: #8b95a9; }
 .bshell-signout { display: flex; align-items: center; gap: 7px; padding: 7px 8px; border: 0; border-radius: 6px; background: none; color: #8b95a9; font-size: 11.5px; text-align: left; }
 .bshell-signout:hover { background: #1c2231; color: #f0d6d6; }
 .bshell-scrim { display: none; }

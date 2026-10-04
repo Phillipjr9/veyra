@@ -25,7 +25,6 @@
 .dash-link-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dash-pill-badge { padding: 2px 7px; border-radius: 6px; background: var(--violet); color: #fff; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; }
 .app-nav-foot { padding-top: 12px; border-top: 1px solid var(--line); }
-.acct-pill { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding: 8px 10px; border-radius: 9px; background: var(--paper); font-size: 11.5px; color: #555060; }
 .dot-live { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #4aa870; box-shadow: 0 0 0 3px rgba(74,168,112,.18); animation: livePulse 2s ease-out infinite; }
 @keyframes livePulse { 0% { box-shadow: 0 0 0 0 rgba(74,168,112,.45); } 100% { box-shadow: 0 0 0 7px rgba(74,168,112,0); } }
 .app-user { display: flex; align-items: center; gap: 10px; padding: 4px 6px 10px; }
@@ -138,6 +137,22 @@
 .stat-balance { padding-bottom: 64px; }
 .stat-spark { position: absolute; left: 0; right: 0; bottom: 0; height: 56px; color: #9d86ff; pointer-events: none; }
 .spark { display: block; width: 100%; height: 100%; }
+/* The balance card's chart: one bar per transaction, green in / violet out,
+   drawn from the ledger itself. */
+/* Fits the 64px band the card already reserves for its sparkline, so the chart
+   sits inside the layout instead of colliding with the meta line above it. */
+.stat-bars { height: 64px; display: flex; flex-direction: column; padding: 0 20px 9px; pointer-events: auto; }
+.stat-bars-head { flex: none; height: 15px; display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; overflow: hidden; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.stat-bars-head > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.stat-bars svg { flex: 1; min-height: 0; }
+.stat-bars-legend { display: inline-flex; align-items: center; gap: 5px; }
+.stat-bars-legend i { width: 7px; height: 7px; border-radius: 2px; }
+.stat-bars-legend i.in { background: #4aa870; }
+.stat-bars-legend i.out { margin-left: 6px; background: #9d86ff; }
+.balance-bar.in { fill: #4aa870; }
+.balance-bar.out { fill: #9d86ff; }
+.balance-bars-axis { stroke: rgba(24,23,29,.1); stroke-width: 1; }
+.stat-meta .down { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: #a04545; }
 .stat-dark { border-color: transparent; background: radial-gradient(circle at 100% 0, #5b43a3 0, transparent 55%), #221a2f; color: #fff; }
 .stat-dark .stat-top > span:first-child, .stat-dark .stat-note { color: #bdb5c9; }
 .stat-scout { border-color: #e1d7fd; background: linear-gradient(180deg, #fff, #faf7ff); }
