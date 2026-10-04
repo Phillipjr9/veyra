@@ -72,8 +72,32 @@ function AuthProviders({ onGoogle, onPasskey }: { onGoogle: () => void; onPasske
   );
 }
 
+type PreviewPersona = "personal" | "business" | "superadmin";
+function PreviewRolePicker({ busy, onPick }: { busy: boolean; onPick: (persona: PreviewPersona) => void }) {
+  const profiles: Array<{ persona: PreviewPersona; title: string; note: string; icon: ReactNode; tone: string }> = [
+    { persona: "personal", title: "Personal", note: "Everyday banking", icon: <UserRound size={17} />, tone: "personal" },
+    { persona: "business", title: "Business", note: "Treasury command center", icon: <Building2 size={17} />, tone: "business" },
+    { persona: "superadmin", title: "Super Admin", note: "Platform command", icon: <ShieldCheck size={17} />, tone: "admin" },
+  ];
+  return (
+    <section className="preview-access" aria-label="Preview account access">
+      <div className="preview-access-head"><span><Sparkles size={13} /> Preview workspace</span><small>Temporary development access</small></div>
+      <p>Explore each dashboard without entering a password.</p>
+      <div className="preview-role-grid">
+        {profiles.map(profile => (
+          <button key={profile.persona} type="button" className={`preview-role ${profile.tone}`} onClick={() => onPick(profile.persona)} disabled={busy}>
+            <span className="preview-role-icon">{profile.icon}</span>
+            <span><b>{profile.title}</b><small>{profile.note}</small></span>
+            {busy ? <Loader2 className="spin" size={14} /> : <span className="preview-role-arrow">→</span>}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function LoginPage() {
-  const { login, offline } = useAuth();
+  const { login, previewLogin, offline } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: string } };
@@ -82,15 +106,29 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const routeFor = (me: { role?: string }) => {
+    const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
+    return location.state?.from && location.state.from !== "/app" ? location.state.from : fallback;
+  };
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true); setError("");
     try {
       const me = await login(email, password);
-      const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
-      navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
+      navigate(routeFor(me), { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally { setBusy(false); }
+  }
+
+  async function enterPreview(persona: PreviewPersona) {
+    setBusy(true); setError("");
+    try {
+      const me = await previewLogin(persona);
+      navigate(routeFor(me), { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Preview access is not enabled on this server.");
     } finally { setBusy(false); }
   }
 
@@ -126,6 +164,7 @@ export function LoginPage() {
         </div>
       )}
 
+      {import.meta.env.DEV && <PreviewRolePicker busy={busy} onPick={enterPreview} />}
       <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
 
       <form className="auth-form" onSubmit={submit}>

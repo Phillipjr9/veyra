@@ -359,6 +359,85 @@ CREATE TABLE password_resets (
 CREATE INDEX idx_pw_resets_user ON password_resets(user_id);
 `,
   },
+  {
+    version: 4,
+    sql: `
+-- v4: member-owned spending plans. A budget is deliberately separate from
+-- transactions so both personal and business workspaces can compare live
+-- activity to a member-configured monthly operating limit.
+CREATE TABLE budgets (
+  id                    TEXT PRIMARY KEY,
+  user_id               TEXT NOT NULL REFERENCES users(id),
+  name                  TEXT NOT NULL,
+  category              TEXT NOT NULL DEFAULT 'All spending',
+  monthly_limit_cents   INTEGER NOT NULL CHECK (monthly_limit_cents > 0),
+  alert_percent         INTEGER NOT NULL DEFAULT 80 CHECK (alert_percent BETWEEN 50 AND 100),
+  created_at            INTEGER NOT NULL,
+  updated_at            INTEGER NOT NULL
+);
+CREATE INDEX idx_budgets_user ON budgets(user_id, created_at DESC);
+`,
+  },
+  {
+    version: 5,
+    sql: `
+-- v5: durable back-office casework. Alerts alone are not an operations
+-- workflow: each investigation needs an owner, lifecycle, SLA target, and an
+-- immutable working timeline. Source links let the console connect a case to
+-- a dispute, KYC review, transaction, or account without duplicating it.
+CREATE TABLE operation_cases (
+  id           TEXT PRIMARY KEY,
+  title        TEXT NOT NULL,
+  kind         TEXT NOT NULL CHECK (kind IN ('kyc','dispute','account','transaction','support','other')),
+  priority     TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('critical','high','normal','low')),
+  status       TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','investigating','waiting','resolved')),
+  summary      TEXT NOT NULL DEFAULT '',
+  user_id      TEXT REFERENCES users(id),
+  source_type  TEXT,
+  source_id    TEXT,
+  assigned_to  TEXT REFERENCES users(id),
+  due_at       INTEGER,
+  created_by   TEXT NOT NULL REFERENCES users(id),
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  closed_at    INTEGER
+);
+CREATE INDEX idx_operation_cases_status ON operation_cases(status, priority, updated_at DESC);
+CREATE INDEX idx_operation_cases_assignee ON operation_cases(assigned_to, status);
+CREATE INDEX idx_operation_cases_user ON operation_cases(user_id, updated_at DESC);
+CREATE UNIQUE INDEX idx_operation_cases_source ON operation_cases(source_type, source_id)
+  WHERE source_type IS NOT NULL AND source_id IS NOT NULL;
+
+CREATE TABLE operation_case_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id      TEXT NOT NULL REFERENCES operation_cases(id),
+  at           INTEGER NOT NULL,
+  actor_id     TEXT NOT NULL REFERENCES users(id),
+  actor_name   TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  detail       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_operation_events_case ON operation_case_events(case_id, at DESC);
+CREATE TRIGGER operation_events_no_update BEFORE UPDATE ON operation_case_events
+  BEGIN SELECT RAISE(ABORT, 'operation_case_events are append-only'); END;
+CREATE TRIGGER operation_events_no_delete BEFORE DELETE ON operation_case_events
+  BEGIN SELECT RAISE(ABORT, 'operation_case_events are append-only'); END;
+
+CREATE TABLE operation_case_notes (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id      TEXT NOT NULL REFERENCES operation_cases(id),
+  author_id    TEXT NOT NULL REFERENCES users(id),
+  author_name  TEXT NOT NULL,
+  body         TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX idx_operation_notes_case ON operation_case_notes(case_id, created_at DESC);
+CREATE TRIGGER operation_notes_no_update BEFORE UPDATE ON operation_case_notes
+  BEGIN SELECT RAISE(ABORT, 'operation_case_notes are append-only'); END;
+CREATE TRIGGER operation_notes_no_delete BEFORE DELETE ON operation_case_notes
+  BEGIN SELECT RAISE(ABORT, 'operation_case_notes are append-only'); END;
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

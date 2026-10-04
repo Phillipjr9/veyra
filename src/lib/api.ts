@@ -14,14 +14,31 @@ const HEALTH_TIMEOUT_MS = 2500;
 
 let cachedOnline: boolean | null = null;
 let probe: Promise<boolean> | null = null;
+// Preview browsers can be embedded in a context where persistent storage is
+// blocked. Keep the active token in memory as well, so a successful sign-in
+// always authenticates the current page even when localStorage is unavailable.
+// `undefined` means storage has not been checked yet; `null` means explicitly
+// signed out, so an old storage value can never be resurrected.
+let sessionToken: string | null | undefined;
 
 export function getToken(): string | null {
-  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+  // A freshly issued in-memory credential wins over an older persisted value.
+  // This matters in embedded previews where storage can be readable but writes
+  // or removal are blocked, leaving a stale value behind.
+  if (sessionToken !== undefined) return sessionToken;
+  try {
+    sessionToken = localStorage.getItem(TOKEN_KEY);
+  } catch {
+    sessionToken = null;
+  }
+  return sessionToken;
 }
 export function setToken(token: string): void {
-  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* storage unavailable */ }
+  sessionToken = token;
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* persistence unavailable — current session still works */ }
 }
 export function clearToken(): void {
+  sessionToken = null;
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
 }
 
@@ -65,6 +82,9 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   const res = await fetch(path, {
     method,
     headers,
+    // Explicitly keep the HttpOnly same-origin session cookie sent by the API.
+    // This is a resilient fallback when an embedded browser blocks localStorage.
+    credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();

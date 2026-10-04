@@ -38,7 +38,10 @@ if (process.env.NODE_ENV === "production" && !process.env.TOKEN_SECRET) {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Veyra API listening on http://0.0.0.0:${PORT}`);
-  console.log("Mode: production (clean database — members sign up through the API)");
+  console.log(`Mode: ${process.env.NODE_ENV ?? "development"} (clean database — members sign up through the API)`);
+  if (process.env.PREVIEW_ACCOUNTS === "true" && process.env.NODE_ENV !== "production") {
+    console.log("Preview role shortcuts enabled (development runtime only).");
+  }
   if (!process.env.ADMIN_EMAIL) {
     console.log("No ADMIN_EMAIL set — create the first Super Admin by starting with ADMIN_EMAIL + ADMIN_PASSWORD.");
   }

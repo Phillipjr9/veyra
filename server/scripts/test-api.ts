@@ -62,6 +62,9 @@ try {
   const health = await api("GET", "/api/health");
   expect("health check", health.status === 200 && health.json.ok === true);
 
+  const previewDisabled = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
+  expect("preview role shortcuts are unavailable unless explicitly enabled", previewDisabled.status === 404);
+
   const bootCount = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
   expect("clean database contains only the bootstrap admin", bootCount === 1);
 
@@ -411,6 +414,18 @@ try {
   const pref = await api("PUT", "/api/me/preferences", rae, { key: "weeklyDigest", value: true });
   expect("preference updated", pref.status === 200 &&
     (await api("GET", "/api/me/state", rae)).json.account.preferences.weeklyDigest === true);
+
+  // Member cash plans: durable limits are part of the account snapshot.
+  const budget = await api("POST", "/api/me/budgets", rae, { name: "Monthly software", category: "Software", monthlyLimit: 800, alertPercent: 75 });
+  const budgetId = budget.json.budget?.id;
+  expect("member can create a live spending plan", budget.status === 201 && budget.json.budget.monthlyLimit === 800 &&
+    (await api("GET", "/api/me/state", rae)).json.account.budgets.some((item: any) => item.id === budgetId && item.alertPercent === 75));
+  const invalidBudget = await api("POST", "/api/me/budgets", rae, { name: "", category: "Software", monthlyLimit: 0, alertPercent: 20 });
+  expect("budget validation rejects invalid limits", invalidBudget.status === 400);
+  const deletedBudget = await api("DELETE", `/api/me/budgets/${budgetId}`, rae);
+  expect("member can remove a spending plan", deletedBudget.status === 200 &&
+    !(await api("GET", "/api/me/state", rae)).json.account.budgets.some((item: any) => item.id === budgetId));
+
   const profile = await api("PATCH", "/api/me/profile", rae, { name: "Rae Kim", phone: "+1 (555) 000-0001" });
   expect("profile patch persists", profile.status === 200 && profile.json.user.phone === "+1 (555) 000-0001");
   const kycPatch = await api("PATCH", "/api/me/kyc", rae, { nextStep: "Final review", completeness: 95 });
@@ -452,18 +467,81 @@ try {
   const replayReset = await api("POST", "/api/auth/reset-password", undefined, { token: rawToken, password: "another pass 88" });
   expect("reset token is single-use (replay rejected)", replayReset.status === 400);
 
+  /* ---------- durable operations casework ---------- */
+  const memberOps = await api("GET", "/api/admin/operations/cases", rae);
+  expect("member blocked from operations casework (403)", memberOps.status === 403);
+  const opsDueAt = Date.now() + 2 * 86_400_000;
+  const createOpsCase = await api("POST", "/api/admin/operations/cases", admin, {
+    title: "Review Rae transfer pattern",
+    kind: "transaction",
+    priority: "high",
+    summary: "Review unusual transfer velocity before the next settlement window.",
+    userId: raeId,
+    sourceType: "transaction",
+    sourceId: "ops-test-transfer",
+    assignedTo: adaReg.json.user.id,
+    dueAt: opsDueAt,
+  });
+  const opsCaseId = createOpsCase.json.case?.id as string;
+  expect("admin opens an assigned operational case", createOpsCase.status === 201 && Boolean(opsCaseId) &&
+    createOpsCase.json.case.assignee?.id === adaReg.json.user.id && createOpsCase.json.case.events.length >= 2);
+  const duplicateOpsCase = await api("POST", "/api/admin/operations/cases", admin, {
+    title: "Duplicate source should fail", kind: "transaction", priority: "high", sourceType: "transaction", sourceId: "ops-test-transfer",
+  });
+  expect("operation source can only have one tracked case (409)", duplicateOpsCase.status === 409);
+  const noteOpsCase = await api("POST", `/api/admin/operations/cases/${opsCaseId}/notes`, compliance, {
+    body: "Initial review started; request supporting settlement information.",
+  });
+  expect("compliance can add a durable internal case note", noteOpsCase.status === 201 &&
+    noteOpsCase.json.case.notes.some((note: any) => note.body.includes("Initial review started")));
+  const updateOpsCase = await api("PUT", `/api/admin/operations/cases/${opsCaseId}`, admin, {
+    status: "investigating", priority: "critical", assignedTo: adaReg.json.user.id,
+  });
+  expect("case status and priority update with a timeline", updateOpsCase.status === 200 &&
+    updateOpsCase.json.case.status === "investigating" && updateOpsCase.json.case.priority === "critical" &&
+    updateOpsCase.json.case.events.some((event: any) => event.action === "case.status"));
+  const cases = await api("GET", "/api/admin/operations/cases", admin);
+  expect("operations queue returns assigned cases with notes and SLA", cases.status === 200 &&
+    cases.json.cases.some((item: any) => item.id === opsCaseId && item.dueAt === opsDueAt && item.notes.length === 1));
+  let operationTimelineImmutable = false;
+  try { db.prepare("UPDATE operation_case_events SET detail = 'tampered' WHERE case_id = ?").run(opsCaseId); } catch { operationTimelineImmutable = true; }
+  expect("operation case event timeline is append-only at the DB layer", operationTimelineImmutable);
+
   /* ---------- admin aggregate state ---------- */
   const adminState = await api("GET", "/api/admin/state", admin);
   const as = adminState.json;
   expect("admin state aggregates the console", adminState.status === 200 &&
     as.users.length >= 6 && as.accounts.length >= 3 && as.transactions.length >= 15 &&
-    Array.isArray(as.disputes) && Array.isArray(as.kycQueue) && as.audit.length > 0 &&
+    Array.isArray(as.disputes) && Array.isArray(as.kycQueue) && Array.isArray(as.operationCases) &&
+    as.operationCases.some((item: any) => item.id === opsCaseId) && as.audit.length > 0 &&
     as.roles.support.length > 0 && as.settings.payment_rails === "operational");
   const raeMirror = (await api("GET", "/api/me/state", rae)).json.account;
   expect("admin state mirrors member shapes", as.accounts.some((a: any) =>
     a.userId === raeId && a.balance === raeMirror.balance && a.cards === raeMirror.cards.length));
   const memberState = await api("GET", "/api/admin/state", rae);
   expect("admin state blocked for members (403)", memberState.status === 403);
+
+  // Preview profiles are only opt-in, and issue ordinary revocable sessions.
+  process.env.PREVIEW_ACCOUNTS = "true";
+  // Development preview intentionally exposes only the admin console without
+  // a browser login. This is server-gated and never applies in production.
+  const anonymousPreviewAdmin = await api("GET", "/api/admin/state");
+  expect("preview admin console is available without authentication", anonymousPreviewAdmin.status === 200 &&
+    anonymousPreviewAdmin.json.users.some((u: any) => u.id === "preview_superadmin"));
+  const stalePreviewAdmin = await api("GET", "/api/admin/state", "forged.token.here");
+  expect("preview admin ignores a stale bearer and opens the demo console", stalePreviewAdmin.status === 200);
+  const previewBusiness = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
+  const previewAdmin = await api("POST", "/api/auth/preview-access", undefined, { persona: "superadmin" });
+  expect("preview role shortcuts create a business workspace", previewBusiness.status === 200 && previewBusiness.json.user.business === "Northstar Studio" && previewBusiness.json.user.role === "user" &&
+    Array.isArray(previewBusiness.json.account?.transactions) && previewBusiness.json.account.invoices.length === 3);
+  const previewCookie = previewBusiness.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const cookieState = await fetch(base + "/api/me/state", { headers: { Cookie: previewCookie } });
+  const staleBearerCookieState = await fetch(base + "/api/me/state", { headers: { Cookie: previewCookie, Authorization: "Bearer forged.token.here" } });
+  expect("preview session cookie authenticates even with a stale bearer token", previewCookie.startsWith("veyra_session=") &&
+    cookieState.status === 200 && staleBearerCookieState.status === 200);
+  expect("preview role shortcuts issue a superadmin session", previewAdmin.status === 200 && previewAdmin.json.user.role === "superadmin" &&
+    (await api("GET", "/api/admin/state", previewAdmin.json.token)).status === 200);
+  delete process.env.PREVIEW_ACCOUNTS;
 
   console.log(failures === 0 ? "\nALL API INTEGRATION TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 } finally {

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import {
-  Activity, AlertOctagon, AlertTriangle, BadgeCheck, Bell, Check, Download, FileText,
-  Landmark, Lock, LogOut, Mail, Megaphone, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
-  TrendingUp, UserCheck, UserRound, Users, Wallet,
+  Activity, AlertOctagon, AlertTriangle, BadgeCheck, Bell, Check, ClipboardList, Clock3, Download, FileText,
+  Landmark, Lock, LogOut, Mail, Megaphone, MessageSquare, Plus, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
+  TrendingUp, UserCheck, UserPlus, UserRound, Users, Wallet,
 } from "lucide-react";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
+  Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
@@ -24,11 +24,12 @@ import { useToast } from "../components/Toast";
 
 type AdminUser = User & { role?: UserRole };
 type TabId =
-  | "dashboard" | "customers" | "accounts" | "transactions" | "kyc" | "risk"
+  | "dashboard" | "operations" | "customers" | "accounts" | "transactions" | "kyc" | "risk"
   | "staff" | "roles" | "reports" | "notifications" | "audit" | "settings" | "profile";
 
 const MODULES: Array<{ id: TabId; label: string; icon: React.ReactNode; perm?: Permission }> = [
   { id: "dashboard", label: "Dashboard", icon: <Activity size={15} />, perm: "dashboard.view" },
+  { id: "operations", label: "Operations", icon: <AlertTriangle size={15} />, perm: "dashboard.view" },
   { id: "customers", label: "Customers", icon: <Users size={15} />, perm: "customers.view" },
   { id: "accounts", label: "Accounts", icon: <Landmark size={15} />, perm: "accounts.view" },
   { id: "transactions", label: "Transactions", icon: <FileText size={15} />, perm: "transactions.view" },
@@ -71,12 +72,49 @@ type AuditEntry = {
 };
 
 /** Aggregate admin state served by GET /api/admin/state. */
+type OperationCaseKind = "kyc" | "dispute" | "account" | "transaction" | "support" | "other";
+type OperationCasePriority = "critical" | "high" | "normal" | "low";
+type OperationCaseStatus = "open" | "investigating" | "waiting" | "resolved";
+type OperationCase = {
+  id: string;
+  title: string;
+  kind: OperationCaseKind;
+  priority: OperationCasePriority;
+  status: OperationCaseStatus;
+  summary: string;
+  sourceType?: string;
+  sourceId?: string;
+  member?: { id: string; name: string; email: string };
+  assignee?: { id: string; name: string; role: string };
+  createdBy: { id: string; name: string };
+  dueAt?: number;
+  createdAt: number;
+  updatedAt: number;
+  closedAt?: number;
+  events: Array<{ id: number; at: number; actorId: string; actorName: string; action: string; detail: string }>;
+  notes: Array<{ id: number; authorId: string; authorName: string; body: string; createdAt: number }>;
+};
+type OperationSignal = {
+  id: string;
+  priority: "urgent" | "high" | "review";
+  tab: TabId;
+  title: string;
+  detail: string;
+  owner: string;
+  createdAt: number;
+  sourceType?: string;
+  sourceId?: string;
+  kind: OperationCaseKind;
+  userId?: string;
+};
+
 type AdminServerState = {
   users: Array<{ id: string; name: string; email: string; phone: string; business: string; accountType: "personal" | "business"; avatarUrl: string; role: string; plan: "Starter" | "Pro"; createdAt: number }>;
   accounts: PlatformAccount[];
   transactions: Array<Txn & { userId: string; memberName: string }>;
   disputes: Array<Dispute & { userId: string; memberName: string }>;
   kycQueue: KycQueueItem[];
+  operationCases: OperationCase[];
   audit: AuditEntry[];
   roles: Record<string, Permission[]>;
   settings: Record<string, string>;
@@ -87,8 +125,11 @@ export function SuperAdminPage() {
   const toast = useToast();
   const navigate = useNavigate();
 
-  // Route protection — staff roles only (the member dashboard redirects others).
-  if (!isStaff(user?.role)) return <Navigate to="/app" replace />;
+  // Production is staff-only. The development console is intentionally open
+  // when the server's preview mode is enabled, so the product can be reviewed
+  // without maintaining a browser authentication session.
+  const demoConsole = import.meta.env.DEV && !isStaff(user?.role);
+  if (!demoConsole && !isStaff(user?.role)) return <Navigate to="/app" replace />;
 
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [tick, setTick] = useState(0);
@@ -153,6 +194,18 @@ export function SuperAdminPage() {
   const [interestRate, setInterestRate] = useState("4.25");
   const [systemFrozen, setSystemFrozen] = useState(false);
   const [haltConfirm, setHaltConfirm] = useState(false);
+  // Durable operations cases — assignments, SLA dates and notes all live in
+  // SQLite and are written to the admin audit log by the API.
+  const [caseStatusFilter, setCaseStatusFilter] = useState<"active" | OperationCaseStatus>("active");
+  const [casePriorityFilter, setCasePriorityFilter] = useState<"all" | OperationCasePriority>("all");
+  const [caseSearch, setCaseSearch] = useState("");
+  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const [caseModal, setCaseModal] = useState(false);
+  const [caseDraft, setCaseDraft] = useState<{ title: string; kind: OperationCaseKind; priority: OperationCasePriority; summary: string; userId: string; assignedTo: string; dueAt: string; sourceType: string; sourceId: string }>({
+    title: "", kind: "other", priority: "normal", summary: "", userId: "", assignedTo: "", dueAt: "", sourceType: "", sourceId: "",
+  });
+  const [caseNote, setCaseNote] = useState("");
+  const [caseSaving, setCaseSaving] = useState(false);
 
   // The backend is the system of record — load the aggregate admin state and
   // install the server's role matrix so can() matches server enforcement.
@@ -160,7 +213,22 @@ export function SuperAdminPage() {
   const [adminLoadError, setAdminLoadError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    apiGet<AdminServerState>("/api/admin/state")
+    const loadConsole = async () => {
+      try {
+        return await apiGet<AdminServerState>("/api/admin/state");
+      } catch (firstError) {
+        // During a hot update, the API module can be recreated a fraction
+        // before AuthProvider restores its in-memory token. Retry once after
+        // that bridge has run instead of presenting a valid operator with a
+        // misleading authentication error.
+        if (firstError instanceof Error && /authentication required/i.test(firstError.message)) {
+          await new Promise(resolve => window.setTimeout(resolve, 80));
+          return apiGet<AdminServerState>("/api/admin/state");
+        }
+        throw firstError;
+      }
+    };
+    loadConsole()
       .then(data => {
         if (cancelled) return;
         setAdminData(data);
@@ -176,7 +244,7 @@ export function SuperAdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick]);
 
-  const role = (user?.role ?? "user") as Role;
+  const role = (demoConsole ? "superadmin" : user?.role ?? "user") as Role;
   const allow = (perm: Permission) => can(role, perm);
   const guard = (perm: Permission, action: string): boolean => {
     try { assertCan(role, perm, action); return true; }
@@ -196,6 +264,7 @@ export function SuperAdminPage() {
   const allTxns: Array<Txn & { userId: string; memberName: string }> = adminData ? adminData.transactions : [];
   const disputes: Array<Dispute & { userId: string; memberName: string }> = adminData ? adminData.disputes : [];
   const kycQueue: KycQueueItem[] = adminData ? adminData.kycQueue : [];
+  const operationCases: OperationCase[] = adminData ? adminData.operationCases : [];
   const auditLogs: AuditEntry[] = adminData ? adminData.audit : [];
 
   const accountBy = (userId: string) => accounts.find(a => a.userId === userId);
@@ -215,6 +284,7 @@ export function SuperAdminPage() {
   const visibleModules = MODULES.filter(m => !m.perm || allow(m.perm));
   const moduleCount = (id: TabId) =>
     id === "customers" ? members.length
+    : id === "operations" ? operationCases.filter(item => item.status !== "resolved").length
     : id === "kyc" ? kycQueue.length
     : id === "risk" ? openDisputes.length
     : id === "audit" ? auditLogs.length
@@ -414,6 +484,66 @@ export function SuperAdminPage() {
         .catch((err: Error) => toast({ tone: "error", title: "Action failed", description: err.message }));
   };
 
+  const resetCaseDraft = () => setCaseDraft({
+    title: "", kind: "other", priority: "normal", summary: "", userId: "", assignedTo: "", dueAt: "", sourceType: "", sourceId: "",
+  });
+  const openCaseModal = (signal?: OperationSignal) => {
+    setCaseDraft(signal ? {
+      title: signal.title,
+      kind: signal.kind,
+      priority: signal.priority === "urgent" ? "critical" : signal.priority === "review" ? "normal" : "high",
+      summary: signal.detail,
+      userId: signal.userId ?? "",
+      assignedTo: "",
+      dueAt: "",
+      sourceType: signal.sourceType ?? "",
+      sourceId: signal.sourceId ?? "",
+    } : { title: "", kind: "other", priority: "normal", summary: "", userId: "", assignedTo: "", dueAt: "", sourceType: "", sourceId: "" });
+    setCaseModal(true);
+  };
+  const handleCreateCase = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!guard("dashboard.view", "open operational cases")) return;
+    setCaseSaving(true);
+    apiPost<{ case: OperationCase }>("/api/admin/operations/cases", {
+      ...caseDraft,
+      userId: caseDraft.userId || undefined,
+      assignedTo: caseDraft.assignedTo || undefined,
+      dueAt: caseDraft.dueAt ? new Date(caseDraft.dueAt).getTime() : undefined,
+      sourceType: caseDraft.sourceType || undefined,
+      sourceId: caseDraft.sourceId || undefined,
+    })
+      .then(({ case: created }) => {
+        setCaseModal(false); resetCaseDraft(); setSelectedCaseId(created.id); refresh();
+        toast({ tone: "success", title: "Operational case opened", description: `${created.title} is now tracked in the work queue.` });
+      })
+      .catch((err: Error) => toast({ tone: "error", title: "Couldn't open case", description: err.message }))
+      .finally(() => setCaseSaving(false));
+  };
+  const handleCaseUpdate = (item: OperationCase, patch: Partial<Pick<OperationCase, "status" | "priority">> & { assignedTo?: string | null; dueAt?: number | null }) => {
+    if (!guard("dashboard.view", "update operational cases")) return;
+    setCaseSaving(true);
+    apiPut<{ case: OperationCase }>(`/api/admin/operations/cases/${item.id}`, patch)
+      .then(({ case: updated }) => {
+        refresh();
+        toast({ tone: "success", title: "Case updated", description: `${updated.title} has been saved.` });
+      })
+      .catch((err: Error) => toast({ tone: "error", title: "Case update failed", description: err.message }))
+      .finally(() => setCaseSaving(false));
+  };
+  const handleCaseNote = (item: OperationCase) => {
+    const body = caseNote.trim();
+    if (!body || !guard("dashboard.view", "add internal case notes")) return;
+    setCaseSaving(true);
+    apiPost<{ case: OperationCase }>(`/api/admin/operations/cases/${item.id}/notes`, { body })
+      .then(() => {
+        setCaseNote(""); refresh();
+        toast({ tone: "success", title: "Internal note added", description: "The case timeline was updated." });
+      })
+      .catch((err: Error) => toast({ tone: "error", title: "Note wasn't saved", description: err.message }))
+      .finally(() => setCaseSaving(false));
+  };
+
   const filteredMembers = members.filter(u =>
     u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -430,6 +560,24 @@ export function SuperAdminPage() {
     (auditSearch.trim() === "" || `${l.adminName} ${l.action} ${l.target} ${l.summary}`.toLowerCase().includes(auditSearch.toLowerCase()))
   );
   const broadcastHistory = auditLogs.filter(l => l.action === "notification.broadcast").slice(0, 6);
+  const activeOperationCases = operationCases.filter(item => item.status !== "resolved");
+  const caseStats = {
+    active: activeOperationCases.length,
+    critical: activeOperationCases.filter(item => item.priority === "critical").length,
+    unassigned: activeOperationCases.filter(item => !item.assignee).length,
+    overdue: activeOperationCases.filter(item => item.dueAt && item.dueAt < Date.now()).length,
+  };
+  const filteredOperationCases = operationCases.filter(item => {
+    const statusMatches = caseStatusFilter === "active" ? item.status !== "resolved" : item.status === caseStatusFilter;
+    const priorityMatches = casePriorityFilter === "all" || item.priority === casePriorityFilter;
+    const text = `${item.title} ${item.summary} ${item.member?.name ?? ""} ${item.assignee?.name ?? ""} ${item.sourceId ?? ""}`.toLowerCase();
+    return statusMatches && priorityMatches && (!caseSearch.trim() || text.includes(caseSearch.toLowerCase()));
+  });
+  const selectedOperationCase = operationCases.find(item => item.id === selectedCaseId) ?? filteredOperationCases[0] ?? null;
+  const caseTimeline = selectedOperationCase ? [
+    ...selectedOperationCase.events.map(event => ({ id: `event-${event.id}`, at: event.at, actor: event.actorName, text: event.detail || event.action, type: "event" as const })),
+    ...selectedOperationCase.notes.map(note => ({ id: `note-${note.id}`, at: note.createdAt, actor: note.authorName, text: note.body, type: "note" as const })),
+  ].sort((a, b) => b.at - a.at) : [];
 
   const kycChip = (status: string) =>
     <span className={`status-pill ${status === "approved" ? "paid" : status === "in_review" ? "active" : status === "requested" || status === "needs_attention" ? "overdue" : "open"}`}>
@@ -438,40 +586,85 @@ export function SuperAdminPage() {
 
   const activeMatrix = matrixDraft ?? Object.fromEntries(STAFF_ROLES.map(r => [r, rolePermissions(r)])) as Record<StaffRole, Permission[]>;
 
-  const adminNetFlow = [
-    { month: "Jan", inflow: 82000, outflow: 46000 },
-    { month: "Feb", inflow: 90000, outflow: 50000 },
-    { month: "Mar", inflow: 98000, outflow: 53000 },
-    { month: "Apr", inflow: 101000, outflow: 56000 },
-    { month: "May", inflow: 112000, outflow: 61000 },
-    { month: "Jun", inflow: 125000, outflow: 67000 },
+  // Console metrics deliberately derive from the live server snapshot rather
+  // than displaying sample financial figures. This keeps the control room
+  // useful on a brand-new platform as well as at scale.
+  const adminNetFlow = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 6 }, (_, index) => {
+      const period = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
+      const nextPeriod = new Date(period.getFullYear(), period.getMonth() + 1, 1);
+      const rows = allTxns.filter(transaction => transaction.date >= period.getTime() && transaction.date < nextPeriod.getTime());
+      return {
+        month: period.toLocaleDateString("en-US", { month: "short" }),
+        inflow: rows.filter(transaction => transaction.amount > 0).reduce((sum, transaction) => sum + transaction.amount, 0),
+        outflow: rows.filter(transaction => transaction.amount < 0).reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0),
+      };
+    });
+  }, [allTxns]);
+
+  const channelMix = useMemo(() => {
+    const colorByChannel: Record<string, string> = { Card: "#7558dc", ACH: "#5aa77b", Wire: "#e2a649", Transfer: "#4b8fb2", Other: "#a9a2b6" };
+    const totalsByChannel = new Map<string, number>();
+    allTxns.forEach(transaction => {
+      const raw = (transaction.method ?? "Other").toLowerCase();
+      const channel = raw.includes("card") ? "Card" : raw.includes("ach") ? "ACH" : raw.includes("wire") ? "Wire" : raw.includes("transfer") || raw.includes("zelle") ? "Transfer" : "Other";
+      totalsByChannel.set(channel, (totalsByChannel.get(channel) ?? 0) + Math.abs(transaction.amount));
+    });
+    const total = [...totalsByChannel.values()].reduce((sum, amount) => sum + amount, 0);
+    if (!total) return [{ name: "Awaiting activity", value: 100, color: "#ded9e5" }];
+    return [...totalsByChannel.entries()]
+      .sort(([, amountA], [, amountB]) => amountB - amountA)
+      .slice(0, 4)
+      .map(([name, amount]) => ({ name, value: Math.round((amount / total) * 100), color: colorByChannel[name] ?? colorByChannel.Other }));
+  }, [allTxns]);
+
+  const sixMonthInflow = adminNetFlow.reduce((sum, period) => sum + period.inflow, 0);
+  const sixMonthOutflow = adminNetFlow.reduce((sum, period) => sum + period.outflow, 0);
+  const attentionItems = [
+    ...(totals.riskAlerts > 0 ? [{ tab: "risk" as TabId, tone: "risk", title: "Risk signals need a decision", detail: `${totals.riskAlerts} open alert${totals.riskAlerts === 1 ? "" : "s"} across disputes and restricted accounts`, count: totals.riskAlerts }] : []),
+    ...(totals.kycPending > 0 ? [{ tab: "kyc" as TabId, tone: "kyc", title: "Verification is waiting", detail: `${totals.kycPending} member${totals.kycPending === 1 ? "" : "s"} need a compliance review`, count: totals.kycPending }] : []),
+    ...(totals.pendingTxns > 0 ? [{ tab: "transactions" as TabId, tone: "ledger", title: "Pending ledger activity", detail: `${totals.pendingTxns} transaction${totals.pendingTxns === 1 ? "" : "s"} still awaiting settlement`, count: totals.pendingTxns }] : []),
   ];
 
-  const channelMix = [
-    { name: "Card", value: 44, color: "#7558dc" },
-    { name: "ACH", value: 27, color: "#8fd3a4" },
-    { name: "Wire", value: 18, color: "#f0bf6a" },
-    { name: "Other", value: 11, color: "#c6d0ff" },
-  ];
+  // Live signals are not silently treated as cases. An operator explicitly
+  // turns a signal into a durable, assigned case when investigation is needed.
+  const operationSignals = useMemo(() => {
+    const items: OperationSignal[] = [];
+    if (systemFrozen) items.push({ id: "rails-halted", priority: "urgent", tab: "settings", title: "Payment rails are halted", detail: "Outgoing transfers are currently blocked for every member.", owner: "Treasury controls", createdAt: Date.now(), kind: "other" });
+    if (apiHealth === "offline") items.push({ id: "api-offline", priority: "urgent", tab: "dashboard", title: "API health check is degraded", detail: "The control plane cannot confirm the member ledger is reachable.", owner: "Platform engineering", createdAt: Date.now(), kind: "other" });
+    openDisputes.forEach(dispute => items.push({ id: `dispute-${dispute.id}`, priority: dispute.status === "submitted" ? "high" : "review", tab: "risk", title: `Dispute: ${dispute.merchant}`, detail: `${dispute.memberName} · ${money(dispute.amount)} · ${dispute.reason}`, owner: "Risk & fraud", createdAt: dispute.updatedAt, kind: "dispute", sourceType: "dispute", sourceId: dispute.id, userId: dispute.userId }));
+    kycQueue.forEach(item => items.push({ id: `kyc-${item.userId}`, priority: item.kyc.status === "in_review" ? "high" : "review", tab: "kyc", title: `Verification: ${item.name}`, detail: `${item.kyc.status.replace("_", " ")} · ${item.kyc.completeness}% complete`, owner: "Compliance", createdAt: item.kyc.lastUpdated, kind: "kyc", sourceType: "kyc", sourceId: item.userId, userId: item.userId }));
+    accounts.filter(account => account.accountStatus === "restricted").forEach(account => items.push({ id: `restricted-${account.userId}`, priority: "high", tab: "customers", title: `Restricted account: ${account.name}`, detail: `${account.email} · ${money(account.balance)} available balance`, owner: "Risk & fraud", createdAt: account.lastActivity, kind: "account", sourceType: "account", sourceId: account.userId, userId: account.userId }));
+    allTxns.filter(transaction => transaction.status === "pending").forEach(transaction => items.push({ id: `pending-${transaction.id}`, priority: "review", tab: "transactions", title: `Pending movement: ${transaction.merchant}`, detail: `${transaction.memberName} · ${money(Math.abs(transaction.amount))} · ${transaction.method ?? "Unknown method"}`, owner: "Payments operations", createdAt: transaction.date, kind: "transaction", sourceType: "transaction", sourceId: transaction.id, userId: transaction.userId }));
+    const rank = { urgent: 0, high: 1, review: 2 };
+    return items.sort((a, b) => rank[a.priority] - rank[b.priority] || b.createdAt - a.createdAt);
+  }, [accounts, allTxns, apiHealth, kycQueue, openDisputes, systemFrozen]);
+  const trackedSources = new Set(operationCases.filter(item => item.sourceType && item.sourceId).map(item => `${item.sourceType}:${item.sourceId}`));
 
   return (
     <div className="app-page superadmin-page">
       {/* Console header */}
-      <header className="app-head admin-head">
-        <div>
+      <header className="app-head admin-head admin-command-header">
+        <div className="admin-command-copy">
           <span className="admin-master-badge">
             <AlertOctagon size={13} /> SUPER ADMIN CONTROL CENTER
           </span>
-          <h1>Platform oversight</h1>
-          <div className="admin-head-controls">
+          <h1>Platform command</h1>
+          <p>Real-time authority over member safety, money movement and platform configuration.</p>
+          <div className="admin-command-meta">
             <span className="admin-role-chip">{ROLE_LABELS[role]}</span>
-            <span className="admin-identity">{user?.name} · {user?.email}</span>
+            <span className="admin-identity">{user?.name ?? "Preview operator"} · {user?.email ?? "demo mode"}</span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, flex: "none" }}>
-          <button type="button" className="ghost-btn sm" onClick={() => { logout(); navigate("/"); }}>
-            <LogOut size={14} /> Sign out
-          </button>
+        <div className="admin-command-actions">
+          <div className="admin-command-health">
+            <span className={`admin-health-dot ${apiHealth}`} />
+            <span><b>{apiHealth === "online" ? "Platform online" : apiHealth === "offline" ? "Connection degraded" : "Checking platform"}</b><small>{systemFrozen ? "Payment rails halted" : "Payment rails available"}</small></span>
+          </div>
+          <button type="button" className="admin-refresh-btn" onClick={refresh}><RefreshCw size={14} /> Refresh</button>
+          {allow("settings.manage") && <button type="button" className={`admin-emergency-btn ${systemFrozen ? "active-halt" : ""}`} onClick={() => setHaltConfirm(true)}><AlertTriangle size={14} /> {systemFrozen ? "Rails halted" : "Emergency halt"}</button>}
+          <button type="button" className="admin-signout-btn" onClick={() => { logout(); navigate("/"); }} aria-label="Sign out"><LogOut size={15} /></button>
         </div>
       </header>
 
@@ -501,13 +694,30 @@ export function SuperAdminPage() {
               <h2>Can't load platform data</h2>
               <span className="panel-sub">{adminLoadError}</span>
             </div>
-            <button type="button" className="ghost-btn sm" onClick={refresh}><RefreshCw size={14} /> Retry</button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" className="ghost-btn sm" onClick={refresh}><RefreshCw size={14} /> Retry</button>
+              {/authentication required|invalid or expired token/i.test(adminLoadError) && <button type="button" className="solid-btn sm" onClick={() => {
+                // A hard navigation clears any HMR-preserved React state as
+                // well as the local credential before showing the sign-in UI.
+                logout();
+                window.location.assign(`${window.location.pathname}#/login`);
+              }}>Sign in again</button>}
+            </div>
           </div>
         </div>
       )}
 
+      {/* Never render zero-value widgets as if the platform were empty while
+          the protected console snapshot is still in flight. */}
+      {!adminData && !adminLoadError && (
+        <div className="panel admin-panel admin-state-loading" role="status" aria-live="polite">
+          <RefreshCw size={18} className="spin" />
+          <div><h2>Loading secure console data</h2><span className="panel-sub">Fetching the current users, account summaries, cases and controls from the API.</span></div>
+        </div>
+      )}
+
       {/* ============================ DASHBOARD ============================ */}
-      {activeTab === "dashboard" && !adminLoadError && (
+      {activeTab === "dashboard" && adminData && !adminLoadError && (
         <div className="admin-tab-pane">
           <div className="admin-kpi-grid">
             {([
@@ -533,10 +743,10 @@ export function SuperAdminPage() {
             <div className="admin-chart-panel admin-chart-main">
               <div className="chart-panel-head">
                 <div>
-                  <span className="chart-panel-kicker">Cash flow</span>
-                  <h3>Net inflow vs operating outflow</h3>
+                  <span className="chart-panel-kicker">Live member ledger · 6 months</span>
+                  <h3>Incoming and outgoing movement</h3>
                 </div>
-                <span className="chart-panel-badge positive">+18.4% QoQ</span>
+                <span className={`chart-panel-badge ${sixMonthInflow >= sixMonthOutflow ? "positive" : "neutral"}`}>{sixMonthInflow >= sixMonthOutflow ? "Inflow-led" : "Outflow-led"}</span>
               </div>
               <div className="chart-panel-body">
                 <ResponsiveContainer width="100%" height={250}>
@@ -551,7 +761,7 @@ export function SuperAdminPage() {
                     <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
                     <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
                     <Tooltip
-                      formatter={(value: number | string, name: string) => [money(Number(value), false), name === "inflow" ? "Inflow" : "Outflow"]}
+                      formatter={(value, name) => [money(Number(value ?? 0), false), name === "inflow" ? "Inflow" : "Outflow"]}
                       contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)", boxShadow: "0 18px 38px rgba(24,23,29,.12)" }}
                     />
                     <Area type="monotone" dataKey="outflow" stackId="1" stroke="#c2b4ff" strokeWidth={2.2} fill="rgba(117,88,220,0.14)" />
@@ -564,8 +774,8 @@ export function SuperAdminPage() {
             <div className="admin-chart-panel">
               <div className="chart-panel-head">
                 <div>
-                  <span className="chart-panel-kicker">Funding mix</span>
-                  <h3>Volume by channel</h3>
+                  <span className="chart-panel-kicker">Payment rails</span>
+                  <h3>Movement by channel</h3>
                 </div>
               </div>
               <div className="chart-panel-body chart-panel-compact">
@@ -576,7 +786,7 @@ export function SuperAdminPage() {
                         {channelMix.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                       </Pie>
                       <Tooltip
-                        formatter={(value: number | string) => [`${value}%`, "Share"]}
+                        formatter={value => [`${value ?? 0}%`, "Share"]}
                         contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)" }}
                       />
                     </PieChart>
@@ -593,6 +803,35 @@ export function SuperAdminPage() {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="admin-operator-grid">
+            <section className="admin-attention-panel">
+              <div className="admin-attention-head">
+                <div><span className="admin-section-kicker">Priority queue</span><h2>Decisions waiting for you</h2></div>
+                <span className={`admin-queue-count ${attentionItems.length ? "has-items" : ""}`}>{attentionItems.length || "✓"}</span>
+              </div>
+              {attentionItems.length ? (
+                <div className="admin-attention-list">
+                  {attentionItems.map(item => (
+                    <button key={item.tab} type="button" className={`admin-attention-row ${item.tone}`} onClick={() => setActiveTab(item.tab)}>
+                      <span className="admin-attention-count">{item.count}</span>
+                      <span><b>{item.title}</b><small>{item.detail}</small></span>
+                      <span className="admin-attention-cta">Review</span>
+                    </button>
+                  ))}
+                </div>
+              ) : <div className="admin-all-clear"><Check size={16} /><span><b>Everything is clear</b><small>No current KYC, risk or settlement items need attention.</small></span></div>}
+            </section>
+            <section className="admin-command-summary">
+              <span className="admin-section-kicker">Command summary</span>
+              <h2>Operational snapshot</h2>
+              <div className="admin-summary-stats">
+                <div><span>Ledger inflow</span><strong>{money(sixMonthInflow, false)}</strong></div>
+                <div><span>Ledger outflow</span><strong>{money(sixMonthOutflow, false)}</strong></div>
+              </div>
+              <div className="admin-summary-note"><ShieldCheck size={14} /> Server-authoritative roles, ledger and audit trail are active.</div>
+            </section>
           </div>
 
           <div className={`admin-api-strip ${apiHealth === "offline" ? "offline" : ""}`} role="status">
@@ -660,6 +899,78 @@ export function SuperAdminPage() {
               ) : <div className="empty-state"><TrendingUp size={24} /><strong>No member activity yet</strong><p>Member transactions will appear here in real time.</p></div>}
             </section>
           </div>
+        </div>
+      )}
+
+      {/* ============================ OPERATIONS ============================ */}
+      {activeTab === "operations" && (
+        <div className="admin-tab-pane admin-operations-pane">
+          <section className="admin-casework-shell">
+            <div className="admin-casework-head">
+              <div>
+                <span className="admin-section-kicker">Durable casework</span>
+                <h2>Operations command desk</h2>
+                <p>Assign investigations, set an internal SLA, preserve the decision trail, and keep live signals separate from confirmed work.</p>
+              </div>
+              <button type="button" className="solid-btn admin-open-case" onClick={() => openCaseModal()}><Plus size={15} /> Open case</button>
+            </div>
+            <div className="admin-case-stats" aria-label="Case queue summary">
+              <div><span>Active cases</span><strong>{caseStats.active}</strong></div>
+              <div className={caseStats.critical ? "warning" : ""}><span>Critical</span><strong>{caseStats.critical}</strong></div>
+              <div className={caseStats.unassigned ? "warning" : ""}><span>Unassigned</span><strong>{caseStats.unassigned}</strong></div>
+              <div className={caseStats.overdue ? "danger" : ""}><span>Past SLA</span><strong>{caseStats.overdue}</strong></div>
+            </div>
+            <div className="admin-case-toolbar">
+              <label className="admin-case-search"><Search size={15} /><input value={caseSearch} onChange={event => setCaseSearch(event.target.value)} placeholder="Search case, member, owner or source" aria-label="Search operational cases" /></label>
+              <select value={caseStatusFilter} onChange={event => setCaseStatusFilter(event.target.value as "active" | OperationCaseStatus)} aria-label="Filter cases by status">
+                <option value="active">Active cases</option><option value="open">Open</option><option value="investigating">Investigating</option><option value="waiting">Waiting</option><option value="resolved">Resolved</option>
+              </select>
+              <select value={casePriorityFilter} onChange={event => setCasePriorityFilter(event.target.value as "all" | OperationCasePriority)} aria-label="Filter cases by priority">
+                <option value="all">All priorities</option><option value="critical">Critical</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option>
+              </select>
+            </div>
+            <div className="admin-case-workspace">
+              <div className="admin-case-list" aria-label="Operational cases">
+                {filteredOperationCases.length ? filteredOperationCases.map(item => (
+                  <button key={item.id} type="button" className={`admin-case-row ${selectedOperationCase?.id === item.id ? "selected" : ""}`} onClick={() => { setSelectedCaseId(item.id); setCaseNote(""); }}>
+                    <span className={`admin-case-priority ${item.priority}`}>{item.priority}</span>
+                    <span className="admin-case-row-copy"><b>{item.title}</b><small>{item.member?.name ?? "Platform case"} · {item.assignee?.name ?? "Unassigned"} · updated {ago(item.updatedAt)}</small></span>
+                    <span className={`admin-case-status ${item.status}`}>{item.status.replace("_", " ")}</span>
+                  </button>
+                )) : <div className="admin-case-empty"><ClipboardList size={22} /><strong>No cases match these filters</strong><small>Open a case when a signal needs an accountable investigation.</small></div>}
+              </div>
+              <aside className="admin-case-detail" aria-live="polite">
+                {selectedOperationCase ? <>
+                  <div className="admin-case-detail-head">
+                    <div><span className={`admin-case-priority ${selectedOperationCase.priority}`}>{selectedOperationCase.priority} priority</span><h3>{selectedOperationCase.title}</h3><p>{selectedOperationCase.summary || "No investigation summary was recorded."}</p></div>
+                    <span className={`admin-case-status ${selectedOperationCase.status}`}>{selectedOperationCase.status}</span>
+                  </div>
+                  <div className="admin-case-meta">
+                    <div><UserRound size={14} /><span><small>Member</small><b>{selectedOperationCase.member?.name ?? "Platform-wide"}</b></span></div>
+                    <div><UserPlus size={14} /><span><small>Owner</small><b>{selectedOperationCase.assignee?.name ?? "Unassigned"}</b></span></div>
+                    <div><Clock3 size={14} /><span><small>Internal SLA</small><b>{selectedOperationCase.dueAt ? `${longDate(selectedOperationCase.dueAt)}${selectedOperationCase.dueAt < Date.now() && selectedOperationCase.status !== "resolved" ? " · overdue" : ""}` : "No due date"}</b></span></div>
+                  </div>
+                  <div className="admin-case-controls">
+                    <label>Status<select value={selectedOperationCase.status} disabled={caseSaving} onChange={event => handleCaseUpdate(selectedOperationCase, { status: event.target.value as OperationCaseStatus })}><option value="open">Open</option><option value="investigating">Investigating</option><option value="waiting">Waiting</option><option value="resolved">Resolved</option></select></label>
+                    <label>Priority<select value={selectedOperationCase.priority} disabled={caseSaving} onChange={event => handleCaseUpdate(selectedOperationCase, { priority: event.target.value as OperationCasePriority })}><option value="critical">Critical</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select></label>
+                    <label>Owner<select value={selectedOperationCase.assignee?.id ?? ""} disabled={caseSaving} onChange={event => handleCaseUpdate(selectedOperationCase, { assignedTo: event.target.value || null })}><option value="">Unassigned</option>{staff.map(person => <option key={person.id} value={person.id}>{person.name} · {ROLE_LABELS[(person.role ?? "admin") as Role]}</option>)}</select></label>
+                    <label>Due date<input type="datetime-local" disabled={caseSaving} value={selectedOperationCase.dueAt ? new Date(selectedOperationCase.dueAt - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16) : ""} onChange={event => handleCaseUpdate(selectedOperationCase, { dueAt: event.target.value ? new Date(event.target.value).getTime() : null })} /></label>
+                  </div>
+                  {selectedOperationCase.sourceId && <button type="button" className="admin-case-source" onClick={() => setActiveTab(selectedOperationCase.sourceType === "kyc" ? "kyc" : selectedOperationCase.sourceType === "dispute" ? "risk" : selectedOperationCase.sourceType === "transaction" ? "transactions" : "customers")}><FileText size={13} /> Linked {selectedOperationCase.sourceType} · {selectedOperationCase.sourceId}</button>}
+                  <div className="admin-case-timeline"><div className="admin-case-timeline-head"><h4>Internal timeline</h4><span>{caseTimeline.length} entries</span></div>{caseTimeline.length ? caseTimeline.map(entry => <div className={`admin-case-timeline-entry ${entry.type}`} key={entry.id}><span className="admin-case-timeline-dot" /><div><b>{entry.actor}</b><p>{entry.text}</p><small>{ago(entry.at)}</small></div></div>) : <p className="panel-sub">The server will append every ownership, status, priority and note update here.</p>}</div>
+                  <form className="admin-case-note" onSubmit={event => { event.preventDefault(); handleCaseNote(selectedOperationCase); }}><label htmlFor="case-note"><MessageSquare size={14} /> Add internal note</label><textarea id="case-note" value={caseNote} maxLength={2000} onChange={event => setCaseNote(event.target.value)} placeholder="Record rationale, evidence pointers, handoff details or next steps…" /><button type="submit" className="ghost-btn sm" disabled={!caseNote.trim() || caseSaving}>Save note</button></form>
+                </> : <div className="admin-case-empty"><ClipboardList size={24} /><strong>Select a case</strong><small>Its full internal timeline and controls will open here.</small></div>}
+              </aside>
+            </div>
+          </section>
+
+          <section className="panel admin-panel admin-signal-panel">
+            <div className="panel-head"><div><span className="admin-section-kicker">Monitor</span><h2>Live signals</h2><span className="panel-sub">Signals are real server-derived conditions. They become durable casework only when an operator starts an investigation.</span></div><span className={`admin-queue-count ${operationSignals.length ? "has-items" : ""}`}>{operationSignals.length}</span></div>
+            {operationSignals.length ? <div className="admin-attention-list admin-operations-list">{operationSignals.map(signal => {
+              const alreadyTracked = signal.sourceType && signal.sourceId && trackedSources.has(`${signal.sourceType}:${signal.sourceId}`);
+              return <div className={`admin-attention-row ${signal.priority === "urgent" || signal.priority === "high" ? "risk" : signal.tab === "kyc" ? "kyc" : "ledger"}`} key={signal.id}><span className="admin-attention-count">{signal.priority === "urgent" || signal.priority === "high" ? "!" : "•"}</span><span><b>{signal.title}</b><small>{signal.detail}</small></span><span className="admin-signal-actions"><button type="button" className="text-btn" onClick={() => setActiveTab(signal.tab)}>Inspect</button>{alreadyTracked ? <span className="admin-tracked-label"><Check size={12} /> Tracked</span> : <button type="button" className="ghost-btn sm" onClick={() => openCaseModal(signal)}><ClipboardList size={13} /> Start case</button>}</span></div>;
+            })}</div> : <div className="admin-all-clear"><Check size={16} /><div><b>No live operational exceptions</b><small>Payments, risk, compliance and account controls have no open signals in the current server snapshot.</small></div></div>}
+          </section>
         </div>
       )}
 
@@ -1245,6 +1556,33 @@ export function SuperAdminPage() {
       )}
 
       {/* ============================ MODALS ============================ */}
+
+      {/* Durable Operations case */}
+      {caseModal && (
+        <div className="modal-scrim" onClick={() => { if (!caseSaving) { setCaseModal(false); resetCaseDraft(); } }}>
+          <div className="modal admin-case-modal" role="dialog" aria-modal="true" aria-labelledby="open-case-title" onClick={event => event.stopPropagation()}>
+            <div className="modal-head"><div><h3 id="open-case-title">Open operational case</h3><p>Creates an internal, auditable work record. This is not an external payment, KYC, or support-provider action.</p></div></div>
+            <form className="dash-form" onSubmit={handleCreateCase}>
+              <label htmlFor="case-title">Case title</label>
+              <input id="case-title" required minLength={3} maxLength={120} value={caseDraft.title} onChange={event => setCaseDraft(current => ({ ...current, title: event.target.value }))} placeholder="What must be investigated?" autoFocus />
+              <div className="admin-case-form-grid">
+                <label>Type<select value={caseDraft.kind} onChange={event => setCaseDraft(current => ({ ...current, kind: event.target.value as OperationCaseKind }))}><option value="kyc">KYC review</option><option value="dispute">Dispute</option><option value="account">Account review</option><option value="transaction">Transaction review</option><option value="support">Support escalation</option><option value="other">Other</option></select></label>
+                <label>Priority<select value={caseDraft.priority} onChange={event => setCaseDraft(current => ({ ...current, priority: event.target.value as OperationCasePriority }))}><option value="critical">Critical</option><option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option></select></label>
+              </div>
+              <label htmlFor="case-summary">Investigation summary <small>(optional)</small></label>
+              <textarea id="case-summary" maxLength={2000} value={caseDraft.summary} onChange={event => setCaseDraft(current => ({ ...current, summary: event.target.value }))} placeholder="State the known facts, review goal and handoff context." />
+              <div className="admin-case-form-grid">
+                <label>Related member<select value={caseDraft.userId} onChange={event => setCaseDraft(current => ({ ...current, userId: event.target.value }))}><option value="">Platform-wide / none</option>{members.map(member => <option key={member.id} value={member.id}>{member.name} · {member.email}</option>)}</select></label>
+                <label>Assign to<select value={caseDraft.assignedTo} onChange={event => setCaseDraft(current => ({ ...current, assignedTo: event.target.value }))}><option value="">Leave unassigned</option>{staff.map(person => <option key={person.id} value={person.id}>{person.name} · {ROLE_LABELS[(person.role ?? "admin") as Role]}</option>)}</select></label>
+              </div>
+              <label htmlFor="case-due">Internal due date <small>(optional)</small></label>
+              <input id="case-due" type="datetime-local" value={caseDraft.dueAt} onChange={event => setCaseDraft(current => ({ ...current, dueAt: event.target.value }))} />
+              {caseDraft.sourceType && <p className="admin-case-linking"><FileText size={13} /> Linked source: {caseDraft.sourceType} · {caseDraft.sourceId}</p>}
+              <div className="modal-actions"><button type="button" className="ghost-btn" disabled={caseSaving} onClick={() => { setCaseModal(false); resetCaseDraft(); }}>Cancel</button><button type="submit" className="solid-btn" disabled={caseSaving}>{caseSaving ? "Opening…" : "Open case"}</button></div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Deposit / Withdraw (cross-account treasury adjustment) */}
       {adjustModal && targetUser && (

@@ -16,12 +16,18 @@ export type User = {
   createdAt: number;
 };
 
+export type PreviewAccountSnapshot = { userId: string; account: unknown };
+
 type AuthValue = {
   user: User | null;
+  /** Server-supplied state from the one-click development preview endpoint. */
+  previewAccount: PreviewAccountSnapshot | null;
   ready: boolean;
   /** True when the API could not be reached on the last probe. */
   offline: boolean;
   login: (email: string, password: string) => Promise<User>;
+  /** Development-preview role switcher; the server keeps this endpoint disabled outside an explicit preview runtime. */
+  previewLogin: (persona: "personal" | "business" | "superadmin") => Promise<User>;
   signup: (input: { name: string; phone?: string; business?: string; accountType: User["accountType"]; email: string; password: string; plan?: User["plan"] }) => Promise<void>;
   logout: () => void;
   updateUser: (patch: Partial<Pick<User, "name" | "phone" | "business" | "accountType" | "email" | "plan" | "role" | "avatarUrl">>) => void;
@@ -36,20 +42,39 @@ const AuthCtx = createContext<AuthValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [previewAccount, setPreviewAccount] = useState<PreviewAccountSnapshot | null>(null);
+  // Keep the active credential in React state as well as the API module. Vite
+  // can hot-reload that module while preserving this provider and user state;
+  // without this bridge the UI could still look authenticated while the next
+  // protected request was sent without its bearer credential.
+  const [activeToken, setActiveToken] = useState<string | null>(() => getToken());
   const [ready, setReady] = useState(false);
   const [offline, setOffline] = useState(false);
 
   useEffect(() => {
+    if (activeToken && getToken() !== activeToken) setToken(activeToken);
+  }, [activeToken]);
+
+  useEffect(() => {
     (async () => {
+      // Keep the token that initiated restoration. A user can choose a preview
+      // role while this request is still in flight; an old rejected request
+      // must never erase that newly-issued session token.
+      const restoringToken = getToken();
       const online = await probeApi();
       setOffline(!online);
-      if (online && getToken()) {
-        // Restore the session from the server via the stored bearer token.
+      if (online) {
         try {
+          // /api/auth/me accepts the same-origin HttpOnly session cookie as
+          // well as a bearer token. Always try it so a secure cookie session
+          // survives a refresh even when browser storage is unavailable.
           const { user: me } = await apiGet<{ user: User }>("/api/auth/me");
-          setUser(me);
+          if (getToken() === restoringToken) setUser(me);
         } catch {
-          clearToken(); // revoked or expired — sign in again
+          if (getToken() === restoringToken) {
+            clearToken(); // revoked or expired — sign in again
+            setActiveToken(null);
+          }
         }
       }
       setReady(true);
@@ -60,6 +85,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
     setToken(token);
+    setActiveToken(token);
+    setPreviewAccount(null);
+    setUser(me);
+    return me;
+  }, []);
+
+  const previewLogin = useCallback<AuthValue["previewLogin"]>(async persona => {
+    const { token, user: me, account } = await apiPost<{ token: string; user: User; account: unknown }>("/api/auth/preview-access", { persona });
+    setToken(token);
+    setActiveToken(token);
+    // This data is an authoritative snapshot supplied by the guarded server
+    // endpoint, not a client-side demo. It avoids a second auth round trip
+    // before the preview dashboard can render.
+    setPreviewAccount({ userId: me.id, account });
     setUser(me);
     return me;
   }, []);
@@ -71,6 +110,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accountType, email: email.trim(), password, plan,
     });
     setToken(token);
+    setActiveToken(token);
+    setPreviewAccount(null);
     setUser(me);
   }, []);
 
@@ -78,6 +119,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Revoke the server session (best-effort — local sign-out proceeds regardless).
     apiPost("/api/auth/logout").catch(() => undefined);
     clearToken();
+    setActiveToken(null);
+    setPreviewAccount(null);
     setUser(null);
   }, []);
 
@@ -101,8 +144,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, previewAccount, ready, offline, login, previewLogin, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, previewAccount, ready, offline, login, previewLogin, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
