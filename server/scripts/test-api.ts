@@ -473,6 +473,11 @@ try {
   const previewBusiness = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
   const previewAdmin = await api("POST", "/api/auth/preview-access", undefined, { persona: "superadmin" });
   expect("preview role shortcuts create a business workspace", previewBusiness.status === 200 && previewBusiness.json.user.business === "Northstar Studio" && previewBusiness.json.user.role === "user");
+  const previewCookie = previewBusiness.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const cookieState = await fetch(base + "/api/me/state", { headers: { Cookie: previewCookie } });
+  const staleBearerCookieState = await fetch(base + "/api/me/state", { headers: { Cookie: previewCookie, Authorization: "Bearer forged.token.here" } });
+  expect("preview session cookie authenticates even with a stale bearer token", previewCookie.startsWith("veyra_session=") &&
+    cookieState.status === 200 && staleBearerCookieState.status === 200);
   expect("preview role shortcuts issue a superadmin session", previewAdmin.status === 200 && previewAdmin.json.user.role === "superadmin" &&
     (await api("GET", "/api/admin/state", previewAdmin.json.token)).status === 200);
   delete process.env.PREVIEW_ACCOUNTS;

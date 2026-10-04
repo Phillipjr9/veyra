@@ -32,6 +32,8 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthedUser;
+      /** Raw credential accepted by requireAuth (bearer header or HttpOnly session cookie). */
+      authToken?: string;
     }
   }
 }
@@ -88,21 +90,71 @@ export function createApp(dbPath?: string) {
     };
   }
 
+  const AUTH_COOKIE = "veyra_session";
+
+  // A same-origin, HttpOnly session cookie makes the embedded preview resilient
+  // when its browser blocks or rewrites localStorage. The bearer token remains
+  // supported for API clients and existing production integrations.
+  const readCookie = (req: Request, name: string): string | null => {
+    const encoded = String(req.headers.cookie ?? "")
+      .split(";")
+      .map(part => part.trim())
+      .find(part => part.startsWith(`${name}=`))
+      ?.slice(name.length + 1);
+    if (!encoded) return null;
+    try { return decodeURIComponent(encoded); } catch { return null; }
+  };
+
+  const setSessionCookie = (res: Response, token: string) => {
+    const attributes = [
+      `${AUTH_COOKIE}=${encodeURIComponent(token)}`,
+      "Path=/api",
+      "HttpOnly",
+      "SameSite=Strict",
+      `Max-Age=${Math.floor(TOKEN_TTL_MS / 1000)}`,
+    ];
+    // Production deployments should only expose the cookie over HTTPS. Local
+    // preview remains HTTP-compatible behind Vite's development proxy.
+    if (process.env.NODE_ENV === "production") attributes.push("Secure");
+    res.setHeader("Set-Cookie", attributes.join("; "));
+  };
+
+  const clearSessionCookie = (res: Response) => {
+    const attributes = [
+      `${AUTH_COOKIE}=`,
+      "Path=/api",
+      "HttpOnly",
+      "SameSite=Strict",
+      "Max-Age=0",
+    ];
+    if (process.env.NODE_ENV === "production") attributes.push("Secure");
+    res.setHeader("Set-Cookie", attributes.join("; "));
+  };
+
   function requireAuth(req: Request, res: Response, next: NextFunction): void {
     const header = req.headers.authorization;
-    if (!header?.startsWith("Bearer ")) return void res.status(401).json({ error: "Authentication required." });
-    const payload = verifyToken(header.slice(7));
-    if (!payload) return void res.status(401).json({ error: "Invalid or expired token." });
-    const session = db.prepare("SELECT revoked, expires_at FROM sessions WHERE token_id = ?").get(payload.jti) as
-      | { revoked: number; expires_at: number }
-      | undefined;
-    if (!session || session.revoked || session.expires_at < Date.now()) {
-      return void res.status(401).json({ error: "Session revoked — sign in again." });
+    const bearer = header?.startsWith("Bearer ") ? header.slice(7) : null;
+    const cookie = readCookie(req, AUTH_COOKIE);
+    // Prefer the HttpOnly cookie issued by the latest browser login. If a
+    // stale bearer header survives in blocked storage, it cannot override a
+    // newer preview role choice. Non-browser API clients still use bearer.
+    const candidates = [...new Set([cookie, bearer].filter((value): value is string => Boolean(value)))];
+    if (!candidates.length) return void res.status(401).json({ error: "Authentication required." });
+
+    for (const token of candidates) {
+      const payload = verifyToken(token);
+      if (!payload) continue;
+      const session = db.prepare("SELECT revoked, expires_at FROM sessions WHERE token_id = ?").get(payload.jti) as
+        | { revoked: number; expires_at: number }
+        | undefined;
+      if (!session || session.revoked || session.expires_at < Date.now()) continue;
+      const user = loadUser(payload.sub);
+      if (!user) continue;
+      req.user = user;
+      req.authToken = token;
+      return next();
     }
-    const user = loadUser(payload.sub);
-    if (!user) return void res.status(401).json({ error: "Account no longer exists." });
-    req.user = user;
-    next();
+    return void res.status(401).json({ error: "Invalid or expired token." });
   }
 
   function requirePerm(permission: Permission) {
@@ -146,7 +198,9 @@ export function createApp(dbPath?: string) {
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, user.id, now(), now() + TOKEN_TTL_MS);
-    res.json({ token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: fullUser(user.id) });
+    const token = signToken({ sub: user.id, jti: tokenId, role: user.role });
+    setSessionCookie(res, token);
+    res.json({ token, user: fullUser(user.id) });
   }));
 
   app.post("/api/auth/login", wrap((req, res) => {
@@ -167,7 +221,9 @@ export function createApp(dbPath?: string) {
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, row.id, now(), now() + TOKEN_TTL_MS);
     const user = loadUser(row.id)!;
-    res.json({ token: signToken({ sub: row.id, jti: tokenId, role: user.role }), user: publicUser(user) });
+    const token = signToken({ sub: row.id, jti: tokenId, role: user.role });
+    setSessionCookie(res, token);
+    res.json({ token, user: publicUser(user) });
   }));
 
   app.post("/api/auth/register", wrap((req, res) => {
@@ -207,13 +263,15 @@ export function createApp(dbPath?: string) {
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
-    res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
+    const token = signToken({ sub: id, jti: tokenId, role: "user" });
+    setSessionCookie(res, token);
+    res.status(201).json({ token, user: fullUser(id) });
   }));
 
   app.post("/api/auth/logout", requireAuth, wrap((req, res) => {
-    const token = req.headers.authorization!.slice(7);
-    const payload = verifyToken(token);
+    const payload = verifyToken(req.authToken ?? "");
     if (payload) db.prepare("UPDATE sessions SET revoked = 1 WHERE token_id = ?").run(payload.jti);
+    clearSessionCookie(res);
     res.json({ ok: true });
   }));
 

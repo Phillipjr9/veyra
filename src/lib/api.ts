@@ -82,6 +82,9 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   const res = await fetch(path, {
     method,
     headers,
+    // Explicitly keep the HttpOnly same-origin session cookie sent by the API.
+    // This is a resilient fallback when an embedded browser blocks localStorage.
+    credentials: "same-origin",
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
