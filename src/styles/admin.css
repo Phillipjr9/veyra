@@ -182,30 +182,33 @@
   flex-wrap: wrap;
 }
 
+/* Sits in the console bar next to the house chips, at the house size — the
+   red tint is the only thing that sets it apart, because red is the message. */
 .admin-emergency-btn {
-  height: 42px;
+  height: 38px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 16px;
-  border-radius: 11px;
-  border: 1px solid #e75a5a;
-  background: #fff;
-  color: #c92a2a;
-  font-size: 13.5px;
-  font-weight: 700;
+  gap: 7px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(180, 60, 60, .34);
+  background: var(--white);
+  color: #a33d3d;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background .2s, border-color .2s, transform .2s;
 }
 
 .admin-emergency-btn:hover {
-  background: #fdeaea;
+  border-color: rgba(180, 60, 60, .52);
+  background: #fbeeee;
 }
 
 .admin-emergency-btn.active-halt {
-  background: #c92a2a;
+  background: #c33e45;
   color: #fff;
-  border-color: #a51d1d;
+  border-color: #c33e45;
   animation: haltPulse 1.5s infinite;
 }
 
@@ -1771,6 +1774,7 @@
 
 /* Mobile — tables scroll inside their wrap, headers stack, modals fit */
 @media (max-width: 900px) {
+  .admin-body { padding: 20px 20px 0; }
   .admin-head { flex-direction: column; align-items: flex-start !important; gap: 12px; }
   .admin-head-controls { margin-top: 8px; }
   .admin-table { min-width: 760px; }
@@ -1841,8 +1845,8 @@
    Executive Super Admin command center
    ========================================================================== */
 .superadmin-page {
-  max-width: 1360px;
-  padding-top: 28px;
+  max-width: none;
+  padding: 0 0 72px;
   background:
     radial-gradient(circle at 98% 0%, rgba(87, 165, 134, .13), transparent 24%),
     radial-gradient(circle at 0% 12%, rgba(117, 88, 220, .13), transparent 27%),
@@ -1851,32 +1855,40 @@
 /* --------------------------------------------------------------------------
    Console chrome (top bar)
    The console's persistent header: brand, platform status, global controls and
-   the operator's identity. It sits above the hero banner and stays on screen
-   while a tab scrolls, so the console always has a way back and a way out.
+   the operator's identity. It is deliberately the member app's own top bar —
+   full width, flush with the top, hairline underneath, the same chips — rather
+   than a card floating over the page, so scrolling content never reads as
+   overlapped and the two surfaces share one navigation vocabulary.
    -------------------------------------------------------------------------- */
+/* The bar is full-bleed; the console's own column lives in here. */
+.admin-body {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 24px 32px 0;
+}
+
 .admin-topbar {
   position: sticky;
   top: 0;
   z-index: 90;
+  height: 66px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 16px;
-  padding: 8px 10px 8px 14px;
-  border: 1px solid rgba(29, 69, 57, .12);
-  border-radius: 16px;
+  gap: 16px;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--line);
   background: rgba(255, 253, 249, .9);
-  box-shadow: 0 10px 26px rgba(28, 39, 35, .06);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
 }
 
 .admin-topbar-left,
-.admin-topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.admin-topbar-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
 /* Controls never shrink: a squeezed icon button is a miss, not a style. */
 .admin-topbar button,
-.admin-topbar .admin-topbar-health { flex: none; }
+.admin-topbar .admin-topbar-health,
+.admin-topbar .admin-topbar-id { flex: none; }
 
 .admin-topbar .logo { font-size: 20px; }
 
@@ -1898,63 +1910,31 @@
   align-items: center;
   gap: 7px;
   padding: 0 11px;
-  border: 1px solid rgba(29, 69, 57, .14);
-  border-radius: 11px;
-  background: #fff;
-  font-size: 11.5px;
-  font-weight: 700;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--white);
+  font-size: 12.5px;
+  font-weight: 600;
   white-space: nowrap;
 }
 .admin-topbar-health.online { color: #246b47; }
 .admin-topbar-health.offline { color: #a33d3d; }
 .admin-topbar-health.checking { color: #8a5a1f; }
 
-/* The hero's controls were styled for its dark banner; in the light bar they
-   take the console's ink colours and the halt stays unmistakably red. */
-.admin-topbar .admin-refresh-btn,
-.admin-topbar .admin-signout-btn {
-  height: 38px;
-  border-color: rgba(29, 69, 57, .16);
-  background: #fff;
-  color: #2c4b41;
-}
-.admin-topbar .admin-refresh-btn:hover,
-.admin-topbar .admin-signout-btn:hover { border-color: rgba(29, 69, 57, .34); background: #f2f7f4; }
-.admin-topbar .admin-emergency-btn {
-  height: 38px;
-  border-color: rgba(180, 60, 60, .34);
-  background: #fff;
-  color: #a33d3d;
-}
-.admin-topbar .admin-emergency-btn:hover { background: #fbeeee; }
-.admin-topbar .admin-emergency-btn.active-halt { border-color: #c33e45; background: #c33e45; color: #fff; }
-
-.admin-topbar-exit {
-  height: 38px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border-radius: 11px;
-  color: #2d7658;
-  font-size: 11.5px;
-  font-weight: 700;
-  white-space: nowrap;
-  transition: background .2s;
-}
-.admin-topbar-exit:hover { background: #eef6f1; }
+/* The global controls wear the same chips as the member bar (.topbar-btn /
+   .icon-btn). Only the halt keeps a colour of its own, because red is the
+   message. */
+.admin-topbar-exit { text-decoration: none; }
 
 .admin-topbar-id {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-left: 10px;
-  border-left: 1px solid rgba(29, 69, 57, .12);
+  gap: 9px;
   min-width: 0;
 }
 .admin-topbar-avatar {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   flex: none;
   display: grid;
   place-items: center;
@@ -2019,9 +1999,7 @@
 .admin-command-health b, .admin-command-health small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-command-health b { color: #ecfff7; font-size: 11px; }.admin-command-health small { margin-top: 2px; color: #afc9c0; font-size: 9.5px; }
 .admin-health-dot { width: 8px; height: 8px; border-radius: 50%; background: #d5a857; box-shadow: 0 0 0 4px rgba(215,170,88,.12); }.admin-health-dot.online { background: #70d39d; box-shadow: 0 0 0 4px rgba(112,211,157,.14); }.admin-health-dot.offline { background: #eb8181; box-shadow: 0 0 0 4px rgba(235,129,129,.14); }
-.admin-refresh-btn, .admin-signout-btn { height: 39px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid rgba(222,255,244,.2); border-radius: 10px; background: rgba(255,255,255,.08); color: #eefcf7; font-size: 11.5px; font-weight: 700; transition: background .2s, border-color .2s, transform .2s; }.admin-refresh-btn { padding: 0 11px; }.admin-signout-btn { width: 39px; padding: 0; }.admin-refresh-btn:hover, .admin-signout-btn:hover { border-color: rgba(222,255,244,.42); background: rgba(255,255,255,.15); transform: translateY(-1px); }
-.admin-command-header .admin-emergency-btn { height: 39px; padding: 0 11px; border-color: rgba(255,166,166,.48); background: rgba(145,39,46,.37); color: #ffd6d6; font-size: 11.5px; }.admin-command-header .admin-emergency-btn:hover { background: rgba(187,50,57,.52); }.admin-command-header .admin-emergency-btn.active-halt { border-color: #ed8585; background: #c33e45; color: #fff; }
-.admin-tabs-nav { position: sticky; top: 62px; z-index: 80; margin-top: 0; margin-bottom: 18px; border-color: rgba(29,50,47,.10); border-radius: 18px; background: rgba(255,253,249,.84); box-shadow: 0 10px 26px rgba(28,39,35,.045); }
+.admin-tabs-nav { position: sticky; top: 66px; z-index: 80; margin-top: 0; margin-bottom: 18px; border-color: rgba(29,50,47,.10); border-radius: 18px; background: rgba(255,253,249,.97); box-shadow: 0 10px 26px rgba(28,39,35,.045); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
 .admin-tab-btn.on { border-color: rgba(42,111,84,.18); background: linear-gradient(135deg, #dff0e9, #eff8f4); color: #215d48; box-shadow: none; }.admin-tab-btn.on .admin-tab-count { background: #2a7056; color: #fff; }
 .admin-kpi-grid { gap: 13px; margin-top: 0; }
 .admin-kpi-card { min-height: 155px; padding: 19px 17px 16px; border-color: rgba(29,69,57,.11); background: linear-gradient(145deg, rgba(255,255,255,.96), rgba(250,252,250,.85)); box-shadow: 0 12px 28px rgba(28,51,44,.045); }.admin-kpi-card::before { background: radial-gradient(circle, rgba(54,135,102,.14), transparent 70%); }.admin-kpi-card.featured { border-color: rgba(43,111,87,.24); background: radial-gradient(circle at 100% 0%, rgba(94,199,158,.21), transparent 38%), linear-gradient(135deg, #e8f5ef, #ffffff); }.admin-kpi-card.featured::after { background: radial-gradient(circle, rgba(82,194,148,.18), transparent 68%); }.admin-kpi-card.featured .kpi-val { color: #1f6049; }
@@ -2034,4 +2012,4 @@
 .admin-api-strip { margin-bottom: 14px; border-color: rgba(30,77,62,.12); border-radius: 14px; background: rgba(255,253,249,.86); }.admin-grid-split { gap: 14px; }.admin-panel { border-color: rgba(29,69,57,.1); background: rgba(255,253,249,.88); }.admin-activity-row { padding: 12px 2px; }.admin-activity-cat { background: #e4eef4; color: #316e8f; }
 
 @media (max-width: 1050px) { .admin-command-header { align-items: flex-start; }.admin-command-actions { justify-content: flex-start; max-width: none; }.admin-operator-grid { grid-template-columns: 1fr; } }
-@media (max-width: 700px) { .superadmin-page { padding-top: 20px; }.admin-command-header { padding: 23px 19px; border-radius: 21px; }.admin-command-header h1 { font-size: 30px; }.admin-command-actions { width: 100%; }.admin-command-health { flex: 1; min-width: 155px; }.admin-command-header .admin-emergency-btn { padding: 0 10px; }.admin-chart-grid { grid-template-columns: 1fr; }.admin-summary-stats { max-width: 330px; }.admin-attention-row { grid-template-columns: 30px minmax(0,1fr); }.admin-attention-cta { grid-column: 2; justify-self: start; }.admin-attention-row b, .admin-attention-row small { white-space: normal; } }
+@media (max-width: 700px) { .admin-command-header { padding: 23px 19px; border-radius: 21px; }.admin-command-header h1 { font-size: 30px; }.admin-chart-grid { grid-template-columns: 1fr; }.admin-summary-stats { max-width: 330px; }.admin-attention-row { grid-template-columns: 30px minmax(0,1fr); }.admin-attention-cta { grid-column: 2; justify-self: start; }.admin-attention-row b, .admin-attention-row small { white-space: normal; } }

@@ -691,8 +691,9 @@ export function SuperAdminPage() {
       {/* Console chrome.
           The hero below is the page's banner and scrolls away with it, which
           used to leave a long tab with no brand, no status and no way out. This
-          bar stays: brand (links back to the member app), platform health, the
-          global controls, and who is signed in. */}
+          bar stays — and it is the member app's own top bar (full width, flush
+          with the top, hairline underneath) rather than a card floating over
+          the page, so nothing reads as overlapped while a tab scrolls. */}
       <header className="admin-topbar">
         <div className="admin-topbar-left">
           <Logo to="/app" />
@@ -706,20 +707,20 @@ export function SuperAdminPage() {
             <span className={`admin-health-dot ${apiHealth}`} />
             <b>{apiHealth === "online" ? "Online" : apiHealth === "offline" ? "Degraded" : "Checking"}</b>
           </span>
-          <button type="button" className="admin-refresh-btn" onClick={refresh} aria-label="Refresh console data">
+          <button type="button" className="topbar-btn admin-refresh-btn" onClick={refresh} aria-label="Refresh console data">
             <RefreshCw size={14} /><span>Refresh</span>
           </button>
           {allow("settings.manage") && (
             <button
               type="button"
-              className={`admin-emergency-btn ${systemFrozen ? "active-halt" : ""}`}
+              className={`topbar-btn admin-emergency-btn ${systemFrozen ? "active-halt" : ""}`}
               onClick={() => setHaltConfirm(true)}
               aria-label={systemFrozen ? "Resume payment rails" : "Halt payment rails"}
             >
               <AlertTriangle size={14} /><span>{systemFrozen ? "Rails halted" : "Emergency halt"}</span>
             </button>
           )}
-          <Link to="/app" className="admin-topbar-exit">Member view <ExternalLink size={12} /></Link>
+          <Link to="/app" className="topbar-btn admin-topbar-exit">Member view <ExternalLink size={12} /></Link>
           <span className="admin-topbar-id" title={`${user?.name ?? "Operator"} · ${user?.email ?? ""}`}>
             <span className="admin-topbar-avatar" aria-hidden="true">
               {(user?.name ?? "Operator").split(" ").filter(Boolean).map(part => part[0]).slice(0, 2).join("").toUpperCase()}
@@ -729,9 +730,12 @@ export function SuperAdminPage() {
               <small>{ROLE_LABELS[role]}</small>
             </span>
           </span>
-          <button type="button" className="admin-signout-btn" onClick={() => { logout(); navigate("/"); }} aria-label="Sign out"><LogOut size={15} /></button>
+          <button type="button" className="icon-btn admin-signout-btn" onClick={() => { logout(); navigate("/"); }} aria-label="Sign out"><LogOut size={15} /></button>
         </div>
       </header>
+
+      {/* The bar spans the viewport; the console's own column starts here. */}
+      <div className="admin-body">
 
       {/* Console hero — the banner for the console as a whole */}
       <header className="app-head admin-head admin-command-header">
@@ -1923,6 +1927,7 @@ export function SuperAdminPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

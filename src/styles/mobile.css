@@ -155,31 +155,28 @@
   /* Admin console chrome. A phone bar holds the brand, the status dot and the
      controls — nothing else. Buttons keep their 40px hit area (they must never
      compress into slivers), and the labels that only fit a desktop bar go. */
-  .admin-topbar { padding: 7px 8px 7px 10px; gap: 8px; }
+  /* Console chrome, same phone shape as the member app's own bar: 60px tall,
+     icon-only chips, 14px gutters — and the operator's name moves into the
+     hero (dashboard.css hides the member bar's avatar on phones too). */
+  .admin-topbar { height: 60px; gap: 8px; padding: 0 14px; }
   .admin-topbar-left { flex: none; gap: 6px; }
   .admin-topbar-tag { display: none; }
-  .admin-topbar-right { flex: 1; justify-content: flex-end; gap: 6px; }
-  .admin-topbar-health { flex: none; padding: 0 9px; }
+  .admin-topbar-right { flex: 1; justify-content: flex-end; gap: 8px; }
+  .admin-topbar-health { flex: none; width: 38px; padding: 0; justify-content: center; }
   .admin-topbar-health b { display: none; }
-  .admin-topbar .admin-refresh-btn,
-  .admin-topbar .admin-emergency-btn,
-  .admin-topbar .admin-signout-btn { flex: none; width: 40px; padding: 0; justify-content: center; }
-  .admin-topbar .admin-refresh-btn span,
-  .admin-topbar .admin-emergency-btn span { display: none; }
   .admin-topbar-exit { display: none; }
-  .admin-topbar-id { padding-left: 0; border-left: 0; }
-  .admin-topbar-id-copy { display: none; }
+  .admin-topbar-id { display: none; }
+  .admin-body { padding: 16px 12px 0; }
 
   /* The rail rides right under the bar — and stays readable while a tab
      scrolls beneath it, which a translucent panel did not. */
   .admin-tabs-nav {
-    top: 56px;
+    top: 60px;
     background: rgba(255, 253, 249, .98);
     box-shadow: 0 10px 26px rgba(28, 39, 35, .08);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
   }
-  .superadmin-page { padding-left: 12px; padding-right: 12px; }
 }
 
 /* Anything still wider than the phone clips rather than making the page
