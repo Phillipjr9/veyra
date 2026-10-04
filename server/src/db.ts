@@ -456,6 +456,25 @@ CREATE TABLE identity_profiles (
 CREATE INDEX idx_identity_submitted ON identity_profiles(submitted_at);
 `,
   },
+  {
+    version: 5,
+    sql: `
+-- v5: the application review. Opening an account is a decision a human makes,
+-- so a new application waits in review instead of granting dashboard access.
+--
+-- This is deliberately separate from kyc_records.status, which tracks document
+-- verification for accounts that are already open. Someone already banking with
+-- us who is asked for an extra document must not lose access to their money.
+--
+-- DEFAULT 'approved' is what every existing row gets: accounts created before
+-- this migration are open and stay open.
+ALTER TABLE kyc_records ADD COLUMN review_state TEXT NOT NULL DEFAULT 'approved';
+ALTER TABLE kyc_records ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE kyc_records ADD COLUMN review_reqs_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE kyc_records ADD COLUMN reviewed_by TEXT;
+ALTER TABLE kyc_records ADD COLUMN reviewed_at INTEGER;
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

@@ -20,7 +20,9 @@ import {
   AccountsPage, BillsPage, DisputesPage, SecurityCenterPage, KYCPage
 } from "./pages/Dashboard";
 import { ClassicApp } from "./pages/dashboards/ClassicDashboard";
+import { useAcct } from "./lib/store";
 import { SuperAdminPage } from "./pages/SuperAdmin";
+import { ApplicationStatusPage } from "./pages/ApplicationStatus";
 import { SupportCenterPage } from "./pages/SupportCenter";
 import { EmailTemplatesPage } from "./pages/EmailTemplates";
 
@@ -47,6 +49,26 @@ function BusinessOnly({ children }: { children: React.ReactNode }) {
  * page and routing (`ClassicApp`). Business accounts get the treasury shell and
  * staff get the control room, both of which bring their own layouts.
  */
+/**
+ * Holds the dashboard shut until a human has approved the application.
+ *
+ * The account exists as soon as someone signs up — what they don't get yet is
+ * the dashboard. Anything other than `approved` lands on the status page, which
+ * tells them where the application stands and what to do next.
+ */
+function RequireApproved({ children }: { children: React.ReactNode }) {
+  const { account, accountError } = useAcct();
+  const location = useLocation();
+  // A failed load is not a review decision: let RequireAuth and the shell deal
+  // with it rather than trapping the member on the status page.
+  if (accountError) return <>{children}</>;
+  if (!account) return <div className="route-loading"><span className="spinner" /></div>;
+  if (account.kyc.review.state !== "approved" && location.pathname !== "/application") {
+    return <Navigate to="/application" replace />;
+  }
+  return <>{children}</>;
+}
+
 function MemberSurface() {
   const { user } = useAuth();
   const staff = Boolean(user?.role && user.role !== "user");
@@ -97,7 +119,9 @@ function Shell() {
             <RequireAuth>
               <AccountProvider>
                 <MoneyFlowProvider>
-                  <MemberSurface />
+                  <RequireApproved>
+                    <MemberSurface />
+                  </RequireApproved>
                 </MoneyFlowProvider>
               </AccountProvider>
             </RequireAuth>
@@ -123,6 +147,18 @@ function Shell() {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/app" replace />} />
         </Route>
+
+        {/* Between sign-up and approval: the member's whole account experience. */}
+        <Route
+          path="/application"
+          element={
+            <RequireAuth>
+              <AccountProvider>
+                <ApplicationStatusPage />
+              </AccountProvider>
+            </RequireAuth>
+          }
+        />
 
         {/* Staff console: its own shell (dark control room), not the member dashboard chrome. */}
         <Route path="/app/superadmin" element={<RequireAuth><SuperAdminPage /></RequireAuth>} />

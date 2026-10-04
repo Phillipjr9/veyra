@@ -9,7 +9,7 @@
  *   4. runs financial operations inside IMMEDIATE transactions (atomic),
  *   5. writes an audit entry with before/after values.
  */
-import express, { type NextFunction, type Request, type Response } from "express";
+import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -60,6 +60,15 @@ const fail = (res: Response, err: unknown, fallback: string) => {
 
 const MAX_TRANSFER_CENTS = 250_000_00;      // $250k per transfer
 const MAX_DEPOSIT_CENTS = 100_000_00;       // $100k per deposit
+
+/**
+ * What a reviewer can ask an applicant for. Deliberately a short, closed list:
+ * these map onto the documents the member's application screen knows how to ask
+ * for, so "we need more" never turns into an unactionable sentence.
+ */
+const REVIEW_REQUIREMENTS: readonly string[] = ["identity", "address", "selfie", "funds"];
+const requirementLabel = (key: string | number): string =>
+  ({ identity: "a government photo ID", address: "proof of address", selfie: "a selfie holding your ID", funds: "proof of the funds" } as Record<string, string>)[key] ?? key;
 const MAX_ADJUSTMENT_CENTS = 10_000_000_00; // $10M per admin adjustment
 
 export function createApp(dbPath?: string) {
@@ -198,6 +207,35 @@ export function createApp(dbPath?: string) {
    * (including the Super Admin) through them. Unknown and non-member ids both
    * answer 404 so the route can't be used to enumerate staff.
    */
+  /**
+   * Typed access to the application decision.
+   *
+   * `approved` covers every account that existed before the review queue (the
+   * migration defaults it that way) and every member a human has cleared, so
+   * this never locks out an established customer.
+   */
+  const reviewRow = (userId: string) =>
+    db.prepare("SELECT review_state, review_note, review_reqs_json FROM kyc_records WHERE user_id = ?")
+      .get(userId) as { review_state?: string; review_note?: string; review_reqs_json?: string } | undefined;
+  const reviewState = (userId: string) => String(reviewRow(userId)?.review_state ?? "approved");
+
+  /**
+   * Money and account changes wait until the application is approved. The
+   * dashboard is already hidden from an unapproved member; this is the part that
+   * holds when the request comes straight to the API instead of the UI.
+   */
+  const requireApproved: RequestHandler = (req, res, next) => {
+    const state = reviewState(req.user!.id);
+    if (state === "approved") return void next();
+    res.status(403).json({
+      error: state === "rejected"
+        ? "This account application was declined, so the account cannot be used."
+        : "Your account is still in review. You'll be able to move money as soon as it's approved.",
+      code: "review_pending",
+      reviewState: state,
+    });
+  };
+
   const memberRow = (id: string) =>
     db.prepare("SELECT * FROM users WHERE id = ? AND role = 'user'").get(id) as Record<string, unknown> | undefined;
 
@@ -286,11 +324,12 @@ export function createApp(dbPath?: string) {
         `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
          VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
       ).run(id, accountNumber, now(), now());
-      // The application is complete and goes straight into compliance's queue
-      // for review — nothing to chase, nothing missing.
+      // The application is complete and goes straight into compliance's queue —
+      // nothing to chase, nothing missing. `review_state` is what actually holds
+      // the dashboard shut until a human decides; `status` records the documents.
       db.prepare(
-        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at)
-         VALUES (?, 'in_review', 100, ?, ?, ?, ?)`,
+        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at, review_state)
+         VALUES (?, 'in_review', 100, ?, ?, ?, ?, 'in_review')`,
       ).run(id, values.idType, values.country, JSON.stringify(submissionFor(type, values, now())), now());
       db.prepare("INSERT INTO preferences (user_id, two_factor, login_alerts, scout_auto, weekly_digest) VALUES (?, 1, 1, 1, 0)").run(id);
       db.prepare(
@@ -303,8 +342,8 @@ export function createApp(dbPath?: string) {
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
-    notify(id, "security", "Application received",
-      `Thanks — we have your details on file and they're with our compliance team now. Most reviews finish within one business day, and we'll email you the moment yours is done.`);
+    notify(id, "security", "Application received — we're reviewing it",
+      "Thanks, we have your details. A specialist is reviewing your application now: most take 1–2 business days. We'll email you the moment there's news, and your dashboard unlocks as soon as you're approved.");
     res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
   }));
 
@@ -418,7 +457,7 @@ export function createApp(dbPath?: string) {
     res.json({ transactions: rows.map(txnOut) });
   }));
 
-  app.post("/api/me/deposits", requireAuth, wrap((req, res) => {
+  app.post("/api/me/deposits", requireAuth, requireApproved, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_DEPOSIT_CENTS) return void res.status(400).json({ error: "Deposits are limited to $100,000 per transaction." });
@@ -455,7 +494,7 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/transfers", requireAuth, wrap((req, res) => {
+  app.post("/api/me/transfers", requireAuth, requireApproved, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_TRANSFER_CENTS) return void res.status(400).json({ error: "Transfers are limited to $250,000 per transaction." });
@@ -540,7 +579,7 @@ export function createApp(dbPath?: string) {
     res.json({ notifications: rows, unread: rows.filter((r) => (r as { read: number }).read === 0).length });
   }));
 
-  app.post("/api/me/notifications/read-all", requireAuth, wrap((req, res) => {
+  app.post("/api/me/notifications/read-all", requireAuth, requireApproved, wrap((req, res) => {
     db.prepare("UPDATE notifications SET read = 1 WHERE user_id = ?").run(req.user!.id);
     res.json({ ok: true });
   }));
@@ -565,27 +604,43 @@ export function createApp(dbPath?: string) {
   }));
 
   app.post("/api/me/kyc/submit", requireAuth, wrap((req, res) => {
-    const { legalName, dob, country, documentType, source, taxId, documents } = req.body ?? {};
-    if (typeof legalName !== "string" || !legalName.trim()) return void res.status(400).json({ error: "Legal name is required." });
-    if (!Array.isArray(documents) || documents.length === 0) return void res.status(400).json({ error: "At least one document is required." });
+    const { legalName, dob, country, documentType, source, taxId, documents, note } = req.body ?? {};
+    // A member answering a request for information often has the name fields
+    // blank (they came from the application, not a wizard) — the documents are
+    // what the reviewer asked for, so that is the requirement.
+    if (!Array.isArray(documents) || documents.length === 0) {
+      return void res.status(400).json({ error: "Add at least one item before sending." });
+    }
+    const row = reviewRow(req.user!.id);
+    const before = String(row?.review_state ?? "approved");
+    // Only a held application returns to the queue. Someone already approved who
+    // sends us a document must not be dropped back into review and locked out.
+    const state = before === "more_info" || before === "in_review" ? "in_review" : before;
     const submission = {
-      legalName, dob: String(dob ?? ""), country: String(country ?? ""), documentType: String(documentType ?? ""),
-      source: String(source ?? ""), taxId: String(taxId ?? ""), documents,
+      legalName: String(legalName ?? ""), dob: String(dob ?? ""), country: String(country ?? ""),
+      documentType: String(documentType ?? ""), source: String(source ?? ""), taxId: String(taxId ?? ""),
+      documents,
+      // The applicant's own words, shown to the reviewer next to the documents.
+      note: String(note ?? "").trim(),
       submittedAt: now(),
     };
     inTransaction(db, () => {
       db.prepare(
-        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at)
-         VALUES (?, 'in_review', 100, ?, ?, ?, ?)
+        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at, review_state)
+         VALUES (?, 'in_review', 100, ?, ?, ?, ?, ?)
          ON CONFLICT(user_id) DO UPDATE SET status = 'in_review', completeness = 100,
            document_type = excluded.document_type, country = excluded.country,
-           submission_json = excluded.submission_json, updated_at = excluded.updated_at`,
-      ).run(req.user!.id, submission.documentType, submission.country, JSON.stringify(submission), now());
+           submission_json = excluded.submission_json, review_state = excluded.review_state,
+           updated_at = excluded.updated_at`,
+      ).run(req.user!.id, submission.documentType, submission.country, JSON.stringify(submission), now(), state);
     });
-    res.status(201).json({ ok: true, status: "in_review" });
+    if (state === "in_review" && before === "more_info") {
+      notify(req.user!.id, "security", "Information received", "Thanks — your application is back with our review team. We'll be in touch within 1–2 business days.");
+    }
+    res.status(201).json({ ok: true, status: "in_review", reviewState: state });
   }));
 
-  app.post("/api/me/disputes", requireAuth, wrap((req, res) => {
+  app.post("/api/me/disputes", requireAuth, requireApproved, wrap((req, res) => {
     const reason = String(req.body?.reason ?? "").trim();
     if (!reason) return void res.status(400).json({ error: "A reason is required." });
     const txnId = typeof req.body?.transactionId === "string" ? req.body.transactionId : null;
@@ -621,7 +676,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- profile & preferences ---------- */
 
-  app.patch("/api/me/profile", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/profile", requireAuth, requireApproved, wrap((req, res) => {
     const patch = req.body ?? {};
     const sets: string[] = [];
     const vals: Array<string | number> = [];
@@ -635,7 +690,7 @@ export function createApp(dbPath?: string) {
     res.json({ user: fullUser(req.user!.id) });
   }));
 
-  app.put("/api/me/preferences", requireAuth, wrap((req, res) => {
+  app.put("/api/me/preferences", requireAuth, requireApproved, wrap((req, res) => {
     const key = String(req.body?.key ?? "");
     const value = req.body?.value === true;
     const map: Record<string, string> = { twoFactor: "two_factor", loginAlerts: "login_alerts", scoutAuto: "scout_auto", weeklyDigest: "weekly_digest" };
@@ -651,7 +706,7 @@ export function createApp(dbPath?: string) {
   const cardRow = (id: string, userId: string) =>
     db.prepare("SELECT * FROM cards WHERE id = ? AND user_id = ?").get(id, userId) as Record<string, unknown> | undefined;
 
-  app.post("/api/me/cards", requireAuth, wrap((req, res) => {
+  app.post("/api/me/cards", requireAuth, requireApproved, wrap((req, res) => {
     const label = String(req.body?.label ?? "").trim();
     const type = req.body?.type === "physical" ? "physical" : "virtual";
     const limit = dollarsToCents(req.body?.limit ?? 0);
@@ -676,7 +731,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ card: { id, last4: nums.last4, fullNumber: nums.fullNumber, exp: nums.exp, cvv: nums.cvv } });
   }));
 
-  app.patch("/api/me/cards/:id", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/cards/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
@@ -702,20 +757,20 @@ export function createApp(dbPath?: string) {
     res.json({ ok: true });
   }));
 
-  app.delete("/api/me/cards/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/cards/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const info = db.prepare("DELETE FROM cards WHERE id = ? AND user_id = ?").run(id, req.user!.id);
     if (info.changes === 0) return void res.status(404).json({ error: "Card not found." });
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/cards/freeze-all", requireAuth, wrap((req, res) => {
+  app.post("/api/me/cards/freeze-all", requireAuth, requireApproved, wrap((req, res) => {
     db.prepare("UPDATE cards SET frozen = 1 WHERE user_id = ?").run(req.user!.id);
     notify(req.user!.id, "security", "All cards frozen", "New card purchases will be declined until you unfreeze a card.");
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/cards/:id/replace", requireAuth, wrap((req, res) => {
+  app.post("/api/me/cards/:id/replace", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
@@ -739,7 +794,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ card: { id: newId, last4: nums.last4, fullNumber: nums.fullNumber, exp: nums.exp, cvv: nums.cvv } });
   }));
 
-  app.post("/api/me/cards/:id/shipping/advance", requireAuth, wrap((req, res) => {
+  app.post("/api/me/cards/:id/shipping/advance", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
@@ -756,7 +811,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- invoices ---------- */
 
-  app.post("/api/me/invoices", requireAuth, wrap((req, res) => {
+  app.post("/api/me/invoices", requireAuth, requireApproved, wrap((req, res) => {
     const client = String(req.body?.client ?? "").trim();
     const clientEmail = String(req.body?.clientEmail ?? "").trim();
     const cents = dollarsToCents(req.body?.amount ?? 0);
@@ -774,7 +829,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ invoice: { id, client, amount: cents / 100, status: "open", due: now() + dueDays * 86_400_000 } });
   }));
 
-  app.post("/api/me/invoices/:id/paid", requireAuth, wrap((req, res) => {
+  app.post("/api/me/invoices/:id/paid", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const inv = db.prepare("SELECT * FROM invoices WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
     if (!inv) return void res.status(404).json({ error: "Invoice not found." });
@@ -797,7 +852,7 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/invoices/:id/remind", requireAuth, wrap((req, res) => {
+  app.post("/api/me/invoices/:id/remind", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const inv = db.prepare("SELECT * FROM invoices WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
     if (!inv) return void res.status(404).json({ error: "Invoice not found." });
@@ -807,7 +862,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- team ---------- */
 
-  app.post("/api/me/team", requireAuth, wrap((req, res) => {
+  app.post("/api/me/team", requireAuth, requireApproved, wrap((req, res) => {
     const name = String(req.body?.name ?? "").trim();
     const email = String(req.body?.email ?? "").trim();
     const role = String(req.body?.role ?? "Member");
@@ -822,7 +877,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ member: { id, name, email, role, cardCount: role === "Bookkeeper" ? 0 : 1, monthlyLimit: monthlyLimit / 100, status: "invited" } });
   }));
 
-  app.delete("/api/me/team/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/team/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const member = db.prepare("SELECT role FROM team_members WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { role: string } | undefined;
     if (!member) return void res.status(404).json({ error: "Team member not found." });
@@ -833,7 +888,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- savings pockets (money ops) ---------- */
 
-  app.post("/api/me/pockets", requireAuth, wrap((req, res) => {
+  app.post("/api/me/pockets", requireAuth, requireApproved, wrap((req, res) => {
     const name = String(req.body?.name ?? "").trim();
     const target = dollarsToCents(req.body?.target ?? 0);
     if (!name) return void res.status(400).json({ error: "A name is required." });
@@ -844,7 +899,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ pocket: { id, name, balance: 0, target: target / 100 } });
   }));
 
-  app.post("/api/me/pockets/:id/move", requireAuth, wrap((req, res) => {
+  app.post("/api/me/pockets/:id/move", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const cents = dollarsToCents(req.body?.amount ?? 0);
     const direction = req.body?.direction;
@@ -886,7 +941,7 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.delete("/api/me/pockets/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/pockets/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     if (!db.prepare("SELECT 1 FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
       return void res.status(404).json({ error: "Pocket not found." });
@@ -907,7 +962,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- payees & scheduled payments ---------- */
 
-  app.post("/api/me/payees", requireAuth, wrap((req, res) => {
+  app.post("/api/me/payees", requireAuth, requireApproved, wrap((req, res) => {
     const name = String(req.body?.name ?? "").trim();
     const bankName = String(req.body?.bankName ?? "").trim();
     const routingNumber = String(req.body?.routingNumber ?? "").trim();
@@ -924,13 +979,13 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ payee: { id, name } });
   }));
 
-  app.delete("/api/me/payees/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/payees/:id", requireAuth, requireApproved, wrap((req, res) => {
     const info = db.prepare("DELETE FROM payees WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
     if (info.changes === 0) return void res.status(404).json({ error: "Payee not found." });
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/scheduled", requireAuth, wrap((req, res) => {
+  app.post("/api/me/scheduled", requireAuth, requireApproved, wrap((req, res) => {
     const payeeName = String(req.body?.payeeName ?? "").trim();
     const cents = dollarsToCents(req.body?.amount ?? 0);
     const nextDate = Number(req.body?.nextDate ?? 0);
@@ -950,7 +1005,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ payment: { id, payeeName, amount: cents / 100, status: "active" } });
   }));
 
-  app.patch("/api/me/scheduled/:id", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/scheduled/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const payment = db.prepare("SELECT status FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { status: string } | undefined;
     if (!payment) return void res.status(404).json({ error: "Payment not found." });
@@ -966,13 +1021,13 @@ export function createApp(dbPath?: string) {
     res.json({ status: next });
   }));
 
-  app.delete("/api/me/scheduled/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/scheduled/:id", requireAuth, requireApproved, wrap((req, res) => {
     const info = db.prepare("DELETE FROM scheduled_payments WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
     if (info.changes === 0) return void res.status(404).json({ error: "Payment not found." });
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/scheduled/:id/pay", requireAuth, wrap((req, res) => {
+  app.post("/api/me/scheduled/:id/pay", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     if (!db.prepare("SELECT 1 FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
       return void res.status(404).json({ error: "Payment not found." });
@@ -1014,7 +1069,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- rewards, Scout, perks, sessions, notifications ---------- */
 
-  app.post("/api/me/rewards/redeem", requireAuth, wrap((req, res) => {
+  app.post("/api/me/rewards/redeem", requireAuth, requireApproved, wrap((req, res) => {
     try {
       const amount = inTransaction(db, () => {
         const account = db.prepare("SELECT id, balance_cents, rewards_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
@@ -1037,7 +1092,7 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/scout/apply", requireAuth, wrap((req, res) => {
+  app.post("/api/me/scout/apply", requireAuth, requireApproved, wrap((req, res) => {
     const opportunityId = String(req.body?.opportunityId ?? "");
     const merchant = String(req.body?.merchant ?? "merchant");
     const note = String(req.body?.note ?? "");
@@ -1067,24 +1122,24 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/perks/:id/redeem", requireAuth, wrap((req, res) => {
+  app.post("/api/me/perks/:id/redeem", requireAuth, requireApproved, wrap((req, res) => {
     const info = db.prepare("UPDATE perks SET status = 'redeemed' WHERE id = ? AND user_id = ? AND status = 'available'")
       .run(String(req.params.id), req.user!.id);
     if (info.changes === 0) return void res.status(404).json({ error: "Perk not available." });
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/notifications/:id/read", requireAuth, wrap((req, res) => {
+  app.post("/api/me/notifications/:id/read", requireAuth, requireApproved, wrap((req, res) => {
     db.prepare("UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/sessions/:id/revoke", requireAuth, wrap((req, res) => {
+  app.post("/api/me/sessions/:id/revoke", requireAuth, requireApproved, wrap((req, res) => {
     db.prepare("DELETE FROM security_sessions WHERE id = ? AND user_id = ? AND current = 0").run(String(req.params.id), req.user!.id);
     res.json({ ok: true });
   }));
 
-  app.patch("/api/me/sessions/:id", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/sessions/:id", requireAuth, requireApproved, wrap((req, res) => {
     if (typeof req.body?.trusted !== "boolean") return void res.status(400).json({ error: "Nothing to update." });
     db.prepare("UPDATE security_sessions SET trusted = ? WHERE id = ? AND user_id = ?").run(req.body.trusted ? 1 : 0, String(req.params.id), req.user!.id);
     res.json({ ok: true });
@@ -1092,7 +1147,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- KYC wizard progress + member dispute tracking ---------- */
 
-  app.patch("/api/me/kyc", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/kyc", requireAuth, requireApproved, wrap((req, res) => {
     const patch = req.body ?? {};
     const sets: string[] = [];
     const vals: Array<string | number> = [];
@@ -1347,49 +1402,96 @@ export function createApp(dbPath?: string) {
 
   app.get("/api/admin/kyc/queue", requireAuth, requirePerm("kyc.review"), wrap((_req, res) => {
     const rows = db.prepare(
-      `SELECT u.id, u.name, u.email, u.account_type, k.submission_json, k.updated_at
+      `SELECT u.id, u.name, u.email, u.account_type, u.business, k.submission_json, k.updated_at,
+              k.review_state, k.status, k.review_note, k.review_reqs_json
        FROM kyc_records k JOIN users u ON u.id = k.user_id
-       WHERE k.status = 'in_review' ORDER BY k.updated_at ASC`,
+       WHERE k.status = 'in_review' AND k.review_state IN ('in_review', 'more_info')
+       ORDER BY k.updated_at ASC`,
     ).all() as Array<Record<string, unknown>>;
     res.json({
       queue: rows.map(r => ({
-        userId: r.id, name: r.name, email: r.email, accountType: r.account_type,
+        userId: r.id, name: r.name, email: r.email, business: r.business ?? "", accountType: r.account_type,
         submission: r.submission_json ? JSON.parse(r.submission_json as string) : null,
         submittedAt: r.updated_at,
+        reviewState: r.review_state ?? "in_review",
+        reviewNote: String(r.review_note ?? ""),
+        reviewRequirements: JSON.parse(String(r.review_reqs_json ?? "[]")),
       })),
     });
   }));
 
+  /**
+   * The decision that opens, holds or closes an application.
+   *
+   * Three outcomes, each recorded with who decided and why:
+   *   approved         — the account is usable, the dashboard unlocks
+   *   needs_attention  — we need more from the applicant (the fraud-hold path)
+   *   rejected         — we are not opening this account
+   *
+   * The reason is required for anything other than approval: an applicant who is
+   * held or declined is told why, in their own words, rather than being left to
+   * guess. An already-decided application can be re-decided (a hold becomes an
+   * approval once the documents arrive) but a member who is already approved is
+   * left alone — closing an open account is an account action, not a review one.
+   */
   app.post("/api/admin/kyc/:userId/decision", requireAuth, requirePerm("kyc.review"), wrap((req, res) => {
     const target = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.userId)) as Record<string, unknown> | undefined;
     if (!target) return void res.status(404).json({ error: "Member not found." });
-    const decision = req.body?.decision === "needs_attention" ? "needs_attention" : "approved";
+    const raw = String(req.body?.decision ?? "");
+    if (raw !== "approved" && raw !== "needs_attention" && raw !== "rejected") {
+      return void res.status(400).json({ error: "decision must be 'approved', 'needs_attention' or 'rejected'." });
+    }
+    const decision = raw as "approved" | "needs_attention" | "rejected";
     const note = String(req.body?.note ?? "").trim();
-    if (decision === "needs_attention" && !note) {
-      return void res.status(400).json({ error: "A note is required when requesting changes." });
+    const requirements = Array.isArray(req.body?.requirements)
+      ? req.body.requirements.map(String).filter((r: string) => REVIEW_REQUIREMENTS.includes(r))
+      : [];
+    if (decision !== "approved" && !note) {
+      return void res.status(400).json({ error: "A reason is required — the applicant is shown it." });
+    }
+    if (decision === "needs_attention" && requirements.length === 0) {
+      return void res.status(400).json({ error: "Choose at least one item to ask the applicant for." });
     }
     const record = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(String(req.params.userId)) as Record<string, unknown> | undefined;
-    if (!record || record.status !== "in_review") return void res.status(409).json({ error: "This member has no verification awaiting review." });
+    if (!record) return void res.status(409).json({ error: "This member has no application to review." });
+    const before = String(record.review_state ?? "approved");
+    if (before === "approved") {
+      return void res.status(409).json({ error: "This member is already approved. Restrict the account instead of re-reviewing it." });
+    }
+
+    const reviewState = decision === "approved" ? "approved" : decision === "needs_attention" ? "more_info" : "rejected";
     inTransaction(db, () => {
       if (decision === "approved") {
         db.prepare(
-          `UPDATE kyc_records SET status = 'approved', completeness = 100, requested_by = NULL,
-             requested_at = NULL, request_reason = NULL, updated_at = ? WHERE user_id = ?`,
-        ).run(now(), String(req.params.userId));
+          `UPDATE kyc_records SET status = 'approved', review_state = 'approved', completeness = 100,
+             review_note = '', review_reqs_json = '[]', requested_by = NULL, requested_at = NULL,
+             request_reason = NULL, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE user_id = ?`,
+        ).run(req.user!.id, now(), now(), String(req.params.userId));
       } else {
-        db.prepare("UPDATE kyc_records SET status = 'needs_attention', updated_at = ? WHERE user_id = ?").run(now(), String(req.params.userId));
+        db.prepare(
+          `UPDATE kyc_records SET status = ?, review_state = ?, review_note = ?, review_reqs_json = ?,
+             reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE user_id = ?`,
+        ).run(
+          decision === "needs_attention" ? "needs_attention" : "in_review",
+          reviewState, note, JSON.stringify(requirements), req.user!.id, now(), now(), String(req.params.userId),
+        );
       }
     });
-    audit(req, decision === "approved" ? "kyc.approve" : "kyc.request_changes", "KYC",
-      `user:${String(req.params.userId)} · ${target.name}`,
-      decision === "approved" ? "Approved identity verification." : `Requested changes — ${note}`,
-      "in_review", decision);
-    notify(String(req.params.userId), "security",
-      decision === "approved" ? "Identity verification approved" : "Verification changes requested",
+
+    audit(req, decision === "approved" ? "application.approve" : decision === "rejected" ? "application.reject" : "application.request_info",
+      "KYC", `user:${String(req.params.userId)} · ${target.name}`,
       decision === "approved"
-        ? `Your identity is verified and all account limits are now unlocked. Reviewed by ${req.user!.name}.`
-        : `${note} Reviewed by ${req.user!.name}.`);
-    res.json({ status: decision });
+        ? "Approved the account application."
+        : `${decision === "rejected" ? "Rejected" : "Requested more information for"} the account application — ${note}`,
+      before, reviewState);
+    notify(String(req.params.userId), "security",
+      decision === "approved" ? "Your account is approved" : decision === "rejected" ? "About your Veyra application" : "We need a little more from you",
+      decision === "approved"
+        ? `Welcome to Veyra — your account is open. Sign in to move money, set up cards and meet Scout. Approved by ${req.user!.name}.`
+        : decision === "rejected"
+        ? `${note} If you think this is a mistake, reply to this message and our team will take another look.`
+        : `${note} Open your application to send what we need${requirements.length ? `: ${requirements.map((r: string) => requirementLabel(r)).join(", ")}` : ""}. Reviewed by ${req.user!.name}.`);
+    res.json({ status: reviewState, decision });
   }));
 
   /* ============================== admin: risk & fraud ============================== */
@@ -1759,7 +1861,7 @@ export function createApp(dbPath?: string) {
     const kycQueue = (db.prepare(`
       SELECT u.id, u.name, u.email, u.business, u.account_type, k.*
       FROM users u JOIN kyc_records k ON k.user_id = u.id
-      WHERE k.status = 'in_review' AND u.role = 'user'
+      WHERE k.review_state IN ('in_review', 'more_info') AND u.role = 'user'
       ORDER BY k.updated_at
     `).all() as Array<Record<string, unknown>>).map(r => {
       const requester = r.requested_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(r.requested_by)) as { name: string } | undefined) : undefined;
@@ -1773,7 +1875,18 @@ export function createApp(dbPath?: string) {
           requestedBy: requester?.name, requestReason: r.request_reason ? String(r.request_reason) : undefined,
           requirements: JSON.parse(String(r.request_reqs_json ?? "[]")),
           submission: r.submission_json ? JSON.parse(String(r.submission_json)) : undefined,
+          review: {
+            state: String(r.review_state ?? "in_review"),
+            note: String(r.review_note ?? ""),
+            requirements: JSON.parse(String(r.review_reqs_json ?? "[]")),
+            reviewedBy: r.reviewed_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(r.reviewed_by)) as { name: string } | undefined)?.name : undefined,
+            reviewedAt: (r.reviewed_at as number) ?? null,
+            submittedAt: (db.prepare("SELECT submitted_at FROM identity_profiles WHERE user_id = ?").get(String(r.id)) as { submitted_at: number } | undefined)?.submitted_at ?? null,
+          },
         },
+        reviewState: String(r.review_state ?? "in_review"),
+        reviewNote: String(r.review_note ?? ""),
+        reviewRequirements: JSON.parse(String(r.review_reqs_json ?? "[]")),
       };
     });
 

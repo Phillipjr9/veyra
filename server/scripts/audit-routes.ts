@@ -215,15 +215,26 @@ const register = async (name: string, email: string) =>
     profile: applicationFor("business", name, "Audit Co"),
   })).json;
 
+/**
+ * Registration parks every new account in the review queue, and money routes
+ * refuse to move until a human clears it — so the audit approves its own
+ * fixtures the same way staff do, through the decision endpoint.
+ */
+const approve = async (userId: string) =>
+  call("POST", `/api/admin/kyc/${userId}/decision`, superadmin, { decision: "approved", note: "" });
+
 // Identities
 const adminLogin = await call("POST", "/api/auth/login", undefined, { email: "audit-admin@veyra.test", password: "audit-admin-pass" });
 const superadmin = adminLogin.json.token;
 
 const owner = await register("Route Owner", "owner@audit.test");
-await register("Route Other", "other@audit.test");
+const otherUser = await register("Route Other", "other@audit.test");
 const supportUser = await register("Sup Porter", "support@audit.test");
 const complianceUser = await register("Com Plian", "compliance@audit.test");
 const adminUser = await register("Ad Min", "admin@audit.test");
+
+// Staff accounts act through the console, so only the two members need clearing.
+for (const u of [owner, otherUser]) await approve(u.user.id);
 
 await call("POST", `/api/admin/staff/${supportUser.user.id}/role`, superadmin, { role: "support" });
 await call("POST", `/api/admin/staff/${complianceUser.user.id}/role`, superadmin, { role: "compliance" });
@@ -384,6 +395,7 @@ for (const path of ["/api/health"]) {
   if (anon.status !== 401) problems.push({ route: "POST /api/auth/logout", role: "anonymous", status: anon.status, note: "logout without a token did not get 401" });
 
   const disposable = await register("Logout Probe", "logout-probe@audit.test");
+await approve(disposable.user.id);
   const out = await call("POST", "/api/auth/logout", disposable.token);
   const after = await call("GET", "/api/auth/me", disposable.token);
   matrix["POST /api/auth/logout"] = { anonymous: 401, member: out.status, support: -1, compliance: -1, admin: -1, superadmin: -1 };

@@ -181,3 +181,59 @@
   .welcome-modal { padding: 24px 18px calc(20px + env(safe-area-inset-bottom)); }
   .toast-stack { left: 12px; right: 12px; bottom: 12px; width: auto; }
 }
+
+/* ==========================================================================
+   Application status — the page between sign-up and approval
+   ========================================================================== */
+.appstatus { min-height: 100vh; display: grid; place-items: center; padding: 40px 20px; background: #f6f4fb; }
+.appstatus-card { width: min(660px, 100%); padding: 34px 34px 26px; border: 1px solid var(--line); border-radius: 24px; background: #fff; box-shadow: 0 24px 60px rgba(30,22,60,.08); }
+.appstatus-brand { display: flex; align-items: center; gap: 9px; margin-bottom: 22px; color: var(--violet); }
+.appstatus-brand span { font: 700 17px/1 var(--display); letter-spacing: -.02em; color: var(--ink); }
+.appstatus-icon { width: 56px; height: 56px; display: grid; place-items: center; margin-bottom: 18px; border-radius: 17px; background: #ece5ff; color: var(--violet); }
+.tone-amber .appstatus-icon { background: #fbeed3; color: #8a6420; }
+.tone-red .appstatus-icon { background: #fbe4e4; color: #a54545; }
+.tone-green .appstatus-icon { background: #e2f2e8; color: #2f7a4c; }
+.appstatus h1 { margin: 0 0 12px; font: 700 27px/1.2 var(--display); letter-spacing: -.035em; color: var(--ink); }
+.appstatus-lead { margin: 0 0 22px; font-size: 15px; line-height: 1.62; color: #55505f; }
+.appstatus-lead strong { color: var(--ink); }
+.appstatus-steps { margin: 0 0 22px; padding: 0; list-style: none; display: grid; gap: 2px; }
+.appstatus-steps li { display: flex; align-items: flex-start; gap: 12px; padding: 13px 14px; border-radius: 14px; }
+.appstatus-steps li > span { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 50%; background: #f1eef8; color: var(--muted); }
+.appstatus-steps li.done > span { background: #e2f2e8; color: #2f7a4c; }
+.appstatus-steps li.now { background: #faf7ff; box-shadow: inset 0 0 0 1px #e6dcff; }
+.appstatus-steps li.now > span { background: var(--violet); color: #fff; }
+.appstatus-steps strong { display: block; font: 600 14px/1.35 var(--display); color: var(--ink); }
+.appstatus-steps small { display: block; margin-top: 2px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.appstatus-note { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 20px; padding: 13px 15px; border: 1px solid #e4dcf7; border-radius: 14px; background: #faf8ff; font-size: 13px; line-height: 1.55; color: #55505f; }
+.appstatus-note svg { flex: none; margin-top: 1px; color: var(--violet); }
+.appstatus-note a { color: var(--violet); font-weight: 600; }
+.appstatus-quote { margin: 0 0 20px; padding: 15px 17px; border-left: 3px solid #e0b981; border-radius: 0 14px 14px 0; background: #fdf7ec; font-size: 13.5px; line-height: 1.6; color: #4e4a56; }
+.appstatus-quote span { display: block; margin-bottom: 5px; font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8a6420; }
+.appstatus-quote em { display: block; margin-top: 7px; font-size: 12px; font-style: normal; color: var(--muted); }
+.appstatus-foot { margin: 0 0 6px; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+.appstatus-foot a { color: var(--violet); font-weight: 600; }
+.appstatus-signout { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.appstatus-loading { display: grid; place-items: center; height: 56px; margin-bottom: 18px; }
+.appstatus-form .flow-field-error, .appstatus-form .app-section { margin-top: 6px; }
+.appstatus-req { margin-bottom: 14px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); }
+.appstatus-req-head strong { display: block; font: 600 13.5px/1.35 var(--display); color: var(--ink); }
+.appstatus-req-head small { display: block; margin-top: 3px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+/* Two classes deep on purpose: `.auth-form label` (index.css) is display:block and
+   would otherwise stack the icon above the field instead of inline with it. */
+.appstatus-form .appstatus-upload { display: flex; align-items: center; gap: 9px; margin: 11px 0 0; padding: 0 12px; height: 44px; border: 1px dashed #cfc6e6; border-radius: 12px; background: #fff; color: var(--muted); font-weight: 400; }
+.appstatus-form .appstatus-upload.on { border-style: solid; border-color: #9ad0ae; background: #f4fbf6; color: #2f7a4c; }
+.appstatus-form .appstatus-upload svg { flex: none; }
+.appstatus-form .appstatus-upload input { flex: 1; min-width: 0; height: 42px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; font-size: 13px; }
+.appstatus-form .appstatus-upload input:focus { border: 0; box-shadow: none; background: transparent; }
+.appstatus textarea { width: 100%; padding: 12px 13px; border: 1px solid var(--line); border-radius: 13px; font: 400 13.5px/1.55 var(--display); resize: vertical; }
+.appstatus-summary { margin: 0 0 20px; padding: 15px 17px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); }
+.appstatus-summary-head, .appstatus-summary-foot { display: flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.appstatus-summary-foot { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.appstatus-summary > div:not(.appstatus-summary-head):not(.appstatus-summary-foot) { display: flex; justify-content: space-between; gap: 14px; padding: 5px 0; }
+.appstatus-summary dt { font-size: 12.5px; color: var(--muted); }
+.appstatus-summary dd { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--ink); text-align: right; }
+@media (max-width: 600px) {
+  .appstatus { padding: 0; align-items: stretch; background: #fff; }
+  .appstatus-card { width: 100%; border: 0; border-radius: 0; box-shadow: none; padding: 26px 20px 22px; }
+  .appstatus h1 { font-size: 23px; }
+}

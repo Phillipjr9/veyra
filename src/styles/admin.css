@@ -1797,3 +1797,20 @@
 }
 
 .acct-number-line code { font-size: 11px; letter-spacing: .04em; }
+
+/* ---- Application review decisions ---- */
+.admin-req-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
+.admin-req { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); text-align: left; transition: border-color .2s, background .2s, box-shadow .2s; }
+.admin-req strong { font: 600 13px/1.3 var(--display); color: var(--ink); }
+.admin-req small { font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.admin-req:hover { border-color: #cfc4ea; }
+.admin-req.on { border-color: var(--violet); background: #f8f6ff; box-shadow: inset 0 0 0 1px rgba(117,88,220,.25); }
+.admin-req.on strong { color: var(--violet); }
+.admin-decision-actions { flex-wrap: wrap; }
+.admin-decision-actions .ghost-btn.danger { color: #a54545; border-color: #eccfcf; }
+.admin-decision-actions .ghost-btn.danger:hover { background: #fdf3f3; border-color: #dda6a6; }
+.admin-decision-actions .ghost-btn:disabled, .admin-decision-actions .solid-btn:disabled { opacity: .45; }
+.admin-app .admin-req { background: #141b26; border-color: #232c3b; }
+.admin-app .admin-req strong { color: #e8ecf3; }
+.admin-app .admin-req.on { background: #1b1730; border-color: #6f57c9; }
+@media (max-width: 640px) { .admin-req-grid { grid-template-columns: minmax(0, 1fr); } .admin-decision-actions { flex-direction: column; } .admin-decision-actions > * { width: 100%; } }

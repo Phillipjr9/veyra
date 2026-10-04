@@ -141,8 +141,14 @@ export async function seedDemoAccounts(opts: {
     throw new Error(`Can't reach the Veyra API at ${api}`);
   }
 
+  // The console token, used to clear the demo applications through the same
+  // endpoint staff use. Demo members represent established customers, not
+  // applicants waiting in the queue.
+  let adminToken = await login(adminEmail, adminPassword);
+
   for (const member of MEMBERS) {
     let token = await login(member.email, DEMO_PASSWORD);
+    let memberId = token ? ((await call("GET", "/api/auth/me", token)).json.user as { id?: string } | undefined)?.id : undefined;
     if (token) {
       log(`· ${member.email} already exists`);
     } else {
@@ -152,8 +158,22 @@ export async function seedDemoAccounts(opts: {
         continue;
       }
       token = reg.json.token as string;
+      memberId = (reg.json.user as { id?: string } | undefined)?.id;
       result.created++;
       log(`+ ${member.email} created`);
+    }
+
+    // Sign-up now parks the account until a human approves it. A demo member has
+    // to look like a customer who has been banking for a while, so approve it —
+    // through the real decision endpoint, which is also what keeps this honest.
+    if (token && memberId && adminToken) {
+      const state = (await call("GET", "/api/me/state", token)).json.account;
+      const review = (state?.kyc as { review?: { state?: string } } | undefined)?.review?.state;
+      if (review !== "approved") {
+        const decision = await call("POST", `/api/admin/kyc/${memberId}/decision`, adminToken, { decision: "approved" });
+        if (decision.status === 200) log(`  ${member.email} application approved for the demo`);
+        else log(`! ${member.email}: could not approve the demo application (${decision.json.error ?? decision.status})`);
+      }
     }
 
     const state = (await call("GET", "/api/me/state", token)).json.account;

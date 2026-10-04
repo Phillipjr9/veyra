@@ -185,6 +185,7 @@ export function buildMemberState(db: DatabaseSync, userId: string): Record<strin
 
   const kycRow = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
   const requester = kycRow?.requested_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(kycRow.requested_by)) as { name: string } | undefined) : undefined;
+  const reviewer = kycRow?.reviewed_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(kycRow.reviewed_by)) as { name: string } | undefined) : undefined;
   const kyc = {
     status: kycRow?.status ?? "not_started",
     completeness: kycRow?.completeness ?? 0,
@@ -197,6 +198,22 @@ export function buildMemberState(db: DatabaseSync, userId: string): Record<strin
     requestReason: s(kycRow?.request_reason),
     requirements: JSON.parse(String(kycRow?.request_reqs_json ?? "[]")),
     submission: kycRow?.submission_json ? JSON.parse(String(kycRow.submission_json)) : undefined,
+    /**
+     * The application review — the decision a human makes before the account is
+     * usable. Separate from `status`, which tracks documents for accounts that
+     * are already open: being asked for an extra document must never lock an
+     * existing customer out of their money.
+     */
+    review: {
+      state: (kycRow?.review_state as string) ?? "approved",
+      note: String(kycRow?.review_note ?? ""),
+      requirements: JSON.parse(String(kycRow?.review_reqs_json ?? "[]")),
+      reviewedBy: reviewer?.name,
+      reviewedAt: (kycRow?.reviewed_at as number) ?? null,
+      // When the application itself arrived — identity_profiles is the row the
+      // sign-up wrote, so its timestamp is the honest one.
+      submittedAt: (db.prepare("SELECT submitted_at FROM identity_profiles WHERE user_id = ?").get(userId) as { submitted_at: number } | undefined)?.submitted_at ?? null,
+    },
   };
 
   return {

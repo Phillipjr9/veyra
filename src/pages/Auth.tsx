@@ -15,7 +15,7 @@ const AUTH_ART = {
   signup: { src: "/images/auth-signup.jpg", alt: "A purple person and office building with a plus sign between them, beside a crystal sphere holding a key" },
 };
 
-function AuthShell({ title, sub, children, foot, art = AUTH_ART.signin, wide = false }: {
+export function AuthShell({ title, sub, children, foot, art = AUTH_ART.signin, wide = false }: {
   title: string; sub: string; children: ReactNode; foot: ReactNode;
   art?: { src: string; alt: string };
   /** Application forms (sign-up) need the room; sign-in stays a compact card. */
@@ -389,7 +389,9 @@ export function SignupPage() {
         phone: form.phone || application.phone,
         profile: application,
       });
-      navigate("/app?welcome=1", { replace: true });
+      // Not the dashboard: the account is not open until a human approves it.
+      // The status page says so, and says when to expect news.
+      navigate("/application", { replace: true });
     } catch (err) {
       const field = (err as { field?: string })?.field;
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -762,7 +764,9 @@ export function InviteAcceptPage() {
     setBusy(true);
     try {
       await signup({ name: form.name, business, accountType: "business", email, password: form.password, plan: "Pro" });
-      navigate("/app?welcome=1", { replace: true });
+      // Not the dashboard: the account is not open until a human approves it.
+      // The status page says so, and says when to expect news.
+      navigate("/application", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally { setBusy(false); }

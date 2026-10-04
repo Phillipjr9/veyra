@@ -84,6 +84,13 @@ const register = async (name: string, email: string, password: string, extra: Re
   return api("POST", "/api/auth/register", undefined, { name, email, password, ...extra, profile });
 };
 
+/**
+ * Sign-up parks every account in the review queue and the money routes refuse to
+ * move until a human clears it. This is how the suite clears the members it is
+ * about to move money with — the same decision a reviewer makes.
+ */
+let decideFor: (userId: string) => Promise<{ status: number }> = async () => ({ status: 0 });
+
 try {
   /* ---------- health & auth ---------- */
   const health = await api("GET", "/api/health");
@@ -108,12 +115,14 @@ try {
   expect("env-bootstrapped superadmin login", adminLogin.status === 200 && adminLogin.json.token && adminLogin.json.user.role === "superadmin");
   const admin = adminLogin.json.token;
   const adminId = adminLogin.json.user.id;
+  decideFor = (userId: string) => api("POST", `/api/admin/kyc/${userId}/decision`, admin, { decision: "approved", note: "" });
 
   const hashRow = db.prepare("SELECT password_hash FROM users WHERE email = 'ops@veyra.test'").get() as { password_hash: string };
   expect("passwords stored as scrypt digests, never plaintext", hashRow.password_hash.startsWith("s2$") && !hashRow.password_hash.includes("admin-pass-123"));
 
   /* ---------- every account is created through the API ---------- */
   const raeReg = await register("Rae Kim", "rae@member.test", "member-pass-1", { accountType: "business", business: "Rae & Co Studio" });
+  await decideFor(raeReg.json.user.id); // rae is the suite's working account
   const alexReg = await register("Alex Stone", "alex@member.test", "member-pass-2", { accountType: "personal" });
   const adaReg = await register("Ada Mensah", "ada@staff.test", "staff-pass-1", { accountType: "business", business: "Veyra Financial HQ" });
   const leoReg = await register("Leo Frost", "leo@staff.test", "staff-pass-2", { accountType: "business", business: "Veyra Financial HQ" });
@@ -420,9 +429,14 @@ try {
     js.invoices.length === 0 && js.team.length === 1 && js.team[0].role === "Owner" &&
     js.savingsPockets.length === 0 && js.payees.length === 0 && js.scheduledPayments.length === 0 &&
     js.perks.length === 0 && js.disputes.length === 0 &&
-    js.notifications.length === 1 && js.notifications[0].title === "Application received" &&
+    js.notifications.length === 1 && js.notifications[0].title === "Application received — we're reviewing it" &&
     js.bankDetails.accountNumber.length === 12 && js.kyc.status === "in_review" && js.kyc.completeness === 100 &&
     js.accountStatus === "active");
+  const heldMove = await api("POST", "/api/me/deposits", juneToken, { amount: 10, source: "Too early" });
+  expect("money is blocked while the application is in review (403 review_pending)",
+    heldMove.status === 403 && heldMove.json.code === "review_pending");
+  const juneApproval = await decideFor(juneId);
+  expect("reviewer approves the application", juneApproval.status === 200);
   await api("PUT", "/api/me/preferences", juneToken, { key: "scoutAuto", value: false }); // deterministic balances
   await api("POST", "/api/me/deposits", juneToken, { amount: 1200, source: "Payroll" });
   const juneCard = await api("POST", "/api/me/cards", juneToken, { label: "Everyday", type: "virtual", limit: 500, cardholder: "June Okafor" });
@@ -732,16 +746,22 @@ try {
     adminSees.json.identity.ein === "83-1174265" && adminSees.json.identity.ownerSsn === "527-44-8213" &&
     adminSees.json.identity.idType === "Driver's license" && adminSees.json.member.email === "rae@member.test");
 
+  // A fresh applicant of its own: rae was cleared above so the money routes could
+  // run, and these two checks are specifically about an application that is still
+  // waiting for a decision.
+  const pending = await register("Mira Cole", "mira@member.test", "member-pass-9", { accountType: "business", business: "Cole Studio" });
+  const pendingId = pending.json.user.id;
+
   const dir = await api("GET", "/api/admin/members", admin);
-  const dirRow = dir.json.members.find((m: any) => m.id === raeId);
+  const dirRow = dir.json.members.find((m: any) => m.id === pendingId);
   expect("the customer directory exposes date of birth and tax ID to staff",
     dir.status === 200 && dirRow?.dob === "1990-05-12" && dirRow?.ssn === "527-44-8213" && dirRow?.kycStatus === "in_review");
 
   const queued = await api("GET", "/api/admin/kyc/queue", admin);
-  const queuedRae = queued.json.queue.find((q: any) => q.userId === raeId);
+  const queuedPending = queued.json.queue.find((q: any) => q.userId === pendingId);
   expect("the signup application lands in the KYC review queue with its details",
-    queued.status === 200 && queuedRae?.submission?.legalName === "Rae Kim" &&
-    queuedRae?.submission?.taxId === "527-44-8213" && queuedRae?.submission?.application?.businessType === "Multi-member LLC");
+    queued.status === 200 && queuedPending?.submission?.legalName === "Mira Cole" &&
+    queuedPending?.submission?.taxId === "527-44-8213" && queuedPending?.submission?.application?.businessType === "Multi-member LLC");
 
   // Change password + production token-based password reset
   resetRateLimits(); // this suite performs many logins — reset the limiter

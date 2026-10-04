@@ -155,6 +155,22 @@ export type KycSubmission = {
   documents: Array<{ key: string; label: string; name: string }>;
   submittedAt: number;
 };
+/**
+ * The application decision. `approved` covers every account opened before the
+ * review queue existed, so an established member is never held back by a
+ * document request — that is what `status` is for.
+ */
+export type ReviewState = "in_review" | "more_info" | "approved" | "rejected";
+export type ReviewRequirement = "identity" | "address" | "selfie" | "funds";
+export type ApplicationReview = {
+  state: ReviewState;
+  note: string;
+  requirements: ReviewRequirement[];
+  reviewedBy?: string;
+  reviewedAt?: number | null;
+  submittedAt?: number | null;
+};
+
 export type KycRecord = {
   status: KycStatus;
   completeness: number;
@@ -170,6 +186,8 @@ export type KycRecord = {
   requirements?: KycRequirement[];
   /** Set when the member submits the wizard for review. */
   submission?: KycSubmission;
+  /** The application decision that gates the dashboard. */
+  review: ApplicationReview;
 };
 /** Admin-initiated verification request payload. */
 export type KycRequest = {
@@ -339,7 +357,10 @@ const emptyAccount = (): Account => ({
   team: [], perks: [], notifications: [],
   preferences: { twoFactor: true, loginAlerts: true, scoutAuto: true, weeklyDigest: false },
   savingsPockets: [], payees: [], scheduledPayments: [], disputes: [], sessions: [], scoutApplied: [],
-  kyc: { status: "not_started", completeness: 0, lastUpdated: 0, nextStep: "", documentType: "", country: "" },
+  kyc: {
+    review: { state: "approved", note: "", requirements: [] },
+    status: "not_started", completeness: 0, lastUpdated: 0, nextStep: "", documentType: "", country: "",
+  },
 });
 
 function normalize(raw: unknown, p: Profile): Account {
@@ -414,6 +435,23 @@ function normalize(raw: unknown, p: Profile): Account {
   const prefs = r.preferences && typeof r.preferences === "object" ? r.preferences : {};
 
   const kyc = (r.kyc && typeof r.kyc === "object" ? r.kyc : base.kyc) as Partial<KycRecord>;
+  // Defaults to approved: an account whose review state we cannot read is one
+  // that existed before the review queue, and must not be locked out of itself.
+  const rawReview = (kyc.review && typeof kyc.review === "object" ? kyc.review : {}) as Partial<ApplicationReview>;
+  const reviewState: ReviewState =
+    rawReview.state === "in_review" || rawReview.state === "more_info" || rawReview.state === "rejected"
+      ? rawReview.state
+      : "approved";
+  const review: ApplicationReview = {
+    state: reviewState,
+    note: typeof rawReview.note === "string" ? rawReview.note : "",
+    requirements: Array.isArray(rawReview.requirements)
+      ? rawReview.requirements.filter((q): q is ReviewRequirement => q === "identity" || q === "address" || q === "selfie" || q === "funds")
+      : [],
+    reviewedBy: typeof rawReview.reviewedBy === "string" ? rawReview.reviewedBy : undefined,
+    reviewedAt: typeof rawReview.reviewedAt === "number" ? rawReview.reviewedAt : null,
+    submittedAt: typeof rawReview.submittedAt === "number" ? rawReview.submittedAt : null,
+  };
 
   // The account the money is addressed to. Read straight off the server payload:
   // relying on a cached copy means a member signing in on a fresh browser sees
@@ -457,6 +495,7 @@ function normalize(raw: unknown, p: Profile): Account {
     scoutApplied: list<string>(r.scoutApplied) ?? [],
     accountStatus: r.accountStatus === "restricted" ? "restricted" : "active",
     kyc: {
+      review,
       status: kyc.status === "not_started" || kyc.status === "requested" || kyc.status === "in_review" || kyc.status === "approved" || kyc.status === "needs_attention" ? kyc.status : base.kyc.status,
       completeness: num(kyc.completeness, base.kyc.completeness),
       lastUpdated: num(kyc.lastUpdated, base.kyc.lastUpdated),
@@ -505,6 +544,13 @@ export type KycQueueItem = {
   business: string;
   accountType: "personal" | "business";
   kyc: KycRecord;
+  /**
+   * Where this application stands. `in_review` is a first decision; `more_info`
+   * means we already asked for something and it is back with the reviewer.
+   */
+  reviewState?: ReviewState;
+  reviewNote?: string;
+  reviewRequirements?: ReviewRequirement[];
 };
 
 /** Summary of one member's account (served by /api/admin/state). */

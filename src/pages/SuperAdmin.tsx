@@ -3,7 +3,7 @@ import { Link, Navigate, useNavigate } from "react-router-dom";
 import {
   Activity, AlertCircle, AlertTriangle, BadgeCheck, Bell, Check, Download, FileText, Hash,
   Landmark, Lock, LogOut, Mail, Megaphone, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
-  TrendingUp, UserCheck, UserRound, Users, Wallet, X,
+  TrendingUp, UserCheck, UserRound, Users, Wallet, X, XCircle,
 } from "lucide-react";
 import {
   Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
@@ -13,7 +13,7 @@ import { useAuth, type User, type UserRole } from "../lib/auth";
 import { apiGet, apiGetText, apiPatch, apiPost, apiPut } from "../lib/api";
 import {
   money, longDate, downloadFile,
-  type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
+  type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute, type ReviewRequirement,
 } from "../lib/store";
 import {
   can, assertCan, isStaff, STAFF_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS,
@@ -162,6 +162,16 @@ export function SuperAdminPage() {
   const [identityData, setIdentityData] = useState<MemberIdentity | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [kycDecisionNote, setKycDecisionNote] = useState("");
+  // What we are asking the applicant for. Only used by "request information".
+  // Starts empty on purpose: a pre-ticked list is easy to send by accident, and
+  // whatever is ticked is exactly what the applicant is asked to produce.
+  const [kycReqsFor, setKycReqsFor] = useState<ReviewRequirement[]>([]);
+  const REQUEST_ITEMS: Array<{ key: ReviewRequirement; label: string; detail: string }> = [
+    { key: "identity", label: "Photo ID", detail: "Passport, licence or state ID" },
+    { key: "address", label: "Proof of address", detail: "Bill or statement, last 3 months" },
+    { key: "selfie", label: "Selfie with ID", detail: "Face and document in one photo" },
+    { key: "funds", label: "Proof of funds", detail: "Where the money comes from" },
+  ];
   // Account status
   const [statusConfirm, setStatusConfirm] = useState<{ target: PlatformAccount; status: "active" | "restricted" } | null>(null);
   const [statusReason, setStatusReason] = useState("");
@@ -342,15 +352,37 @@ export function SuperAdminPage() {
         .catch((err: Error) => toast({ tone: "error", title: "Request failed", description: err.message }));
   };
 
-  const handleKycDecision = (decision: "approved" | "needs_attention") => {
+  /**
+   * Three outcomes, all recorded against the application and shown to the member:
+   * approve (they get their dashboard), request information (a hold, usually
+   * because something needs checking) or reject.
+   */
+  const handleKycDecision = (decision: "approved" | "needs_attention" | "rejected") => {
     if (!kycReview) return;
-    if (!guard("kyc.review", "review verification")) return;
-    apiPost(`/api/admin/kyc/${kycReview.userId}/decision`, { decision, note: kycDecisionNote.trim() })
-        .then(() => {
-          toast({ tone: decision === "approved" ? "success" : "info", title: decision === "approved" ? "Verification approved" : "Changes requested", description: `${kycReview.name} has been notified.` });
-          setKycReview(null); setKycDecisionNote(""); refresh();
-        })
-        .catch((err: Error) => toast({ tone: "error", title: "Decision failed", description: err.message }));
+    if (!guard("kyc.review", "review applications")) return;
+    const note = kycDecisionNote.trim();
+    if (decision !== "approved" && !note) {
+      toast({ tone: "error", title: "Add a reason first", description: "The applicant is shown exactly what you write here." });
+      return;
+    }
+    if (decision === "needs_attention" && kycReqsFor.length === 0) {
+      toast({ tone: "error", title: "Pick at least one item", description: "Choose what you need from the applicant." });
+      return;
+    }
+    apiPost(`/api/admin/kyc/${kycReview.userId}/decision`, {
+      decision, note, requirements: decision === "needs_attention" ? kycReqsFor : [],
+    })
+      .then(() => {
+        toast({
+          tone: decision === "approved" ? "success" : decision === "rejected" ? "error" : "info",
+          title: decision === "approved" ? "Account approved" : decision === "rejected" ? "Application rejected" : "Information requested",
+          description: decision === "approved"
+            ? `${kycReview.name} now has full access to their dashboard.`
+            : `${kycReview.name} has been notified.`,
+        });
+        setKycReview(null); setKycDecisionNote(""); refresh();
+      })
+      .catch((err: Error) => toast({ tone: "error", title: "Decision failed", description: err.message }));
   };
 
   const openIdentity = (u: AdminUser) => {
@@ -911,11 +943,11 @@ export function SuperAdminPage() {
                         <td><small>{q.kyc.submission?.dob ?? "—"}</small></td>
                         <td><small><code>{q.kyc.submission?.taxId ?? "—"}</code></small></td>
                         <td><small>{q.kyc.submission?.documentType ?? q.kyc.documentType}</small></td>
-                        <td><small>{q.kyc.submission?.documents.filter(d => d.name).length ?? 0} uploaded</small></td>
+                        <td><small>{(q.kyc.submission?.documents ?? []).filter(d => d.name).length} uploaded</small></td>
                         <td><small>{q.kyc.submission?.source ?? "—"}</small></td>
                         <td className="ta-r">
                           {allow("kyc.review")
-                            ? <button type="button" className="solid-btn sm" onClick={() => { setKycReview(q); setKycDecisionNote(""); }}><Search size={13} /> Review</button>
+                            ? <button type="button" className="solid-btn sm" onClick={() => { setKycReview(q); setKycDecisionNote(""); setKycReqsFor([]); }}><Search size={13} /> Review</button>
                             : <small>View only</small>}
                         </td>
                       </tr>
@@ -1494,7 +1526,12 @@ export function SuperAdminPage() {
       {kycReview && (
         <div className="modal-scrim" onClick={() => setKycReview(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h3>Verification review: {kycReview.name}</h3></div>
+            <div className="modal-head">
+              <h3>Application review: {kycReview.name}</h3>
+              <span className="panel-sub">
+                {kycReview.reviewState === "more_info" ? "Back with us after a request for information" : "Waiting for a decision"}
+              </span>
+            </div>
             <div className="dash-form">
               {(() => {
                 const s = kycReview.kyc.submission;
@@ -1538,10 +1575,10 @@ export function SuperAdminPage() {
                     <div className="kyc-review-rows">
                       {rows.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
                     </div>
-                    {s && s.documents.length > 0 && (
+                    {s && (s.documents ?? []).length > 0 && (
                       <div className="kyc-doc-review-list">
                         <label>Submitted documents</label>
-                        {s.documents.map(d => (
+                        {(s.documents ?? []).map(d => (
                           <div key={d.key} className="kyc-doc-review-item">
                             <FileText size={14} />
                             <span>{d.label}</span>
@@ -1553,11 +1590,30 @@ export function SuperAdminPage() {
                   </>
                 );
               })()}
-              <label htmlFor="adm-kyc-note">Note to the member (required for changes)</label>
+              <span className="app-section"><span>Request more information</span></span>
+              <p className="admin-before-after">
+                A hold the applicant can clear. Pick what you need — they see this list on their application page
+                and can send it back without losing anything they already gave you.
+              </p>
+              <div className="admin-req-grid">
+                {REQUEST_ITEMS.map(item => {
+                  const on = kycReqsFor.includes(item.key);
+                  return (
+                    <button key={item.key} type="button" className={`admin-req ${on ? "on" : ""}`}
+                      aria-pressed={on}
+                      onClick={() => setKycReqsFor(list => on ? list.filter(k => k !== item.key) : [...list, item.key])}>
+                      <strong>{item.label}</strong>
+                      <small>{item.detail}</small>
+                    </button>
+                  );
+                })}
+              </div>
+              <label htmlFor="adm-kyc-note">Reason shown to the applicant (required to hold or reject)</label>
               <textarea id="adm-kyc-note" rows={3} placeholder="e.g. The address document is older than 3 months — please upload a recent utility bill." value={kycDecisionNote} onChange={e => setKycDecisionNote(e.target.value)} />
-              <div className="modal-actions">
-                <button type="button" className="ghost-btn" disabled={kycDecisionNote.trim().length === 0} onClick={() => handleKycDecision("needs_attention")}><RefreshCw size={14} /> Request changes</button>
-                <button type="button" className="solid-btn" onClick={() => handleKycDecision("approved")}><Check size={14} /> Approve verification</button>
+              <div className="modal-actions admin-decision-actions">
+                <button type="button" className="ghost-btn danger" onClick={() => handleKycDecision("rejected")}><XCircle size={14} /> Reject application</button>
+                <button type="button" className="ghost-btn" disabled={kycDecisionNote.trim().length === 0 || kycReqsFor.length === 0} onClick={() => handleKycDecision("needs_attention")}><RefreshCw size={14} /> Request information</button>
+                <button type="button" className="solid-btn" onClick={() => handleKycDecision("approved")}><Check size={14} /> Approve account</button>
               </div>
             </div>
           </div>
