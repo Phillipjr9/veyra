@@ -14,14 +14,27 @@ const HEALTH_TIMEOUT_MS = 2500;
 
 let cachedOnline: boolean | null = null;
 let probe: Promise<boolean> | null = null;
+// Preview browsers can be embedded in a context where persistent storage is
+// blocked. Keep the active token in memory as well, so a successful sign-in
+// always authenticates the current page even when localStorage is unavailable.
+let sessionToken: string | null = null;
 
 export function getToken(): string | null {
-  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+  try {
+    const stored = localStorage.getItem(TOKEN_KEY);
+    if (stored) {
+      sessionToken = stored;
+      return stored;
+    }
+  } catch { /* storage unavailable — use this page's session token */ }
+  return sessionToken;
 }
 export function setToken(token: string): void {
-  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* storage unavailable */ }
+  sessionToken = token;
+  try { localStorage.setItem(TOKEN_KEY, token); } catch { /* persistence unavailable — current session still works */ }
 }
 export function clearToken(): void {
+  sessionToken = null;
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ }
 }
 
