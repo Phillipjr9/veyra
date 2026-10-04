@@ -1706,7 +1706,7 @@
 .cr-identity { display: flex; flex-direction: column; text-align: right; }
 .cr-identity strong { font-size: 12.5px; }
 .cr-identity small { font-size: 10.5px; color: #7b8798; }
-.cr-avatar { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #232c3b; border-radius: 50%; overflow: hidden; background: #171e2a; }
+.cr-avatar { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border: 1px solid #232c3b; border-radius: 50%; overflow: hidden; background: #171e2a; }
 .cr-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .cr-main { flex: 1; min-width: 0; padding: 18px 20px 64px; }
 .superadmin-page { max-width: 1400px; margin: 0 auto; }
@@ -1775,6 +1775,16 @@
 
 .cr-burger { display: none; width: 34px; height: 34px; place-items: center; border: 1px solid #232c3b; border-radius: 6px; background: #131a25; color: #dbe2ec; }
 .cr-scrim { display: none; }
+
+/* The avatar is a fixed circle, so on narrow screens the bar gives up text
+   rather than squashing a circle into an ellipse: the email goes first, then
+   the whole identity block. The name and role are in the rail and Admin Profile. */
+@media (max-width: 520px) {
+  .cr-identity small { display: none; }
+}
+@media (max-width: 400px) {
+  .cr-identity { display: none; }
+}
 
 @media (max-width: 900px) {
   .admin-app { grid-template-columns: minmax(0, 1fr); }

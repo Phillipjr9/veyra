@@ -567,6 +567,9 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* the upload block shares a row with the avatar image; without this it
+     refuses to shrink and pushes the panel past the screen edge on a phone */
+  min-width: 0;
 }
 
 .avatar-upload-info strong {
@@ -582,6 +585,7 @@
 
 .avatar-btn-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
 }

@@ -748,7 +748,9 @@
 
 .kyc-status-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
 .kyc-status-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-.kyc-status-ring { --kyc-progress: 72; position: relative; width: 82px; height: 82px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--violet) calc(var(--kyc-progress) * 1%), #efe8ff 0); }
+.kyc-status-ring { --kyc-progress: 72; position: relative; width: 82px; height: 82px; flex: none; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--violet) calc(var(--kyc-progress) * 1%), #efe8ff 0); }
+/* A percentage in an ellipse reads as a mistake: the ring is a fixed 82px
+   circle, so it must never flex-shrink when the row around it gets tight. */
 .kyc-status-ring::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: #fff; }
 .kyc-status-ring-inner { position: relative; z-index: 1; display: flex; align-items: baseline; gap: 2px; }
 .kyc-status-ring b { font: 600 22px var(--display); }
@@ -900,6 +902,15 @@
   .security-score > svg { display: none; }
 }
 
+/* Very narrow phones: the bar carries the balance, Scout and notifications. The
+   command palette is a keyboard affordance, so it is the one thing to drop —
+   without it the row still fits at 320px. */
+@media (max-width: 380px) {
+  /* Scoped to the bar so it outranks the shared trigger rule in admin.css,
+     which loads later in the cascade. */
+  .app-topbar .topbar-search-trigger { display: none; }
+}
+
 @media (max-width: 420px) {
   .app-page { padding: 20px 14px 64px; }
   .panel { padding: 18px 16px; }
@@ -975,6 +986,12 @@
 .kyc-confirm input { margin-top: 3px; accent-color: var(--violet); }
 
 .kyc-submitted { display: flex; align-items: flex-start; gap: 16px; }
+/* The panel is an icon plus a block of copy and buttons. Without min-width:0
+   the text block refuses to shrink below its min-content width and the action
+   buttons hang past the right edge on a phone. */
+.kyc-submitted > div { min-width: 0; flex: 1 1 240px; }
+.kyc-submitted .modal-actions { flex-wrap: wrap; }
+.kyc-submitted .modal-actions > * { flex: 0 1 auto; white-space: nowrap; }
 .kyc-submitted > svg { flex: none; color: #2f7a4c; }
 .kyc-submitted h2 { margin: 0 0 6px; font: 600 18px/1.25 var(--display); letter-spacing: -.02em; }
 .kyc-submitted p { margin: 0; max-width: 520px; font-size: 13px; line-height: 1.65; color: var(--muted); }

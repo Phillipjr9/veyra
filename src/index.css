@@ -266,7 +266,7 @@ input[type=range]::-moz-range-track { background: transparent; }
 .scout-steps { padding-top: 60px; }
 .scout-step { display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 6vw; padding: 36px 0; border-top: 1px solid var(--line); }
 .scout-step.reverse .scout-visual { order: 2; }
-.scout-visual { min-height: 380px; display: grid; place-items: center; border-radius: 24px; background: radial-gradient(circle at 50% 40%, #dcd3fb, rgba(220,211,251,0) 70%); }
+.scout-visual { min-height: 380px; display: grid; grid-template-columns: minmax(0, 1fr); place-items: center; border-radius: 24px; background: radial-gradient(circle at 50% 40%, #dcd3fb, rgba(220,211,251,0) 70%); }
 .scout-text { max-width: 420px; }
 .step-num { font: 600 12px var(--body); letter-spacing: .15em; color: var(--violet); }
 .scout-text h3 { margin: 16px 0 12px; font: 600 32px/1.1 var(--display); letter-spacing: -.045em; }
@@ -802,7 +802,9 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
   .feature-wide { grid-column: auto; grid-template-columns: 1fr; }
   .feature-card { padding-right: 0; border-right: 0; }
   .feature-analytics { padding-left: 0; }
-  .scout-step { grid-template-columns: 1fr; gap: 30px; }
+  /* minmax(0,1fr): a bare `1fr` track is floored by the item's min-content
+     width, which pushed the Scout copy past the right edge on a small phone. */
+  .scout-step { grid-template-columns: minmax(0, 1fr); gap: 30px; }
   .scout-step.reverse .scout-visual { order: 0; }
   .calculator { grid-template-columns: 1fr; }
   .calc-controls { padding: 45px 0; }
@@ -897,6 +899,8 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
   .analytics-viz { gap: 14px; margin-top: 40px; }
   .donut { width: 105px; height: 105px; }
   .scout-visual { min-height: 320px; }
+  /* tuck the decorative corner badge inside its panel so it cannot widen the page */
+  .scout-scanner-art-badge { right: 10px; bottom: 10px; width: 96px; height: 96px; }
   .scout-text h3 { font-size: 26px; }
   .calculator-section { padding-left: 20px; padding-right: 20px; }
   .animated-money { font-size: 54px; }
