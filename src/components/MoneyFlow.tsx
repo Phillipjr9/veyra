@@ -19,7 +19,7 @@ type DepositFlow = { kind: "deposit"; stage: Stage; sourceId: string; amount: nu
 type SendFlow = { kind: "send"; stage: Stage; draft: SendDraft };
 type FlowState = DepositFlow | SendFlow;
 type NodeInfo = { label: string; sub: string; icon: ReactNode };
-type Track = { from: NodeInfo; to: NodeInfo };
+export type Track = { from: NodeInfo; to: NodeInfo };
 type Row = { label: string; value: ReactNode; tone?: "free" | "reward" | "scout" };
 
 export const ETA: Record<SendMethod, string> = {
@@ -162,7 +162,7 @@ function StageDots({ kind, stage }: { kind: FlowState["kind"]; stage: Stage }) {
   );
 }
 
-function FlowTrack({ from, to, state, progress }: Track & { state: "idle" | "moving" | "done"; progress: number }) {
+export function FlowTrack({ from, to, state, progress }: Track & { state: "idle" | "moving" | "done"; progress: number }) {
   const reduce = useReducedMotion();
   const moving = state === "moving" && !reduce;
   return (
