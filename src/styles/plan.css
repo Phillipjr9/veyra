@@ -1,0 +1,72 @@
+/* ============================================================
+   Money plan — personal-safe-to-spend and business cash planning
+   ============================================================ */
+.money-plan-page { display: grid; gap: 22px; }
+.money-plan-hero { position: relative; overflow: hidden; isolation: isolate; display: flex; align-items: end; justify-content: space-between; gap: 28px; padding: 30px 32px; border-radius: 22px; color: #fff; background: linear-gradient(125deg, #211c35 0%, #423172 55%, #7558dc 130%); box-shadow: 0 18px 42px rgba(50, 35, 90, .2); }
+.money-plan-hero::after { content: ""; position: absolute; z-index: -1; width: 330px; aspect-ratio: 1; right: -90px; top: -170px; border-radius: 50%; border: 42px solid rgba(255,255,255,.08); box-shadow: -130px 190px 0 -65px rgba(213, 199, 255, .12); }
+.money-plan-hero .app-eyebrow { color: #d9ceff; display: inline-flex; align-items: center; gap: 7px; }
+.money-plan-hero h1 { margin: 8px 0 7px; max-width: 620px; color: #fff; font: 700 clamp(27px, 3vw, 40px)/1.1 var(--display); letter-spacing: -.045em; }
+.money-plan-hero p { max-width: 630px; margin: 0; color: rgba(255,255,255,.74); line-height: 1.6; }
+.money-plan-hero-value { min-width: 245px; padding: 17px 18px; border: 1px solid rgba(255,255,255,.17); border-radius: 16px; background: rgba(255,255,255,.09); backdrop-filter: blur(10px); }
+.money-plan-hero-value > span, .money-plan-hero-value small { display: block; color: rgba(255,255,255,.67); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
+.money-plan-hero-value strong { display: block; margin: 5px 0 9px; color: #fff; font: 700 27px/1 var(--display); letter-spacing: -.045em; }
+.money-plan-hero-value small { display: flex; align-items: center; gap: 5px; color: #d9ffdb; font-weight: 600; letter-spacing: 0; }
+.money-plan-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
+.money-plan-kpi { min-height: 128px; padding: 17px 18px; border: 1px solid var(--line); border-radius: 16px; background: #fff; box-shadow: 0 6px 18px rgba(24,23,29,.035); }
+.money-plan-kpi > span { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .055em; }
+.money-plan-kpi > span svg { color: var(--violet); }
+.money-plan-kpi > strong { display: block; margin: 12px 0 5px; font: 700 24px/1 var(--display); letter-spacing: -.04em; }
+.money-plan-kpi small { color: var(--muted); font-size: 12px; }
+.money-plan-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(290px, .8fr); gap: 18px; align-items: start; }
+.money-plan-kicker { display: block; margin-bottom: 5px; color: var(--violet); font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.money-plan-form { display: grid; grid-template-columns: 1.1fr 1fr .65fr .55fr; gap: 9px; margin: 0 0 15px; padding: 13px; border: 1px solid #ded6f8; border-radius: 13px; background: #faf8ff; }
+.money-plan-form input, .money-plan-form select { width: 100%; min-width: 0; height: 39px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: #fff; font: 500 12px var(--body); }
+.money-plan-form label { display: grid; gap: 3px; color: var(--muted); font-size: 10px; font-weight: 700; }
+.money-plan-form-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 7px; }
+.money-plan-budget-list { display: grid; gap: 10px; }
+.money-plan-budget { padding: 13px 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); }
+.money-plan-budget-top, .money-plan-budget-numbers { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.money-plan-budget-top strong, .money-plan-budget-top small { display: block; }
+.money-plan-budget-top strong { font-size: 13px; }
+.money-plan-budget-top small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.money-plan-budget-top .icon-btn { width: 28px; height: 28px; color: var(--muted); }
+.money-plan-budget-numbers { margin: 12px 0 8px; }
+.money-plan-budget-numbers strong { font: 700 18px/1 var(--display); letter-spacing: -.035em; }
+.money-plan-budget-numbers span { margin-right: auto; color: var(--muted); font-size: 11px; }
+.money-plan-budget-numbers b { color: #39834a; font-size: 12px; }
+.money-plan-budget-numbers b.is-warn { color: #a45e04; }
+.money-plan-budget-numbers b.is-risk, .is-risk { color: #c33646 !important; }
+.money-plan-progress { height: 6px; overflow: hidden; border-radius: 999px; background: #e5e2e9; }
+.money-plan-progress i { display: block; height: 100%; border-radius: inherit; background: #50a964; }
+.money-plan-progress.is-warn i { background: #e19725; }
+.money-plan-progress.is-risk i { background: #d94a5a; }
+.money-plan-budget > small { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; }
+.money-plan-alert { color: #a45e04 !important; }
+.money-plan-empty { display: flex; align-items: center; gap: 11px; padding: 21px 4px; color: var(--muted); }
+.money-plan-empty svg { flex: none; color: var(--violet); }
+.money-plan-empty strong, .money-plan-empty span { display: block; }
+.money-plan-empty strong { color: var(--ink); font-size: 13px; }
+.money-plan-empty span { margin-top: 3px; max-width: 420px; font-size: 12px; line-height: 1.45; }
+.money-plan-commitment-list { display: grid; gap: 2px; }
+.money-plan-commitment { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px 1px; border-bottom: 1px solid var(--line); }
+.money-plan-commitment:last-child { border-bottom: 0; }
+.money-plan-commitment-icon { display: grid; width: 31px; height: 31px; place-items: center; border-radius: 9px; color: var(--violet); background: #f0ecff; }
+.money-plan-commitment strong, .money-plan-commitment small { display: block; }
+.money-plan-commitment strong { font-size: 12px; }
+.money-plan-commitment small { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.money-plan-commitment > div:last-child { text-align: right; }
+.money-plan-position { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-top: 15px; padding: 13px; border-radius: 11px; background: #f4f1fc; }
+.money-plan-position span { max-width: 190px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.money-plan-position strong { font: 700 20px/1 var(--display); letter-spacing: -.04em; }
+.money-plan-signals { overflow: hidden; }
+.money-plan-signal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin: 0 -20px -20px; border-top: 1px solid var(--line); background: var(--line); }
+.money-plan-signal { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 14px 20px; background: #fff; }
+.money-plan-signal > span { display: grid; width: 31px; height: 31px; place-items: center; color: var(--violet); border-radius: 50%; background: #f1edff; }
+.money-plan-signal strong, .money-plan-signal small { display: block; }
+.money-plan-signal strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.money-plan-signal small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.money-plan-signal > b { font-size: 12px; white-space: nowrap; }
+.money-plan-notice { display: flex; align-items: center; gap: 9px; padding: 12px 14px; color: #7f4800; border: 1px solid #f0cb8e; border-radius: 12px; background: #fff7e9; font-size: 12px; }
+.money-plan-notice svg { flex: none; }
+@media (max-width: 850px) { .money-plan-hero { align-items: start; flex-direction: column; } .money-plan-hero-value { width: 100%; } .money-plan-kpis, .money-plan-grid { grid-template-columns: 1fr; } .money-plan-form { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .money-plan-hero { padding: 23px 20px; border-radius: 17px; } .money-plan-kpis { gap: 9px; } .money-plan-kpi { min-height: auto; } .money-plan-form, .money-plan-signal-grid { grid-template-columns: 1fr; } .money-plan-signal-grid { margin: 0 -15px -15px; } .money-plan-signal { padding: 13px 15px; } }

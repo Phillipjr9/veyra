@@ -14,7 +14,6 @@ const HEALTH_TIMEOUT_MS = 2500;
 
 let cachedOnline: boolean | null = null;
 let probe: Promise<boolean> | null = null;
-
 /**
  * The token lives in memory first, and is mirrored into web storage when the
  * browser allows it.
@@ -33,6 +32,7 @@ let memoryToken: string | null = null;
 function readStoredToken(): string | null {
   try { const t = localStorage.getItem(TOKEN_KEY); if (t) return t; } catch { /* storage blocked */ }
   try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+
 }
 
 /**
@@ -226,6 +226,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   };
   let res = await send();
   let text = await res.text();
+
   let json: any = null;
   try { json = JSON.parse(text); } catch { /* non-JSON */ }
 

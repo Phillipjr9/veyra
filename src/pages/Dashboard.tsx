@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEven
 import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
   Download, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, TrendingUp, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, VirtualCard, ease } from "../components/common";
 import { Footer } from "../components/Chrome";
@@ -18,7 +19,7 @@ import { Confetti, ETA, useMoneyFlow, ZelleLogo, type SendMethod } from "../comp
 import { InvoiceDetailModal } from "../components/InvoiceDetailModal";
 import { NotificationsMenu, NOTE_ROUTES } from "./dashboards/parts";
 import { PersonalChrome, PersonalOverview } from "./dashboards/PersonalDashboard";
-import { BusinessChrome, BusinessOverview } from "./dashboards/BusinessDashboard";
+import { BusinessChrome } from "./dashboards/BusinessDashboard";
 import { Camera } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { lockScroll } from "../lib/scrollLock";
@@ -89,6 +90,7 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/transfers", label: "Transfers", icon: <Send size={18} /> },
       { to: "/app/invoices", label: "Invoicing", icon: <ReceiptText size={18} /> },
       { to: "/app/bills", label: "Bills & scheduled", icon: <CalendarClock size={18} /> },
+      { to: "/app/plan", label: "Cash plan", icon: <TrendingUp size={18} />, badge: "NEW" },
     ],
   },
   {
@@ -122,6 +124,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
+      { to: "/app/plan", label: "Money plan", icon: <TrendingUp size={18} />, badge: "NEW" },
     ],
   },
   {
@@ -620,26 +623,39 @@ export function DashboardLayout() {
     </>
   );
 
+  // Each account type gets its own shell: the personal dashboard is a warm,
+  // pill-navigated surface, while the business workspace keeps the operating
+  // rail and treasury top bar. They share state and behaviour, not looks.
   return (
-    <div className={personal ? "app-root personal-root" : "app-root business-root"}>
+    <>
       {personal
-        ? <PersonalChrome
-            user={user}
-            nav={nav}
-            unread={unread}
-            notifications={notificationMenu}
-            onOpenPalette={() => setPaletteOpen(true)}
-            onSignOut={() => { logout(); navigate("/"); }}
-          >{content}</PersonalChrome>
-        : <BusinessChrome
+        ? (
+          <div className="app-root personal-root">
+            <PersonalChrome
+              user={user}
+              nav={nav}
+              unread={unread}
+              notifications={notificationMenu}
+              onOpenPalette={() => setPaletteOpen(true)}
+              onSignOut={() => { logout(); navigate("/"); }}
+            >{content}</PersonalChrome>
+          </div>
+        )
+        : (
+          <BusinessChrome
             user={user}
             accountNumber={account.bankDetails.accountNumber}
+            balance={account.balance}
             nav={nav}
             notifications={notificationMenu}
             onOpenPalette={() => setPaletteOpen(true)}
+            onOpenScout={() => setScoutDrawerOpen(true)}
             onOpenDeposit={() => openDeposit()}
+            onOpenCheckDeposit={() => setCheckDepositOpen(true)}
             onSignOut={() => { logout(); navigate("/"); }}
-          >{content}</BusinessChrome>}
+          >{content}</BusinessChrome>
+        )}
+
 
       <WelcomeModal />
       <ScoutQuickDrawer open={scoutDrawerOpen} onClose={() => setScoutDrawerOpen(false)} />
@@ -653,7 +669,7 @@ export function DashboardLayout() {
       />
       <MobileCheckDepositModal open={checkDepositOpen} onClose={() => setCheckDepositOpen(false)} />
       <ZelleHubModal open={zelleHubOpen} onClose={() => setZelleHubOpen(false)} />
-    </div>
+    </>
   );
 }
 
@@ -665,8 +681,203 @@ export function DashboardLayout() {
  * dashboards (see ./dashboards/*) rather than one layout with swapped labels.
  */
 export function Overview() {
-  const { user } = useAcct();
-  return user?.accountType === "personal" ? <PersonalOverview /> : <BusinessOverview />;
+  const { account, user } = useAcct();
+  if (!account) return null;
+  return user?.accountType === "business" ? <BusinessOverview /> : <PersonalOverview />;
+}
+
+/** Weekly inflow/outflow buckets — the shape both the chart and the KPI strip read. */
+function weeklyFlow(txns: Txn[], weeks = 8) {
+  const WEEK = 7 * DAY;
+  const now = Date.now();
+  const buckets = Array.from({ length: weeks }, (_, i) => ({ label: shortDate(now - (weeks - i) * WEEK), inflow: 0, outflow: 0 }));
+  txns.forEach(t => {
+    const idx = weeks - 1 - Math.floor((now - t.date) / WEEK);
+    if (idx < 0 || idx >= weeks) return;
+    if (t.amount > 0) buckets[idx].inflow += t.amount;
+    else buckets[idx].outflow += Math.abs(t.amount);
+  });
+  return buckets;
+}
+
+/** Cash in vs cash out, week by week, for the business dashboard. */
+function CashflowChart({ weeks }: { weeks: Array<{ label: string; inflow: number; outflow: number }> }) {
+  return (
+    <div className="recharts-cashflow-container" style={{ width: "100%", height: 220 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={weeks} margin={{ top: 12, right: 10, left: -16, bottom: 0 }}>
+          <defs>
+            <linearGradient id="barInflow" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#4aa870" stopOpacity={0.95} />
+              <stop offset="100%" stopColor="#35754f" stopOpacity={0.8} />
+            </linearGradient>
+            <linearGradient id="barOutflow" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#9d86ff" stopOpacity={0.95} />
+              <stop offset="100%" stopColor="#7558dc" stopOpacity={0.85} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(24, 23, 29, 0.07)" />
+          <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
+          <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${v >= 1000 ? Math.round(v / 1000) + "k" : v}`} />
+          <Tooltip
+            cursor={{ fill: "rgba(117, 88, 220, 0.05)", radius: 6 }}
+            formatter={(value, name) => [money(Number(value), false), name === "inflow" ? "Inflow (+)" : "Outflow (−)"]}
+            contentStyle={{ borderRadius: 12, border: "1px solid var(--line)", background: "rgba(255, 255, 255, 0.95)", backdropFilter: "blur(8px)", fontSize: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.1)" }}
+          />
+          <Bar dataKey="inflow" fill="url(#barInflow)" radius={[4, 4, 0, 0]} maxBarSize={16} />
+          <Bar dataKey="outflow" fill="url(#barOutflow)" radius={[4, 4, 0, 0]} maxBarSize={16} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+/* ============================================================
+   Business overview
+   ============================================================ */
+function BusinessOverview() {
+  const { account, user } = useAcct();
+  const { openDeposit } = useMoneyFlow();
+  const [selected, setSelected] = useState<Txn | null>(null);
+  const weeks = useMemo(() => (account ? weeklyFlow(account.transactions) : []), [account]);
+  if (!account) return null;
+
+  const businessName = user?.business || "Your business";
+  const openInvoices = account.invoices
+    .filter(invoice => invoice.status !== "paid")
+    .sort((a, b) => a.due - b.due);
+  const scheduledBills = account.scheduledPayments
+    .filter(payment => payment.status === "active")
+    .sort((a, b) => a.nextDate - b.nextDate);
+  const recentActivity = account.transactions.filter(transaction => transaction.date >= Date.now() - 30 * DAY);
+  const monthlyIn = recentActivity.filter(transaction => transaction.amount > 0).reduce((sum, transaction) => sum + transaction.amount, 0);
+  const monthlyOut = recentActivity.filter(transaction => transaction.amount < 0).reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
+  const expectedReceivables = openInvoices.reduce((sum, invoice) => sum + invoice.amount, 0);
+  const plannedPayables = scheduledBills.reduce((sum, payment) => sum + payment.amount, 0);
+  const activeTeam = account.team.filter(member => member.status === "active").length;
+  const activeCards = account.cards.filter(card => !card.frozen).length;
+  const totalCardLimit = account.cards.filter(card => !card.frozen).reduce((sum, card) => sum + card.limit, 0);
+  const runwayDays = monthlyOut > 0 ? Math.floor((account.balance / monthlyOut) * 30) : null;
+  const overdueInvoices = openInvoices.filter(invoice => invoice.status === "overdue");
+  const totalIn = weeks.reduce((sum, week) => sum + week.inflow, 0);
+  const totalOut = weeks.reduce((sum, week) => sum + week.outflow, 0);
+
+  return (
+    <div className="app-page business-dashboard">
+      <motion.section className="business-hero" {...rise(0)}>
+        <div className="business-hero-orbit business-hero-orbit-one" aria-hidden="true" />
+        <div className="business-hero-orbit business-hero-orbit-two" aria-hidden="true" />
+        <div className="business-hero-copy">
+          <span className="business-overline"><Building2 size={14} /> Business command center <i /> Live treasury view</span>
+          <h1>{businessName}</h1>
+          <p>Decide what moves next with cash, receivables, cards and your team in one clear operating view.</p>
+          <div className="business-hero-actions">
+            <Link to="/app/invoices" className="business-primary-action"><ReceiptText size={15} /> Create invoice</Link>
+            <Link to="/app/transfers" className="business-secondary-action"><Send size={15} /> Pay a vendor</Link>
+            <button type="button" className="business-icon-action" onClick={() => openDeposit()}><Plus size={16} /> Add funds</button>
+          </div>
+        </div>
+        <div className="business-cash-card">
+          <div className="business-cash-top"><span>Available operating cash</span><span className="business-live-pill"><i /> Live</span></div>
+          <AnimatedMoney value={account.balance} className="business-cash-value" cents fromZero />
+          <div className="business-cash-foot">
+            <div><span>Pending</span><strong>{money(account.pendingBalance)}</strong></div>
+            <div><span>Next 30 days</span><strong className={monthlyIn >= monthlyOut ? "is-positive" : ""}>{monthlyIn >= monthlyOut ? "+" : "−"}{money(Math.abs(monthlyIn - monthlyOut), false)}</strong></div>
+          </div>
+          <div className="business-cash-progress" aria-label="Monthly operating position">
+            <i style={{ width: `${Math.min(100, monthlyIn || monthlyOut ? (monthlyIn / Math.max(monthlyIn, monthlyOut || 1)) * 100 : 0)}%` }} />
+          </div>
+        </div>
+      </motion.section>
+
+      <nav className="business-action-grid" aria-label="Business shortcuts">
+        <Link to="/app/invoices"><span className="business-action-icon invoice"><ReceiptText size={17} /></span><span><b>Invoice clients</b><small>{openInvoices.length ? `${openInvoices.length} awaiting payment` : "Create a branded invoice"}</small></span><ArrowRight size={15} /></Link>
+        <Link to="/app/bills"><span className="business-action-icon bills"><CalendarClock size={17} /></span><span><b>Plan bills</b><small>{scheduledBills.length ? `${scheduledBills.length} active scheduled payments` : "Schedule a vendor payment"}</small></span><ArrowRight size={15} /></Link>
+        <Link to="/app/cards"><span className="business-action-icon cards"><CreditCard size={17} /></span><span><b>Control cards</b><small>{activeCards} active · {money(totalCardLimit, false)} available</small></span><ArrowRight size={15} /></Link>
+        <Link to="/app/team"><span className="business-action-icon team"><Users size={17} /></span><span><b>Manage team</b><small>{activeTeam} active teammates</small></span><ArrowRight size={15} /></Link>
+      </nav>
+
+      <section className="business-metric-grid" aria-label="Business health overview">
+        <motion.article className="business-metric-card accent-cash" {...rise(1)}>
+          <span>Cash cover</span>
+          <strong>{runwayDays === null ? "—" : `${runwayDays} days`}</strong>
+          <small>{monthlyOut ? `Based on ${money(monthlyOut, false)} in last-30-day outflow` : "Add activity to see your operating cover"}</small>
+          <div className="business-metric-line"><i style={{ width: `${Math.min(100, runwayDays === null ? 0 : runwayDays / 0.9)}%` }} /></div>
+        </motion.article>
+        <motion.article className="business-metric-card accent-receivable" {...rise(2)}>
+          <span>Receivables</span>
+          <strong>{money(expectedReceivables, false)}</strong>
+          <small>{openInvoices.length} open · {overdueInvoices.length ? `${overdueInvoices.length} overdue` : "none overdue"}</small>
+          <Link to="/app/invoices">Review invoices <ArrowRight size={13} /></Link>
+        </motion.article>
+        <motion.article className="business-metric-card accent-payable" {...rise(3)}>
+          <span>Planned payables</span>
+          <strong>{money(plannedPayables, false)}</strong>
+          <small>{scheduledBills.length} scheduled payments</small>
+          <Link to="/app/bills">Review schedule <ArrowRight size={13} /></Link>
+        </motion.article>
+        <motion.article className="business-metric-card accent-team" {...rise(4)}>
+          <span>Controls & access</span>
+          <strong>{activeCards + activeTeam}</strong>
+          <small>{activeCards} card{activeCards === 1 ? "" : "s"} · {activeTeam} teammate{activeTeam === 1 ? "" : "s"}</small>
+          <Link to="/app/team">Manage access <ArrowRight size={13} /></Link>
+        </motion.article>
+      </section>
+
+      <div className="business-workspace-grid">
+        <motion.section className="panel business-flow-panel" {...rise(5)}>
+          <div className="business-panel-head">
+            <div><span className="business-panel-kicker">Cash intelligence</span><h2>Cash movement</h2><p>Incoming and outgoing ledger activity across the last eight weeks.</p></div>
+            <div className="business-flow-legend"><span><i className="in" /> In {money(totalIn, false)}</span><span><i className="out" /> Out {money(totalOut, false)}</span></div>
+          </div>
+          <CashflowChart weeks={weeks} />
+          <div className="business-flow-footer"><span><TrendingUp size={14} /> {monthlyIn >= monthlyOut ? "Cash-positive over the past 30 days" : "Outflows are higher than inflows over the past 30 days"}</span><Link to="/app/transactions">Open ledger <ArrowRight size={13} /></Link></div>
+        </motion.section>
+
+        <motion.aside className="business-readiness-card" {...rise(6)}>
+          <div className="business-readiness-top"><span className="business-panel-kicker">Operating readiness</span><ShieldCheck size={18} /></div>
+          <h2>Your controls are connected</h2>
+          <p>Stay ready to collect, spend and delegate with the right financial controls in place.</p>
+          <div className="business-readiness-list">
+            <div><span className="business-readiness-check"><Check size={12} /></span><span><b>Business checking</b><small>Account ending •••• {account.bankDetails.accountNumber.slice(-4) || "—"}</small></span></div>
+            <div><span className={`business-readiness-check ${account.kyc.status === "approved" ? "complete" : "pending"}`}>{account.kyc.status === "approved" ? <Check size={12} /> : <Clock size={12} />}</span><span><b>Identity verification</b><small>{account.kyc.status === "approved" ? "Verified" : account.kyc.nextStep || "Complete verification"}</small></span></div>
+            <div><span className={`business-readiness-check ${activeCards ? "complete" : "pending"}`}>{activeCards ? <Check size={12} /> : <Plus size={12} />}</span><span><b>Spend controls</b><small>{activeCards ? `${activeCards} active card${activeCards === 1 ? "" : "s"}` : "Issue a business card"}</small></span></div>
+          </div>
+          <Link to={account.kyc.status === "approved" ? "/app/security" : "/app/kyc"} className="business-readiness-link">{account.kyc.status === "approved" ? "Review account security" : "Complete verification"} <ArrowRight size={14} /></Link>
+        </motion.aside>
+      </div>
+
+      <div className="business-detail-grid">
+        <motion.section className="panel business-list-panel" {...rise(7)}>
+          <div className="panel-head"><div><span className="business-panel-kicker">Get paid</span><h2>Receivables watchlist</h2></div><Link to="/app/invoices" className="text-link">All invoices <ArrowRight size={14} /></Link></div>
+          {openInvoices.length ? <div className="business-invoice-list">
+            {openInvoices.slice(0, 4).map(invoice => <Link to="/app/invoices" className="business-invoice-row" key={invoice.id}>
+              <span className={`business-invoice-status ${invoice.status}`}><ReceiptText size={14} /></span>
+              <span className="business-row-main"><b>{invoice.client}</b><small>#{invoice.id} · Due {shortDate(invoice.due)}</small></span>
+              <span className="business-row-value"><b>{money(invoice.amount)}</b><small className={invoice.status === "overdue" ? "is-overdue" : ""}>{invoice.status}</small></span>
+            </Link>)}
+          </div> : <div className="business-empty"><ReceiptText size={19} /><div><b>No outstanding invoices</b><span>Create an invoice when you are ready to collect.</span></div><Link to="/app/invoices">Create invoice <ArrowRight size={13} /></Link></div>}
+        </motion.section>
+
+        <motion.section className="panel business-list-panel" {...rise(8)}>
+          <div className="panel-head"><div><span className="business-panel-kicker">Keep moving</span><h2>Upcoming payments</h2></div><Link to="/app/bills" className="text-link">View schedule <ArrowRight size={14} /></Link></div>
+          {scheduledBills.length ? <div className="business-bill-list">
+            {scheduledBills.slice(0, 4).map(payment => <Link to="/app/bills" className="business-bill-row" key={payment.id}>
+              <span className="business-bill-date"><b>{new Date(payment.nextDate).getDate()}</b><small>{new Date(payment.nextDate).toLocaleDateString("en-US", { month: "short" })}</small></span>
+              <span className="business-row-main"><b>{payment.payeeName}</b><small>{payment.frequency} · {payment.category}</small></span>
+              <span className="business-row-value"><b>{money(payment.amount)}</b><small>{payment.autopay ? "Autopay" : "Scheduled"}</small></span>
+            </Link>)}
+          </div> : <div className="business-empty"><CalendarClock size={19} /><div><b>No scheduled payments</b><span>Plan recurring bills and vendor payments in advance.</span></div><Link to="/app/bills">Schedule bill <ArrowRight size={13} /></Link></div>}
+        </motion.section>
+      </div>
+
+      <motion.section className="panel business-activity-panel" {...rise(9)}>
+        <div className="panel-head"><div><span className="business-panel-kicker">Live ledger</span><h2>Recent business activity</h2><span className="panel-sub">Select a transaction to inspect its details.</span></div><Link to="/app/transactions" className="text-link">View all activity <ArrowRight size={14} /></Link></div>
+        <TxnList txns={account.transactions.slice(0, 6)} onSelect={setSelected} />
+      </motion.section>
+      <TxnDrawer txn={selected} onClose={() => setSelected(null)} />
+    </div>
+  );
 }
 
 /* ============================================================

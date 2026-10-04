@@ -25,6 +25,7 @@ import { SuperAdminPage } from "./pages/SuperAdmin";
 import { ApplicationStatusPage } from "./pages/ApplicationStatus";
 import { SupportCenterPage } from "./pages/SupportCenter";
 import { EmailTemplatesPage } from "./pages/EmailTemplates";
+import { MoneyPlanPage } from "./components/MoneyPlan";
 
 /** Public marketing pages share the site chrome. Auth and app layouts add the footer themselves. */
 function SiteLayout({ children }: { children: React.ReactNode }) {
@@ -135,6 +136,7 @@ function Shell() {
           <Route path="payments" element={<PaymentsPage />} />
           <Route path="invoices" element={<BusinessOnly><InvoicesPage /></BusinessOnly>} />
           <Route path="bills" element={<BillsPage />} />
+          <Route path="plan" element={<MoneyPlanPage />} />
           <Route path="scout" element={<ScoutAIPage />} />
           <Route path="rewards" element={<RewardsPage />} />
           <Route path="team" element={<BusinessOnly><TeamPage /></BusinessOnly>} />

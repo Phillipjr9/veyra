@@ -93,6 +93,8 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/me/team", auth: true, perm: null },
   { method: "DELETE", path: "/api/me/team/:id", auth: true, perm: null },
   { method: "POST", path: "/api/me/pockets", auth: true, perm: null },
+  { method: "POST", path: "/api/me/budgets", auth: true, perm: null },
+  { method: "DELETE", path: "/api/me/budgets/:id", auth: true, perm: null },
   { method: "POST", path: "/api/me/pockets/:id/move", auth: true, perm: null },
   { method: "DELETE", path: "/api/me/pockets/:id", auth: true, perm: null },
   { method: "POST", path: "/api/me/payees", auth: true, perm: null },
@@ -118,6 +120,12 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/admin/kyc/request", auth: true, perm: "kyc.request" },
   { method: "GET", path: "/api/admin/kyc/queue", auth: true, perm: "kyc.review" },
   { method: "POST", path: "/api/admin/kyc/:userId/decision", auth: true, perm: "kyc.review" },
+  // Operations casework rides on the console's own dashboard.view grant: the case
+  // list is part of the command overview, not a separate permission.
+  { method: "GET", path: "/api/admin/operations/cases", auth: true, perm: "dashboard.view" },
+  { method: "POST", path: "/api/admin/operations/cases", auth: true, perm: "dashboard.view" },
+  { method: "PUT", path: "/api/admin/operations/cases/:id", auth: true, perm: "dashboard.view" },
+  { method: "POST", path: "/api/admin/operations/cases/:id/notes", auth: true, perm: "dashboard.view" },
   { method: "GET", path: "/api/admin/risk/disputes", auth: true, perm: "risk.view" },
   { method: "POST", path: "/api/admin/risk/disputes/:id/advance", auth: true, perm: "risk.resolve" },
   { method: "GET", path: "/api/admin/staff", auth: true, perm: "staff.manage" },

@@ -39,6 +39,7 @@ type AuthValue = {
     name: string; phone?: string; business?: string; accountType: User["accountType"];
     email: string; password: string; plan?: User["plan"]; profile?: Record<string, unknown>;
   }) => Promise<void>;
+
   logout: () => void;
   updateUser: (patch: Partial<Pick<User, "name" | "phone" | "business" | "accountType" | "email" | "plan" | "role" | "avatarUrl">>) => void;
   changePassword: (current: string, next: string) => Promise<void>;
@@ -58,17 +59,25 @@ const AuthCtx = createContext<AuthValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  // Keep the active credential in React state as well as the API module. Vite
+  // can hot-reload that module while preserving this provider and user state;
+  // without this bridge the UI could still look authenticated while the next
+  // protected request was sent without its bearer credential.
+  const [activeToken, setActiveToken] = useState<string | null>(() => getToken());
   const [ready, setReady] = useState(false);
   const [offline, setOffline] = useState(false);
   const [sessionNotice, setSessionNotice] = useState("");
   const [sessionDetail, setSessionDetail] = useState("");
 
   useEffect(() => {
+    if (activeToken && getToken() !== activeToken) setToken(activeToken);
+  }, [activeToken]);
+
+  useEffect(() => {
     (async () => {
       const online = await probeApi();
       setOffline(!online);
-      if (online && getToken()) {
-        // Restore the session from the server via the stored bearer token.
+      if (online) {
         try {
           // Quiet: a refusal here means a stale token, not a session ending now.
           const { user: me } = await apiGet<{ user: User }>("/api/auth/me", { handleUnauthorized: false });
@@ -82,6 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           clearToken();
           if (err instanceof ApiError && err.status === 401) {
             console.info(`[veyra] discarded a stored session: ${err.message}`);
+
           }
         }
       }
@@ -112,9 +122,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
     setToken(token);
+    setActiveToken(token);
     setUser(me);
-    setSessionNotice("");
-    setSessionDetail("");
     return me;
   }, []);
 
@@ -125,6 +134,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accountType, email: email.trim(), password, plan, profile,
     });
     setToken(token);
+    setActiveToken(token);
     setUser(me);
     setSessionNotice("");
   }, []);
@@ -133,6 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Revoke the server session (best-effort — local sign-out proceeds regardless).
     apiPost("/api/auth/logout").catch(() => undefined);
     clearToken();
+    setActiveToken(null);
     setUser(null);
     setSessionNotice("");
   }, []);
@@ -160,6 +171,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
     [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

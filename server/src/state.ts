@@ -183,6 +183,15 @@ export function buildMemberState(db: DatabaseSync, userId: string): Record<strin
     trusted: x.trusted === 1,
   }));
 
+  const budgets = (db.prepare("SELECT * FROM budgets WHERE user_id = ? ORDER BY created_at DESC").all(userId) as Array<Record<string, unknown>>).map(b => ({
+    id: String(b.id),
+    name: String(b.name),
+    category: String(b.category),
+    monthlyLimit: dollars(b.monthly_limit_cents as number),
+    alertPercent: b.alert_percent as number,
+    createdAt: b.created_at as number,
+  }));
+
   const kycRow = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
   const requester = kycRow?.requested_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(kycRow.requested_by)) as { name: string } | undefined) : undefined;
   const reviewer = kycRow?.reviewed_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(kycRow.reviewed_by)) as { name: string } | undefined) : undefined;
@@ -247,6 +256,7 @@ export function buildMemberState(db: DatabaseSync, userId: string): Record<strin
     scheduledPayments: scheduled,
     disputes,
     sessions,
+    budgets,
     scoutApplied: JSON.parse(String(account?.scout_applied_json ?? "[]")),
     kyc,
     accountStatus: user.status === "restricted" ? "restricted" : "active",

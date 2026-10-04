@@ -2,9 +2,10 @@
  * Pieces the three dashboards share.
  *
  * The three surfaces are deliberately different designs (personal = warm and
- * airy, business = dense treasury, admin = dark control room), so what is
- * shared here is behaviour, not looks: the notification menu, and small
- * primitives (sparkline, donut, delta) that each design renders in its own way.
+ * airy, business = the operating rail and treasury top bar, admin = dark control
+ * room), so what is shared here is behaviour, not looks: the notification menu,
+ * and small primitives (sparkline, donut, delta) that each design renders in its
+ * own way.
  */
 import type { ReactNode, RefObject } from "react";
 import { AnimatePresence, motion } from "motion/react";

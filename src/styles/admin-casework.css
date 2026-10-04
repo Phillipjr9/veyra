@@ -1,0 +1,56 @@
+/* ===========================================================================
+   Super Admin — durable operations casework
+   =========================================================================== */
+.admin-casework-shell {
+  padding: 22px;
+  border: 1px solid rgba(29, 69, 57, .13);
+  border-radius: 22px;
+  background: radial-gradient(circle at 100% 0%, rgba(108, 194, 148, .15), transparent 32%), rgba(255, 253, 249, .92);
+  box-shadow: 0 15px 32px rgba(28, 51, 44, .05);
+}
+.admin-casework-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.admin-casework-head h2 { margin: 4px 0 5px; font: 700 22px/1.2 var(--display); letter-spacing: -.04em; }
+.admin-casework-head p { max-width: 680px; margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.admin-open-case { flex: none; min-height: 39px; white-space: nowrap; }
+
+.admin-case-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin: 20px 0 14px; }
+.admin-case-stats > div { padding: 12px 13px; border: 1px solid rgba(31, 83, 63, .09); border-radius: 12px; background: rgba(241, 248, 244, .78); }
+.admin-case-stats > div.warning { border-color: rgba(194, 131, 45, .24); background: #fcf4e7; }
+.admin-case-stats > div.danger { border-color: rgba(183, 68, 68, .25); background: #fff0ef; }
+.admin-case-stats span, .admin-case-stats strong { display: block; }
+.admin-case-stats span { color: #61736a; font-size: 10.5px; font-weight: 700; }
+.admin-case-stats strong { margin-top: 4px; color: #245b46; font: 700 21px/1 var(--display); font-variant-numeric: tabular-nums; }
+.admin-case-stats .warning strong { color: #a86c27; }.admin-case-stats .danger strong { color: #b44646; }
+
+.admin-case-toolbar { display: flex; gap: 8px; margin-bottom: 13px; }
+.admin-case-toolbar select, .admin-case-controls select, .admin-case-controls input, .admin-case-modal select, .admin-case-modal input, .admin-case-modal textarea, .admin-case-note textarea { width: 100%; border: 1px solid var(--line); border-radius: 9px; outline: none; background: var(--paper); color: var(--ink); font: inherit; }
+.admin-case-toolbar select { width: auto; min-width: 130px; height: 37px; padding: 0 28px 0 10px; font-size: 11.5px; }
+.admin-case-toolbar select:focus, .admin-case-controls select:focus, .admin-case-controls input:focus, .admin-case-modal select:focus, .admin-case-modal input:focus, .admin-case-modal textarea:focus, .admin-case-note textarea:focus { border-color: var(--violet); box-shadow: 0 0 0 3px rgba(117, 88, 220, .1); }
+.admin-case-search { flex: 1; min-width: 180px; height: 37px; display: flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); color: var(--muted); }
+.admin-case-search:focus-within { border-color: var(--violet); box-shadow: 0 0 0 3px rgba(117, 88, 220, .1); }
+.admin-case-search input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 12px; }
+
+.admin-case-workspace { display: grid; grid-template-columns: minmax(285px, .78fr) minmax(380px, 1.22fr); overflow: hidden; border: 1px solid rgba(31, 83, 63, .13); border-radius: 16px; background: #fffefa; min-height: 470px; }
+.admin-case-list { overflow: auto; padding: 8px; border-right: 1px solid rgba(31, 83, 63, .1); background: #f4f8f5; }
+.admin-case-row { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px; align-items: start; padding: 11px 9px; border: 1px solid transparent; border-radius: 11px; background: transparent; color: var(--ink); text-align: left; }
+.admin-case-row + .admin-case-row { margin-top: 3px; }.admin-case-row:hover { background: #ebf5ee; }.admin-case-row.selected { border-color: rgba(47, 121, 88, .25); background: #fff; box-shadow: 0 4px 12px rgba(31, 83, 63, .07); }
+.admin-case-row-copy { min-width: 0; }.admin-case-row-copy b, .admin-case-row-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.admin-case-row-copy b { font-size: 12px; line-height: 1.35; }.admin-case-row-copy small { margin-top: 3px; color: var(--muted); font-size: 10.5px; }
+.admin-case-priority, .admin-case-status { display: inline-flex; align-items: center; justify-content: center; flex: none; border-radius: 999px; font-size: 9.5px; font-weight: 800; line-height: 1; text-transform: uppercase; letter-spacing: .04em; }
+.admin-case-priority { min-width: 47px; padding: 5px 6px; background: #e5f0e9; color: #2c7654; }.admin-case-priority.low { background: #e7edf2; color: #50687b; }.admin-case-priority.normal { background: #e5f0e9; color: #2c7654; }.admin-case-priority.high { background: #fff0dc; color: #a46523; }.admin-case-priority.critical { background: #fde7e7; color: #b13d3d; }
+.admin-case-row .admin-case-status { grid-column: 2; justify-self: start; margin-top: -2px; }
+.admin-case-status { padding: 5px 7px; background: #edf0f3; color: #58656c; }.admin-case-status.open { background: #e6effa; color: #39709d; }.admin-case-status.investigating { background: #f5ebff; color: #7751a1; }.admin-case-status.waiting { background: #fff1dc; color: #a76a24; }.admin-case-status.resolved { background: #e2f2e8; color: #2f7b4e; }
+
+.admin-case-detail { min-width: 0; overflow: auto; padding: 19px; background: #fffefa; }.admin-case-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 13px; }.admin-case-detail-head h3 { margin: 8px 0 5px; font: 700 19px/1.2 var(--display); letter-spacing: -.035em; }.admin-case-detail-head p { max-width: 630px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }.admin-case-detail-head > .admin-case-status { margin-top: 3px; white-space: nowrap; }
+.admin-case-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 16px 0 12px; }.admin-case-meta > div { min-width: 0; display: flex; gap: 7px; align-items: flex-start; padding: 9px; border: 1px solid rgba(31, 83, 63, .1); border-radius: 10px; background: #f5f9f6; color: #3c8663; }.admin-case-meta span { min-width: 0; }.admin-case-meta small, .admin-case-meta b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.admin-case-meta small { color: #6e7e76; font-size: 9.5px; }.admin-case-meta b { margin-top: 2px; color: var(--ink); font-size: 10.5px; }
+.admin-case-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }.admin-case-controls label, .admin-case-modal label { display: grid; gap: 5px; color: #66766e; font-size: 10.5px; font-weight: 700; }.admin-case-controls select, .admin-case-controls input { height: 34px; padding: 0 8px; font-size: 11.5px; }.admin-case-source { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; margin: 11px 0 2px; padding: 6px 8px; border: 0; border-radius: 7px; background: #edf5f0; color: #2c7555; font-size: 10.5px; font-weight: 700; }.admin-case-source:hover { background: #dfefe4; }
+.admin-case-timeline { margin-top: 15px; padding-top: 14px; border-top: 1px solid rgba(31, 83, 63, .12); }.admin-case-timeline-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }.admin-case-timeline h4 { margin: 0; font: 700 13px var(--display); }.admin-case-timeline-head span { color: var(--muted); font-size: 10px; }.admin-case-timeline-entry { position: relative; display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 7px; padding: 10px 0 0; }.admin-case-timeline-dot { width: 7px; height: 7px; margin: 5px 0 0 2px; border-radius: 50%; background: #77a98e; box-shadow: 0 0 0 3px #ecf5ef; }.admin-case-timeline-entry.note .admin-case-timeline-dot { background: #8a65b5; box-shadow: 0 0 0 3px #f1ebfa; }.admin-case-timeline-entry b { font-size: 10.5px; }.admin-case-timeline-entry p { margin: 2px 0; color: #4e5d56; font-size: 11.5px; line-height: 1.45; }.admin-case-timeline-entry small { color: var(--muted); font-size: 9.5px; }
+.admin-case-note { display: grid; gap: 6px; margin-top: 15px; padding-top: 13px; border-top: 1px solid rgba(31, 83, 63, .12); }.admin-case-note label { display: inline-flex; align-items: center; gap: 6px; color: #52645b; font-size: 11px; font-weight: 800; }.admin-case-note textarea, .admin-case-modal textarea { min-height: 68px; padding: 9px; resize: vertical; font-size: 12px; line-height: 1.45; }.admin-case-note .ghost-btn { justify-self: end; }
+.admin-case-empty { min-height: 210px; display: grid; place-content: center; justify-items: center; gap: 6px; padding: 25px; color: #779087; text-align: center; }.admin-case-empty strong { color: #465a50; font-size: 12px; }.admin-case-empty small { max-width: 220px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+
+.admin-signal-panel { margin-top: 14px; }.admin-signal-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 7px; }.admin-signal-actions .ghost-btn { flex: none; }.admin-signal-actions .text-btn { padding: 4px; border: 0; background: transparent; color: #2d7658; font-size: 10.5px; font-weight: 800; }.admin-tracked-label { display: inline-flex; align-items: center; gap: 4px; color: #2f7b52; font-size: 10px; font-weight: 800; }
+.admin-case-modal { width: min(620px, 100%); }.admin-case-modal .dash-form { display: grid; gap: 8px; }.admin-case-modal > .modal-head { margin-bottom: 16px; }.admin-case-modal .dash-form > input { height: 39px; padding: 0 10px; }.admin-case-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }.admin-case-modal select, .admin-case-modal input { height: 38px; padding: 0 9px; font-size: 12px; }.admin-case-modal small { font-weight: 500; }.admin-case-linking { display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 0; padding: 7px 8px; border-radius: 8px; background: #eef5f0; color: #39765a; font-size: 10.5px; font-weight: 700; }
+
+.admin-state-loading { min-height: 132px; display: flex; align-items: center; gap: 12px; }.admin-state-loading > svg { color: #397d64; }.admin-state-loading h2 { margin: 0 0 3px; font: 700 17px var(--display); }
+
+@media (max-width: 860px) { .admin-case-workspace { grid-template-columns: 1fr; }.admin-case-list { max-height: 310px; border-right: 0; border-bottom: 1px solid rgba(31, 83, 63, .1); }.admin-case-detail { min-height: 440px; }.admin-case-stats { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 620px) { .admin-casework-shell { padding: 16px; border-radius: 17px; }.admin-casework-head { display: grid; }.admin-open-case { justify-self: start; }.admin-case-toolbar { display: grid; grid-template-columns: 1fr 1fr; }.admin-case-search { grid-column: 1 / -1; }.admin-case-toolbar select { width: 100%; }.admin-case-meta { grid-template-columns: 1fr; }.admin-case-controls, .admin-case-form-grid { grid-template-columns: 1fr; }.admin-case-detail { padding: 14px; }.admin-signal-actions { grid-column: 2; justify-self: start; }.admin-signal-panel .admin-attention-row { grid-template-columns: 30px minmax(0, 1fr); }.admin-signal-panel .admin-attention-cta { display: none; } }

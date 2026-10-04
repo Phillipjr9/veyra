@@ -35,6 +35,8 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthedUser;
+      /** Raw credential accepted by requireAuth (Authorization or X-Veyra-Token header). */
+      authToken?: string;
     }
   }
 }
@@ -164,6 +166,9 @@ export function createApp(dbPath?: string) {
       console.warn(`[auth] ${req.method} ${req.path}: Authorization was missing — authenticated via X-Veyra-Token`);
     }
     req.user = user;
+    // The credential that authenticated this request, whatever header carried
+    // it: logout revokes exactly this session, so it must not re-parse headers.
+    req.authToken = token;
     next();
   }
 
@@ -278,7 +283,8 @@ export function createApp(dbPath?: string) {
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, row.id, now(), now() + TOKEN_TTL_MS);
     const user = loadUser(row.id)!;
-    res.json({ token: signToken({ sub: row.id, jti: tokenId, role: user.role }), user: publicUser(user) });
+    const token = signToken({ sub: row.id, jti: tokenId, role: user.role });
+    res.json({ token, user: publicUser(user) });
   }));
 
   app.post("/api/auth/register", wrap((req, res) => {
@@ -352,11 +358,11 @@ export function createApp(dbPath?: string) {
     notify(id, "security", "Application received — we're reviewing it",
       "Thanks, we have your details. A specialist is reviewing your application now: most take 1–2 business days. We'll email you the moment there's news, and your dashboard unlocks as soon as you're approved.");
     res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
+
   }));
 
   app.post("/api/auth/logout", requireAuth, wrap((req, res) => {
-    const token = req.headers.authorization!.slice(7);
-    const payload = verifyToken(token);
+    const payload = verifyToken(req.authToken ?? "");
     if (payload) db.prepare("UPDATE sessions SET revoked = 1 WHERE token_id = ?").run(payload.jti);
     res.json({ ok: true });
   }));
@@ -716,6 +722,31 @@ export function createApp(dbPath?: string) {
     if (!col) return void res.status(400).json({ error: "Unknown preference." });
     db.prepare(`INSERT INTO preferences (user_id, ${col}) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET ${col} = excluded.${col}`)
       .run(req.user!.id, value ? 1 : 0);
+    res.json({ ok: true });
+  }));
+
+  /* ---------- budgets & cash plans ---------- */
+
+  app.post("/api/me/budgets", requireAuth, wrap((req, res) => {
+    const name = String(req.body?.name ?? "").trim();
+    const category = String(req.body?.category ?? "All spending").trim() || "All spending";
+    const monthlyLimit = dollarsToCents(req.body?.monthlyLimit ?? 0);
+    const alertPercent = Number(req.body?.alertPercent ?? 80);
+    if (!name || name.length > 48) return void res.status(400).json({ error: "Use a budget name between 1 and 48 characters." });
+    if (monthlyLimit <= 0 || monthlyLimit > MAX_TRANSFER_CENTS) return void res.status(400).json({ error: "Use a valid monthly budget limit." });
+    if (!Number.isInteger(alertPercent) || alertPercent < 50 || alertPercent > 100) {
+      return void res.status(400).json({ error: "Alert threshold must be between 50% and 100%." });
+    }
+    const id = rid("budget");
+    db.prepare(
+      "INSERT INTO budgets (id, user_id, name, category, monthly_limit_cents, alert_percent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, req.user!.id, name, category, monthlyLimit, alertPercent, now(), now());
+    res.status(201).json({ budget: { id, name, category, monthlyLimit: monthlyLimit / 100, alertPercent, createdAt: now() } });
+  }));
+
+  app.delete("/api/me/budgets/:id", requireAuth, wrap((req, res) => {
+    const result = db.prepare("DELETE FROM budgets WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
+    if (!result.changes) return void res.status(404).json({ error: "Budget not found." });
     res.json({ ok: true });
   }));
 
@@ -1795,6 +1826,176 @@ export function createApp(dbPath?: string) {
     res.json({ settings: Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map((r: any) => [r.key, r.value])) });
   }));
 
+  /* ============================== admin: durable operations casework ============================== */
+
+  const OPERATION_KINDS = ["kyc", "dispute", "account", "transaction", "support", "other"] as const;
+  const OPERATION_PRIORITIES = ["critical", "high", "normal", "low"] as const;
+  const OPERATION_STATUSES = ["open", "investigating", "waiting", "resolved"] as const;
+  type OperationKind = typeof OPERATION_KINDS[number];
+  type OperationPriority = typeof OPERATION_PRIORITIES[number];
+  type OperationStatus = typeof OPERATION_STATUSES[number];
+  const oneOf = <T extends readonly string[]>(value: unknown, values: T): value is T[number] =>
+    typeof value === "string" && (values as readonly string[]).includes(value);
+
+  const staffAssignee = (userId: string) => db.prepare(
+    "SELECT id, name, role FROM users WHERE id = ? AND status = 'active' AND role IN ('support', 'compliance', 'admin', 'superadmin')",
+  ).get(userId) as { id: string; name: string; role: string } | undefined;
+
+  const addOperationEvent = (caseId: string, req: Request, action: string, detail = "") => {
+    db.prepare(
+      "INSERT INTO operation_case_events (case_id, at, actor_id, actor_name, action, detail) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(caseId, now(), req.user!.id, req.user!.name, action, detail);
+  };
+
+  const loadOperationCases = () => {
+    const rows = db.prepare(`
+      SELECT c.*, member.name AS member_name, member.email AS member_email,
+             assignee.name AS assignee_name, assignee.role AS assignee_role,
+             creator.name AS creator_name
+      FROM operation_cases c
+      LEFT JOIN users member ON member.id = c.user_id
+      LEFT JOIN users assignee ON assignee.id = c.assigned_to
+      JOIN users creator ON creator.id = c.created_by
+      ORDER BY CASE c.status WHEN 'resolved' THEN 1 ELSE 0 END, c.priority = 'critical' DESC,
+               c.priority = 'high' DESC, c.due_at IS NULL, c.due_at ASC, c.updated_at DESC
+      LIMIT 300
+    `).all() as Array<Record<string, unknown>>;
+    return rows.map(row => {
+      const caseId = String(row.id);
+      const events = (db.prepare(
+        "SELECT id, at, actor_id, actor_name, action, detail FROM operation_case_events WHERE case_id = ? ORDER BY at DESC LIMIT 100",
+      ).all(caseId) as Array<Record<string, unknown>>).map(event => ({
+        id: Number(event.id), at: Number(event.at), actorId: String(event.actor_id), actorName: String(event.actor_name),
+        action: String(event.action), detail: String(event.detail ?? ""),
+      }));
+      const notes = (db.prepare(
+        "SELECT id, author_id, author_name, body, created_at FROM operation_case_notes WHERE case_id = ? ORDER BY created_at DESC LIMIT 100",
+      ).all(caseId) as Array<Record<string, unknown>>).map(note => ({
+        id: Number(note.id), authorId: String(note.author_id), authorName: String(note.author_name),
+        body: String(note.body), createdAt: Number(note.created_at),
+      }));
+      return {
+        id: caseId, title: String(row.title), kind: row.kind as OperationKind,
+        priority: row.priority as OperationPriority, status: row.status as OperationStatus,
+        summary: String(row.summary ?? ""), sourceType: row.source_type ? String(row.source_type) : undefined,
+        sourceId: row.source_id ? String(row.source_id) : undefined,
+        member: row.user_id ? { id: String(row.user_id), name: String(row.member_name ?? "Unknown member"), email: String(row.member_email ?? "") } : undefined,
+        assignee: row.assigned_to ? { id: String(row.assigned_to), name: String(row.assignee_name ?? "Unknown staff"), role: String(row.assignee_role ?? "") } : undefined,
+        createdBy: { id: String(row.created_by), name: String(row.creator_name) },
+        dueAt: row.due_at == null ? undefined : Number(row.due_at), createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at), closedAt: row.closed_at == null ? undefined : Number(row.closed_at), events, notes,
+      };
+    });
+  };
+
+  app.get("/api/admin/operations/cases", requireAuth, requirePerm("dashboard.view"), wrap((_req, res) => {
+    res.json({ cases: loadOperationCases() });
+  }));
+
+  app.post("/api/admin/operations/cases", requireAuth, requirePerm("dashboard.view"), wrap((req, res) => {
+    const body = req.body ?? {};
+    const title = String(body.title ?? "").trim();
+    const summary = String(body.summary ?? "").trim();
+    if (title.length < 3 || title.length > 120) return void res.status(400).json({ error: "Case title must be between 3 and 120 characters." });
+    if (summary.length > 2_000) return void res.status(400).json({ error: "Case summary must be 2,000 characters or fewer." });
+    if (!oneOf(body.kind, OPERATION_KINDS)) return void res.status(400).json({ error: "Choose a valid case type." });
+    if (!oneOf(body.priority ?? "normal", OPERATION_PRIORITIES)) return void res.status(400).json({ error: "Choose a valid priority." });
+    const memberId = typeof body.userId === "string" && body.userId ? body.userId : null;
+    if (memberId) {
+      const member = db.prepare("SELECT id FROM users WHERE id = ? AND role = 'user'").get(memberId);
+      if (!member) return void res.status(400).json({ error: "Choose a valid member." });
+    }
+    const assignedTo = typeof body.assignedTo === "string" && body.assignedTo ? body.assignedTo : null;
+    if (assignedTo && !staffAssignee(assignedTo)) return void res.status(400).json({ error: "Choose an active staff assignee." });
+    const dueAt = body.dueAt == null || body.dueAt === "" ? null : Number(body.dueAt);
+    if (dueAt !== null && (!Number.isFinite(dueAt) || dueAt < now() - 86_400_000 || dueAt > now() + 366 * 86_400_000)) {
+      return void res.status(400).json({ error: "Choose a valid due date within the next year." });
+    }
+    const sourceType = typeof body.sourceType === "string" && body.sourceType.trim() ? body.sourceType.trim().slice(0, 40) : null;
+    const sourceId = typeof body.sourceId === "string" && body.sourceId.trim() ? body.sourceId.trim().slice(0, 120) : null;
+    if (Boolean(sourceType) !== Boolean(sourceId)) return void res.status(400).json({ error: "A case source needs both a type and ID." });
+    if (sourceType && sourceId && db.prepare("SELECT 1 FROM operation_cases WHERE source_type = ? AND source_id = ?").get(sourceType, sourceId)) {
+      return void res.status(409).json({ error: "A tracked case already exists for this source." });
+    }
+    const id = `ops_${randomUUID()}`;
+    const stamp = now();
+    inTransaction(db, () => {
+      db.prepare(`INSERT INTO operation_cases
+        (id, title, kind, priority, status, summary, user_id, source_type, source_id, assigned_to, due_at, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, title, body.kind, body.priority ?? "normal", summary, memberId, sourceType, sourceId, assignedTo, dueAt, req.user!.id, stamp, stamp);
+      addOperationEvent(id, req, "case.created", "Case opened");
+      if (assignedTo) addOperationEvent(id, req, "case.assigned", `Assigned to ${staffAssignee(assignedTo)!.name}`);
+    });
+    audit(req, "operations.case.create", "System", `case:${id}`, `Opened ${body.priority ?? "normal"} ${body.kind} case: ${title}.`);
+    res.status(201).json({ case: loadOperationCases().find(item => item.id === id) });
+  }));
+
+  app.put("/api/admin/operations/cases/:id", requireAuth, requirePerm("dashboard.view"), wrap((req, res) => {
+    const caseId = String(req.params.id);
+    const current = db.prepare("SELECT * FROM operation_cases WHERE id = ?").get(caseId) as Record<string, unknown> | undefined;
+    if (!current) return void res.status(404).json({ error: "Case not found." });
+    const body = req.body ?? {};
+    const updates: string[] = [];
+    const values: Array<string | number | null> = [];
+    const changes: string[] = [];
+    const events: Array<[string, string]> = [];
+    if (body.priority !== undefined) {
+      if (!oneOf(body.priority, OPERATION_PRIORITIES)) return void res.status(400).json({ error: "Choose a valid priority." });
+      if (body.priority !== current.priority) { updates.push("priority = ?"); values.push(body.priority); changes.push(`priority ${current.priority} → ${body.priority}`); events.push(["case.priority", `Priority changed to ${body.priority}`]); }
+    }
+    if (body.status !== undefined) {
+      if (!oneOf(body.status, OPERATION_STATUSES)) return void res.status(400).json({ error: "Choose a valid case status." });
+      if (body.status !== current.status) {
+        updates.push("status = ?"); values.push(body.status); updates.push("closed_at = ?"); values.push(body.status === "resolved" ? now() : null);
+        changes.push(`status ${current.status} → ${body.status}`); events.push(["case.status", `Status changed to ${body.status}`]);
+      }
+    }
+    if (body.assignedTo !== undefined) {
+      const assignedTo = typeof body.assignedTo === "string" && body.assignedTo ? body.assignedTo : null;
+      if (assignedTo && !staffAssignee(assignedTo)) return void res.status(400).json({ error: "Choose an active staff assignee." });
+      if (assignedTo !== (current.assigned_to ?? null)) {
+        updates.push("assigned_to = ?"); values.push(assignedTo);
+        const assigneeName = assignedTo ? staffAssignee(assignedTo)!.name : "Unassigned";
+        changes.push(`owner → ${assigneeName}`); events.push(["case.assigned", `Assigned to ${assigneeName}`]);
+      }
+    }
+    if (body.dueAt !== undefined) {
+      const dueAt = body.dueAt == null || body.dueAt === "" ? null : Number(body.dueAt);
+      if (dueAt !== null && (!Number.isFinite(dueAt) || dueAt < now() - 86_400_000 || dueAt > now() + 366 * 86_400_000)) {
+        return void res.status(400).json({ error: "Choose a valid due date within the next year." });
+      }
+      if (dueAt !== (current.due_at ?? null)) {
+        updates.push("due_at = ?"); values.push(dueAt); changes.push(dueAt ? `due ${new Date(dueAt).toISOString()}` : "due date cleared");
+        events.push(["case.due", dueAt ? `Due ${new Date(dueAt).toISOString()}` : "Due date cleared"]);
+      }
+    }
+    if (!updates.length) return void res.status(400).json({ error: "Nothing to update." });
+    inTransaction(db, () => {
+      updates.push("updated_at = ?"); values.push(now()); values.push(caseId);
+      db.prepare(`UPDATE operation_cases SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+      for (const [action, detail] of events) addOperationEvent(caseId, req, action, detail);
+    });
+    audit(req, "operations.case.update", "System", `case:${caseId}`, `Updated ${String(current.title)}: ${changes.join("; ")}.`);
+    res.json({ case: loadOperationCases().find(item => item.id === caseId) });
+  }));
+
+  app.post("/api/admin/operations/cases/:id/notes", requireAuth, requirePerm("dashboard.view"), wrap((req, res) => {
+    const caseId = String(req.params.id);
+    const body = String(req.body?.body ?? "").trim();
+    if (body.length < 2 || body.length > 2_000) return void res.status(400).json({ error: "Case notes must be between 2 and 2,000 characters." });
+    const exists = db.prepare("SELECT title FROM operation_cases WHERE id = ?").get(caseId) as { title: string } | undefined;
+    if (!exists) return void res.status(404).json({ error: "Case not found." });
+    inTransaction(db, () => {
+      db.prepare("INSERT INTO operation_case_notes (case_id, author_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(caseId, req.user!.id, req.user!.name, body, now());
+      db.prepare("UPDATE operation_cases SET updated_at = ? WHERE id = ?").run(now(), caseId);
+      addOperationEvent(caseId, req, "case.note", "Internal note added");
+    });
+    audit(req, "operations.case.note", "System", `case:${caseId}`, `Added an internal note to ${exists.title}.`);
+    res.status(201).json({ case: loadOperationCases().find(item => item.id === caseId) });
+  }));
+
   /* ============================== admin: aggregate state ============================== */
 
   // One round trip for the Super Admin console: users, account summaries,
@@ -1921,8 +2122,9 @@ export function createApp(dbPath?: string) {
 
     const settingsRows = db.prepare("SELECT key, value FROM settings").all() as Array<{ key: string; value: string }>;
     const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
+    const operationCases = loadOperationCases();
 
-    res.json({ users, accounts, transactions, disputes, kycQueue, audit: auditEntries, roles, settings });
+    res.json({ users, accounts, transactions, disputes, kycQueue, operationCases, audit: auditEntries, roles, settings });
   }));
 
   /* ============================== errors ============================== */

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiReachability, probeApi, getToken, ApiError, endSession } from "./api";
+
 import { useToast } from "../components/Toast";
 import { useAuth } from "./auth";
 
@@ -115,6 +116,16 @@ export type ScheduledPayment = {
   memo?: string;
 };
 
+/** Member-owned monthly spending or operating limit. The server stores the plan; live spend is derived from ledger activity. */
+export type Budget = {
+  id: string;
+  name: string;
+  category: string;
+  monthlyLimit: number;
+  alertPercent: number;
+  createdAt: number;
+};
+
 export type Dispute = {
   id: string;
   transactionId: string;
@@ -217,6 +228,7 @@ export type Account = {
   scheduledPayments: ScheduledPayment[];
   disputes: Dispute[];
   sessions: SecuritySession[];
+  budgets: Budget[];
   scoutApplied: string[];
   kyc: KycRecord;
   /** Platform-level status set by admins ("restricted" blocks outgoing sends). */
@@ -356,11 +368,12 @@ const emptyAccount = (): Account => ({
   bankDetails: { accountNumber: "", routingNumber: "", bankName: "", accountType: "Business checking", holder: "" },
   team: [], perks: [], notifications: [],
   preferences: { twoFactor: true, loginAlerts: true, scoutAuto: true, weeklyDigest: false },
-  savingsPockets: [], payees: [], scheduledPayments: [], disputes: [], sessions: [], scoutApplied: [],
+  savingsPockets: [], payees: [], scheduledPayments: [], disputes: [], sessions: [], budgets: [], scoutApplied: [],
   kyc: {
     review: { state: "approved", note: "", requirements: [] },
     status: "not_started", completeness: 0, lastUpdated: 0, nextStep: "", documentType: "", country: "",
   },
+
 });
 
 function normalize(raw: unknown, p: Profile): Account {
@@ -492,6 +505,7 @@ function normalize(raw: unknown, p: Profile): Account {
     scheduledPayments: list<ScheduledPayment>(r.scheduledPayments) ?? base.scheduledPayments,
     disputes: list<Dispute>(r.disputes) ?? base.disputes,
     sessions: list<SecuritySession>(r.sessions) ?? base.sessions,
+    budgets: list<Budget>(r.budgets) ?? base.budgets,
     scoutApplied: list<string>(r.scoutApplied) ?? [],
     accountStatus: r.accountStatus === "restricted" ? "restricted" : "active",
     kyc: {
@@ -598,6 +612,7 @@ type InviteInput = { name: string; email: string; role: TeamMember["role"]; mont
 type PocketInput = { name: string; target: number; color: string; icon: SavingsPocket["icon"] };
 type PayeeInput = { name: string; nickname?: string; bankName: string; routingNumber: string; accountLast4: string; accountType: Payee["accountType"] };
 type ScheduledInput = { payeeId?: string; payeeName: string; amount: number; category: string; frequency: ScheduledPayment["frequency"]; nextDate: number; autopay: boolean; memo?: string };
+type BudgetInput = { name: string; category: string; monthlyLimit: number; alertPercent: number };
 type DisputeInput = { transactionId: string; reason: string; detail?: string };
 
 function useAccountState() {
@@ -641,7 +656,7 @@ function useAccountState() {
         setAccountError(err instanceof Error ? err.message : "Could not load your account.");
       }
     })();
-    // Reload only when the signed-in user changes; profile edits sync below.
+    // Profile edits sync below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
@@ -748,6 +763,7 @@ function useAccountState() {
     if (!canSync()) return;
     enqueue(() => apiDelete(resolveDeferred(path)));
   }, [canSync, enqueue]);
+
 
   // Keep account holder + owner row in sync with profile edits.
   useEffect(() => {
@@ -1313,6 +1329,27 @@ function useAccountState() {
     [adoptId, commit, resolveId, syncPost],
   );
 
+  const createBudget = useCallback(
+    (input: BudgetInput): Budget | null => {
+      const name = input.name.trim();
+      const limit = r2(input.monthlyLimit);
+      if (!name || limit <= 0 || input.alertPercent < 50 || input.alertPercent > 100) return null;
+      const budget: Budget = {
+        id: rid("budget"), name, category: input.category || "All spending", monthlyLimit: limit,
+        alertPercent: Math.round(input.alertPercent), createdAt: Date.now(),
+      };
+      commit(a => ({ ...a, budgets: [budget, ...a.budgets] }));
+      syncPost("/api/me/budgets", { name: budget.name, category: budget.category, monthlyLimit: budget.monthlyLimit, alertPercent: budget.alertPercent });
+      return budget;
+    },
+    [commit, syncPost],
+  );
+
+  const removeBudget = useCallback((id: string) => {
+    commit(a => ({ ...a, budgets: a.budgets.filter(budget => budget.id !== id) }));
+    syncDelete(`/api/me/budgets/${id}`);
+  }, [commit, syncDelete]);
+
   const createDispute = useCallback(
     (input: DisputeInput): Dispute | null => {
       const txn = ref.current?.transactions.find(t => t.id === input.transactionId);
@@ -1432,6 +1469,8 @@ function useAccountState() {
       toggleScheduledPayment,
       removeScheduledPayment,
       payScheduledNow,
+      createBudget,
+      removeBudget,
       createDispute,
       revokeSession,
       toggleTrustedSession,
@@ -1442,7 +1481,7 @@ function useAccountState() {
       setPreference,
       exportCSV,
     }),
-    [account, accountError, user, deposit, depositCheck, sendPayment, redeemRewards, applyScoutSavings, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
+    [account, accountError, user, deposit, depositCheck, sendPayment, redeemRewards, applyScoutSavings, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createBudget, removeBudget, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
   );
 }
 

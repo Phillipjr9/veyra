@@ -164,6 +164,7 @@ function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]
             </motion.button>
           );
         })}
+
       </div>
     </section>
   );
@@ -171,6 +172,7 @@ function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]
 
 export function LoginPage() {
   const { login, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
+
   const toast = useToast();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: string } };
@@ -188,6 +190,7 @@ export function LoginPage() {
       const me = await login(asEmail, asPassword);
       const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
       navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
+
     } catch (err) {
       // Say what happened AND what to do about it: the server's own wording, a
       // hint for the cause, and the status code. "Can't log in" with no reason
@@ -271,6 +274,7 @@ export function LoginPage() {
       )}
 
       {demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
+
 
       <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
 

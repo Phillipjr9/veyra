@@ -61,6 +61,7 @@ app.listen(PORT, "0.0.0.0", () => {
       console.log("No ADMIN_EMAIL set — create the first Super Admin by starting with ADMIN_EMAIL + ADMIN_PASSWORD.");
     }
     return;
+
   }
 
   if (process.env.DEMO_SEED === "0") {
