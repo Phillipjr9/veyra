@@ -91,6 +91,17 @@
   .segmented button { height: 38px; flex: 1 0 auto; padding: 0 13px; font-size: 13.5px; }
   .logout { height: 40px; padding: 0 12px; }
 
+  /* Inline "open this panel" links are the only action in their card on a
+     phone — at text height (17–24px) they are a deliberate miss under a thumb. */
+  .business-readiness-link,
+  .text-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  /* The business cards use bare links for "Review invoices", "Open ledger" … */
+  .business-dashboard a { display: inline-flex; align-items: center; min-height: 38px; }
+
   /* Tables scroll inside their wrapper instead of pushing the page wide. */
   .admin-table-wrap,
   .table-wrap,
@@ -128,6 +139,10 @@
 
   /* Marketing: the newsletter field is not where a thumb should have to aim. */
   .footer-form input { font-size: 16px !important; }
+
+  /* Footer links stack two-per-row on a phone; 20px rows make them a
+     coin-toss with a thumb, so give each one a real hit area. */
+  footer a { display: inline-flex; align-items: center; min-height: 34px; }
 
   /* The marketing header floats 10px below the top edge once you scroll, and the
      page runs underneath that strip — headlines showed in the gap above the bar.

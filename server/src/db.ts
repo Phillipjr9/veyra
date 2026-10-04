@@ -68,6 +68,39 @@ function migrate(db: DatabaseSync): void {
   const applied = new Set(
     (db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map(r => r.version),
   );
+
+  /**
+   * Reconcile a database built by this branch before it merged main.
+   *
+   * Main and this branch each numbered their first two migrations 4 and 5, so a
+   * database that predates the merge can hold one numbering for work the other
+   * numbering describes — the account application (identity_profiles) and the
+   * review columns where the current list has spending plans and casework.
+   * Applying a migration whose result is already present aborts boot
+   * ("table ... already exists"), and skipping one whose result is missing
+   * leaves the tables the UI queries nowhere to be found.
+   *
+   * The shapes decide, not the recorded versions: anything already present is
+   * recorded as applied, and anything missing is left for the runner below.
+   */
+  const tableExists = (name: string) =>
+    Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+  const columnExists = (table: string, column: string) =>
+    Boolean(db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(column));
+  const presentButUnapplied: Array<[number, boolean]> = [
+    [4, tableExists("budgets")],
+    [5, tableExists("operation_cases")],
+    [6, tableExists("identity_profiles")],
+    [7, columnExists("kyc_records", "review_state")],
+  ];
+  const recordApplied = db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)");
+  for (const [version, present] of presentButUnapplied) {
+    if (present && !applied.has(version)) {
+      recordApplied.run(version, Date.now());
+      applied.add(version);
+    }
+  }
+
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.version)) continue;
     db.exec("BEGIN");

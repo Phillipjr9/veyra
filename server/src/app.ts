@@ -79,9 +79,14 @@ export function createApp(dbPath?: string) {
 
   const app = express();
   app.disable("x-powered-by");
+  // Every /api response is per-session and may be read on a shared computer:
+  // an ETag/304 lets the browser replay one member's cached body after another
+  // member signs in, so responses are never stored and never revalidated.
+  app.disable("etag");
   app.use(express.json({ limit: "256kb" }));
   app.use((_req, res, next) => {
     res.set({
+      "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*",
