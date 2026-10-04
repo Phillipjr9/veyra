@@ -25,7 +25,6 @@
 .dash-link-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dash-pill-badge { padding: 2px 7px; border-radius: 6px; background: var(--violet); color: #fff; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; }
 .app-nav-foot { padding-top: 12px; border-top: 1px solid var(--line); }
-.acct-pill { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding: 8px 10px; border-radius: 9px; background: var(--paper); font-size: 11.5px; color: #555060; }
 .dot-live { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #4aa870; box-shadow: 0 0 0 3px rgba(74,168,112,.18); animation: livePulse 2s ease-out infinite; }
 @keyframes livePulse { 0% { box-shadow: 0 0 0 0 rgba(74,168,112,.45); } 100% { box-shadow: 0 0 0 7px rgba(74,168,112,0); } }
 .app-user { display: flex; align-items: center; gap: 10px; padding: 4px 6px 10px; }
@@ -138,6 +137,22 @@
 .stat-balance { padding-bottom: 64px; }
 .stat-spark { position: absolute; left: 0; right: 0; bottom: 0; height: 56px; color: #9d86ff; pointer-events: none; }
 .spark { display: block; width: 100%; height: 100%; }
+/* The balance card's chart: one bar per transaction, green in / violet out,
+   drawn from the ledger itself. */
+/* Fits the 64px band the card already reserves for its sparkline, so the chart
+   sits inside the layout instead of colliding with the meta line above it. */
+.stat-bars { height: 64px; display: flex; flex-direction: column; padding: 0 20px 9px; pointer-events: auto; }
+.stat-bars-head { flex: none; height: 15px; display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; overflow: hidden; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.stat-bars-head > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+.stat-bars svg { flex: 1; min-height: 0; }
+.stat-bars-legend { display: inline-flex; align-items: center; gap: 5px; }
+.stat-bars-legend i { width: 7px; height: 7px; border-radius: 2px; }
+.stat-bars-legend i.in { background: #4aa870; }
+.stat-bars-legend i.out { margin-left: 6px; background: #9d86ff; }
+.balance-bar.in { fill: #4aa870; }
+.balance-bar.out { fill: #9d86ff; }
+.balance-bars-axis { stroke: rgba(24,23,29,.1); stroke-width: 1; }
+.stat-meta .down { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: #a04545; }
 .stat-dark { border-color: transparent; background: radial-gradient(circle at 100% 0, #5b43a3 0, transparent 55%), #221a2f; color: #fff; }
 .stat-dark .stat-top > span:first-child, .stat-dark .stat-note { color: #bdb5c9; }
 .stat-scout { border-color: #e1d7fd; background: linear-gradient(180deg, #fff, #faf7ff); }
@@ -335,6 +350,9 @@
 /* Modal */
 .modal-scrim { position: fixed; inset: 0; z-index: 220; display: flex; align-items: center; justify-content: center; overflow-y: auto; padding: 20px; background: rgba(18,13,28,.5); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 .modal { width: min(460px, 100%); max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); overflow-y: auto; padding: 24px; border-radius: 22px; background: var(--white); box-shadow: 0 40px 100px rgba(20,14,34,.32); }
+/* A full account application has a lot of rows; the review modal gets the room. */
+.modal.is-wide { width: min(760px, 100%); }
+.modal.is-wide .kyc-review-rows strong { max-width: 100%; overflow-wrap: anywhere; }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 6px; }
 .modal-head h3 { margin: 0; font: 600 20px/1.25 var(--display); letter-spacing: -.03em; }
 .modal-head p { margin: 4px 0 0; font-size: 13px; line-height: 1.45; color: var(--muted); }
@@ -722,7 +740,10 @@
 .dispute-callout > div { flex: 1; min-width: 0; }
 .dispute-callout strong { display: block; font-size: 13px; }
 .dispute-callout p { margin: 2px 0 0; font-size: 11.5px; }
-.dispute-list { display: grid; gap: 12px; }
+/* minmax(0, 1fr), not the implicit auto column: a single long name in a
+   claim card sized the track to its max-content width and pushed the whole
+   page sideways on a phone. */
+.dispute-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .dispute-card { padding: 16px; border: 1px solid var(--line); border-radius: 15px; background: #fff; }
 .dispute-card-head { display: flex; align-items: center; gap: 12px; }
 .dispute-card-head > div { flex: 1; min-width: 0; }
@@ -742,7 +763,9 @@
 
 .kyc-status-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
 .kyc-status-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-.kyc-status-ring { --kyc-progress: 72; position: relative; width: 82px; height: 82px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--violet) calc(var(--kyc-progress) * 1%), #efe8ff 0); }
+.kyc-status-ring { --kyc-progress: 72; position: relative; width: 82px; height: 82px; flex: none; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--violet) calc(var(--kyc-progress) * 1%), #efe8ff 0); }
+/* A percentage in an ellipse reads as a mistake: the ring is a fixed 82px
+   circle, so it must never flex-shrink when the row around it gets tight. */
 .kyc-status-ring::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: #fff; }
 .kyc-status-ring-inner { position: relative; z-index: 1; display: flex; align-items: baseline; gap: 2px; }
 .kyc-status-ring b { font: 600 22px var(--display); }
@@ -972,6 +995,15 @@
   .security-score > svg { display: none; }
 }
 
+/* Very narrow phones: the bar carries the balance, Scout and notifications. The
+   command palette is a keyboard affordance, so it is the one thing to drop —
+   without it the row still fits at 320px. */
+@media (max-width: 380px) {
+  /* Scoped to the bar so it outranks the shared trigger rule in admin.css,
+     which loads later in the cascade. */
+  .app-topbar .topbar-search-trigger { display: none; }
+}
+
 @media (max-width: 420px) {
   .app-page { padding: 20px 14px 64px; }
   .panel { padding: 18px 16px; }
@@ -1002,8 +1034,11 @@
 .kyc-banner.is-urgent { border: 1px solid #f0dcb2; background: #faf0dc; }
 .kyc-banner.is-info { border: 1px solid #ddd3fb; background: #ece7fb; }
 .kyc-banner-icon { width: 38px; height: 38px; flex: none; display: grid; place-items: center; border-radius: 12px; }
-.is-urgent .kyc-banner-icon { background: #f6e3bb; color: #8a6420; }
-.is-info .kyc-banner-icon { background: #ddd3fb; color: var(--violet-dark); }
+/* The tile now holds a rendered 3D shield rather than a stroked glyph, so the
+   wash behind it steps back and lets the object do the talking. */
+.kyc-banner-icon img { width: 34px; height: 34px; display: block; object-fit: contain; }
+.is-urgent .kyc-banner-icon { background: #f6e3bb88; color: #8a6420; }
+.is-info .kyc-banner-icon { background: #ddd3fb88; color: var(--violet-dark); }
 .kyc-banner-copy { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .kyc-banner-copy strong { font: 600 14px/1.25 var(--display); letter-spacing: -.01em; color: var(--ink); }
 .kyc-banner-copy > span { font-size: 12.5px; line-height: 1.55; color: #5f5c66; }
@@ -1047,6 +1082,12 @@
 .kyc-confirm input { margin-top: 3px; accent-color: var(--violet); }
 
 .kyc-submitted { display: flex; align-items: flex-start; gap: 16px; }
+/* The panel is an icon plus a block of copy and buttons. Without min-width:0
+   the text block refuses to shrink below its min-content width and the action
+   buttons hang past the right edge on a phone. */
+.kyc-submitted > div { min-width: 0; flex: 1 1 240px; }
+.kyc-submitted .modal-actions { flex-wrap: wrap; }
+.kyc-submitted .modal-actions > * { flex: 0 1 auto; white-space: nowrap; }
 .kyc-submitted > svg { flex: none; color: #2f7a4c; }
 .kyc-submitted h2 { margin: 0 0 6px; font: 600 18px/1.25 var(--display); letter-spacing: -.02em; }
 .kyc-submitted p { margin: 0; max-width: 520px; font-size: 13px; line-height: 1.65; color: var(--muted); }

@@ -1,0 +1,184 @@
+/**
+ * Phone-first fixes. Loaded last (see main.tsx) so it can correct the desktop
+ * stylesheets without them having to know about every phone quirk.
+ *
+ * Most of the product is used on a phone, so these are correctness rules, not
+ * decoration:
+ *
+ *   1. iOS Safari zooms the whole page when a focused control's text is under
+ *      16px. Nineteen controls in the app were 12–15px, so every tap on a field
+ *      zoomed the layout and left the page looking oversized and cut off — the
+ *      "too wide for mobile" symptom. Everything gets 16px on a phone.
+ *   2. `100vh` on iOS measures the viewport WITHOUT the browser chrome, so
+ *      full-height screens scroll a little even when they fit. `100dvh` tracks
+ *      the visible area.
+ *   3. Small text in a banking app on a phone is a legibility problem, and a
+ *      thumb needs ~44px to hit a control reliably.
+ */
+
+/* ---------- 1. never let iOS zoom on focus ---------- */
+
+@media (max-width: 900px), ((hover: none) and (pointer: coarse)) {
+  /*
+   * `!important` is deliberate: this is an accessibility floor, and the point
+   * is to beat every one-off 12–14px rule in the stylesheets above without
+   * having to audit each of them again when a new screen is added.
+   */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* Controls that are intentionally larger keep their size. */
+  .flow-amount-field input,
+  .hero-calc-form input,
+  .otp-code-input {
+    font-size: 24px !important;
+  }
+
+  /* Placeholders in a 16px field read as heavy body copy; calm them down. */
+  input::placeholder,
+  textarea::placeholder {
+    font-size: .92em;
+  }
+}
+
+/* ---------- 2. the viewport the phone actually shows ---------- */
+
+@supports (height: 100dvh) {
+  .auth-page,
+  .app-shell,
+  .bshell,
+  .pshell,
+  .business-root,
+  .personal-root,
+  .appstatus {
+    min-height: 100dvh;
+  }
+}
+
+/* The URL bar appears on scroll-down; keep fixed bars out of its way. */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .toast-stack { bottom: calc(20px + env(safe-area-inset-bottom)); }
+  .app-nav-foot, .bshell-rail-foot { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* ---------- 3. phones: rhythm, tap targets, legibility ---------- */
+
+@media (max-width: 700px) {
+  /* Sign-up is a long form on a phone; tighter vertical rhythm is one less
+     screen of scrolling, and 46px rows are comfortable under a thumb. */
+  .auth-form label { margin: 14px 0 6px; }
+  .auth-form input, .auth-form select { height: 46px; padding: 0 14px; }
+  .auth-form textarea { min-height: 96px; }
+  .field-row { gap: 12px; }
+
+  /* Tap targets: 44px is the smallest reliable thumb target. */
+  .auth-submit,
+  .dash-form button,
+  .solid-btn,
+  .ghost-btn {
+    min-height: 44px;
+  }
+  .ghost-btn.sm, .solid-btn.sm { min-height: 38px; }
+
+  /* Filter chips and segmented controls are how members slice a list on a
+     phone; 32px is a deliberate miss under a thumb, so give them room. */
+  /* Wrap rather than scroll: a filter row that hides its last option offscreen
+     reads as a broken list ("Frozen" was invisible on the cards page). */
+  .segmented { display: flex; flex-wrap: wrap; width: 100%; padding: 4px; }
+  .segmented button { height: 38px; flex: 1 0 auto; padding: 0 13px; font-size: 13.5px; }
+  .logout { height: 40px; padding: 0 12px; }
+
+  /* Inline "open this panel" links are the only action in their card on a
+     phone — at text height (17–24px) they are a deliberate miss under a thumb. */
+  .business-readiness-link,
+  .text-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  /* The business cards use bare links for "Review invoices", "Open ledger" … */
+  .business-dashboard a { display: inline-flex; align-items: center; min-height: 38px; }
+
+  /* Tables scroll inside their wrapper instead of pushing the page wide. */
+  .admin-table-wrap,
+  .table-wrap,
+  .dispute-table-wrap,
+  .statement-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* The top bar carries the balance, search, Scout and notifications. At 390px
+     the full-width "Quick jump… ⌘K" trigger left no room, so the balance spilled
+     out of its box and the label wrapped onto two lines. Collapse it to an icon
+     like the other bar buttons; below 380px it is dropped entirely (dashboard.css). */
+  .app-topbar .topbar-search-trigger { display: inline-flex; width: 38px; padding: 0; justify-content: center; }
+  .app-topbar .topbar-search-trigger span,
+  .app-topbar .topbar-search-trigger kbd { display: none; }
+  .topbar-balance-value { min-width: 0; }
+  .topbar-balance { overflow: hidden; }
+  /* This rule knowingly overrides the `display: none` dashboard.css applies
+     under 380px: as an icon the trigger fits even at 320px (measured), and
+     losing search on an iPhone SE-class phone is a worse trade than a
+     pathologically long balance being clipped in an 8-figure edge case. */
+  .app-topbar .topbar-amount { font-size: 14.5px; }
+
+  /* The hero mock cards deliberately hang off their frame; ~10px matters on a
+     phone and the clip was cutting off their rounded edge. */
+  @media (max-width: 700px) {
+    .hero-ui { overflow: visible; }
+    .savings-toast, .secure-card { right: 2px; }
+  }
+
+  /* Dialogs get the whole screen instead of a cramped centred card. */
+  .modal-scrim { padding: 12px; align-items: flex-end; }
+  .modal, .admin-app .modal { width: 100%; max-width: 100%; max-height: 88dvh; border-radius: 18px 18px 14px 14px; }
+
+  /* Marketing: the newsletter field is not where a thumb should have to aim. */
+  .footer-form input { font-size: 16px !important; }
+
+  /* Footer links stack two-per-row on a phone; 20px rows make them a
+     coin-toss with a thumb, so give each one a real hit area. */
+  footer a { display: inline-flex; align-items: center; min-height: 34px; }
+
+  /* The marketing header floats 10px below the top edge once you scroll, and the
+     page runs underneath that strip — headlines showed in the gap above the bar.
+     While scrolled it sits flush and the strip is opaque, which is also why the
+     content behind it no longer tints the logo row. */
+  .site-header.is-scrolled { padding: 0; background: var(--paper); }
+  .is-scrolled .nav-wrap { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: 0 10px 26px rgba(31,23,50,.07); }
+  .mobile-nav { top: 58px; }
+
+  /* Admin console chrome. A phone bar holds the brand, the status dot and the
+     controls — nothing else. Buttons keep their 40px hit area (they must never
+     compress into slivers), and the labels that only fit a desktop bar go. */
+  /* Console chrome, same phone shape as the member app's own bar: 60px tall,
+     icon-only chips, 14px gutters — and the operator's name moves into the
+     hero (dashboard.css hides the member bar's avatar on phones too). */
+  .admin-topbar { height: 60px; gap: 8px; padding: 0 14px; }
+  .admin-topbar-left { flex: none; gap: 6px; }
+  .admin-topbar-tag { display: none; }
+  .admin-topbar-right { flex: 1; justify-content: flex-end; gap: 8px; }
+  .admin-topbar-health { flex: none; width: 38px; padding: 0; justify-content: center; }
+  .admin-topbar-health b { display: none; }
+  .admin-topbar-exit { display: none; }
+  .admin-topbar-id { display: none; }
+  .admin-body { padding: 16px 12px 0; }
+
+  /* The rail rides right under the bar — and stays readable while a tab
+     scrolls beneath it, which a translucent panel did not. */
+  .admin-tabs-nav {
+    top: 60px;
+    background: rgba(255, 253, 249, .98);
+    box-shadow: 0 10px 26px rgba(28, 39, 35, .08);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+}
+
+/* Anything still wider than the phone clips rather than making the page
+   pan sideways — the audit in this file's commit message is the real guard. */
+html, body { overflow-x: clip; }

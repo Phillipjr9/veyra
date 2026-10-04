@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from "motion/react";
 import { ArrowRight, LayoutDashboard, Menu, X } from "lucide-react";
 import { Btn, Logo } from "./common";
 import { useAuth } from "../lib/auth";
+import { lockScroll } from "../lib/scrollLock";
+import { BackButton, canGoBack } from "./BackButton";
 
 const NAV = [
   { label: "Personal", to: "/personal" },
@@ -28,14 +30,16 @@ export function Header() {
   }, []);
   useEffect(() => { setOpen(false); }, [pathname]);
   useEffect(() => {
-    document.body.style.overflow = open ? "hidden" : "";
-    return () => { document.body.style.overflow = ""; };
+    if (!open) return;
+    const unlock = lockScroll();
+    return unlock;
   }, [open]);
 
   return (
     <header className={`site-header ${scrolled ? "is-scrolled" : ""}`}>
       <div className="nav-wrap">
         <Logo />
+        {canGoBack() && <BackButton fallback="/" />}
         <nav className="desktop-nav" aria-label="Primary">
           {NAV.map(n => (
             <NavLink key={n.to} to={n.to} className={({ isActive }) => (isActive ? "is-active" : "")}>{n.label}</NavLink>

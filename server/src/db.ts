@@ -21,7 +21,43 @@ export function openDb(path = DB_PATH): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   migrate(db);
+  ensureAccountNumbers(db);
   return db;
+}
+
+/**
+ * The 12-digit number every user's account is opened with.
+ *
+ * Generated rather than guessed: a collision is retried instead of surfacing the
+ * UNIQUE constraint as a 500, because a sign-up must always end with a usable
+ * account number. The last resort derives from the clock so it cannot loop.
+ */
+export function generateAccountNumber(db: DatabaseSync): string {
+  const taken = db.prepare("SELECT 1 FROM accounts WHERE account_number = ?");
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const candidate = Array.from({ length: 12 }, () => Math.floor(Math.random() * 10)).join("");
+    if (!taken.get(candidate)) return candidate;
+  }
+  return String(Date.now()).padStart(12, "0").slice(-12);
+}
+
+/**
+ * Boot sweep: nobody is left without an account row. Sign-up and the demo
+ * fixtures create one inline; this catches users who predate that — including
+ * any member whose row predates the number, and staff accounts created by the
+ * bootstrap.
+ */
+function ensureAccountNumbers(db: DatabaseSync): void {
+  const missing = db.prepare(
+    `SELECT u.id FROM users u LEFT JOIN accounts a ON a.user_id = u.id WHERE a.id IS NULL`,
+  ).all() as Array<{ id: string }>;
+  if (!missing.length) return;
+  const insert = db.prepare(
+    `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
+     VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
+  );
+  const ts = Date.now();
+  for (const row of missing) insert.run(row.id, generateAccountNumber(db), ts, ts);
 }
 
 function migrate(db: DatabaseSync): void {
@@ -32,6 +68,39 @@ function migrate(db: DatabaseSync): void {
   const applied = new Set(
     (db.prepare("SELECT version FROM schema_migrations").all() as Array<{ version: number }>).map(r => r.version),
   );
+
+  /**
+   * Reconcile a database built by this branch before it merged main.
+   *
+   * Main and this branch each numbered their first two migrations 4 and 5, so a
+   * database that predates the merge can hold one numbering for work the other
+   * numbering describes — the account application (identity_profiles) and the
+   * review columns where the current list has spending plans and casework.
+   * Applying a migration whose result is already present aborts boot
+   * ("table ... already exists"), and skipping one whose result is missing
+   * leaves the tables the UI queries nowhere to be found.
+   *
+   * The shapes decide, not the recorded versions: anything already present is
+   * recorded as applied, and anything missing is left for the runner below.
+   */
+  const tableExists = (name: string) =>
+    Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+  const columnExists = (table: string, column: string) =>
+    Boolean(db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(column));
+  const presentButUnapplied: Array<[number, boolean]> = [
+    [4, tableExists("budgets")],
+    [5, tableExists("operation_cases")],
+    [6, tableExists("identity_profiles")],
+    [7, columnExists("kyc_records", "review_state")],
+  ];
+  const recordApplied = db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)");
+  for (const [version, present] of presentButUnapplied) {
+    if (present && !applied.has(version)) {
+      recordApplied.run(version, Date.now());
+      applied.add(version);
+    }
+  }
+
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.version)) continue;
     db.exec("BEGIN");
@@ -438,6 +507,86 @@ CREATE TRIGGER operation_notes_no_delete BEFORE DELETE ON operation_case_notes
   BEGIN SELECT RAISE(ABORT, 'operation_case_notes are append-only'); END;
 `,
   },
+  {
+    version: 6,
+    sql: `
+-- v6: the account application. Everything a bank must collect before it can
+-- open a checking or business account: the applicant's legal identity and
+-- government ID, where they live, the business's registration details, and the
+-- beneficial owner. One row per member; the applicant's own account is created
+-- in the same transaction. Tax IDs (SSN / EIN) are stored whole because
+-- compliance has to read them back, but they are masked on every member-facing
+-- response — only staff with customers.view see the full value.
+CREATE TABLE identity_profiles (
+  user_id            TEXT PRIMARY KEY REFERENCES users(id),
+  -- Applicant (both account types)
+  first_name         TEXT NOT NULL DEFAULT '',
+  middle_name        TEXT NOT NULL DEFAULT '',
+  last_name          TEXT NOT NULL DEFAULT '',
+  dob                TEXT NOT NULL DEFAULT '',
+  ssn                TEXT NOT NULL DEFAULT '',
+  citizenship        TEXT NOT NULL DEFAULT '',
+  phone              TEXT NOT NULL DEFAULT '',
+  email              TEXT NOT NULL DEFAULT '',
+  address_line1      TEXT NOT NULL DEFAULT '',
+  address_line2      TEXT NOT NULL DEFAULT '',
+  city               TEXT NOT NULL DEFAULT '',
+  state              TEXT NOT NULL DEFAULT '',
+  postal_code        TEXT NOT NULL DEFAULT '',
+  country            TEXT NOT NULL DEFAULT '',
+  id_type            TEXT NOT NULL DEFAULT '',
+  id_number          TEXT NOT NULL DEFAULT '',
+  id_issuer          TEXT NOT NULL DEFAULT '',
+  id_expiry          TEXT NOT NULL DEFAULT '',
+  occupation         TEXT NOT NULL DEFAULT '',
+  employer           TEXT NOT NULL DEFAULT '',
+  income_range       TEXT NOT NULL DEFAULT '',
+  source_of_funds    TEXT NOT NULL DEFAULT '',
+  -- Business applicants only
+  legal_name         TEXT NOT NULL DEFAULT '',
+  dba                TEXT NOT NULL DEFAULT '',
+  ein                TEXT NOT NULL DEFAULT '',
+  business_type      TEXT NOT NULL DEFAULT '',
+  formation_state    TEXT NOT NULL DEFAULT '',
+  formation_date     TEXT NOT NULL DEFAULT '',
+  industry           TEXT NOT NULL DEFAULT '',
+  website            TEXT NOT NULL DEFAULT '',
+  monthly_volume     TEXT NOT NULL DEFAULT '',
+  biz_address_line1  TEXT NOT NULL DEFAULT '',
+  biz_address_line2  TEXT NOT NULL DEFAULT '',
+  biz_city           TEXT NOT NULL DEFAULT '',
+  biz_state          TEXT NOT NULL DEFAULT '',
+  biz_postal_code    TEXT NOT NULL DEFAULT '',
+  biz_country        TEXT NOT NULL DEFAULT '',
+  owner_name         TEXT NOT NULL DEFAULT '',
+  owner_title        TEXT NOT NULL DEFAULT '',
+  owner_dob          TEXT NOT NULL DEFAULT '',
+  owner_ssn          TEXT NOT NULL DEFAULT '',
+  owner_ownership    INTEGER NOT NULL DEFAULT 0,
+  submitted_at       INTEGER
+);
+CREATE INDEX idx_identity_submitted ON identity_profiles(submitted_at);
+`,
+  },
+  {
+    version: 7,
+    sql: `
+-- v7: the application review. Opening an account is a decision a human makes,
+-- so a new application waits in review instead of granting dashboard access.
+--
+-- This is deliberately separate from kyc_records.status, which tracks document
+-- verification for accounts that are already open. Someone already banking with
+-- us who is asked for an extra document must not lose access to their money.
+--
+-- DEFAULT 'approved' is what every existing row gets: accounts created before
+-- this migration are open and stay open.
+ALTER TABLE kyc_records ADD COLUMN review_state TEXT NOT NULL DEFAULT 'approved';
+ALTER TABLE kyc_records ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE kyc_records ADD COLUMN review_reqs_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE kyc_records ADD COLUMN reviewed_by TEXT;
+ALTER TABLE kyc_records ADD COLUMN reviewed_at INTEGER;
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */
@@ -471,9 +620,21 @@ export function setSetting(db: DatabaseSync, key: string, value: string, updated
   ).run(key, value, now(), updatedBy);
 }
 
+/**
+ * A bad request from the caller (malformed amount, unknown enum, …). The error
+ * middleware maps this to 400 with the message, so client mistakes never
+ * surface as 500s.
+ */
+export class BadInputError extends Error {}
+
+/**
+ * Converts a dollar amount to integer cents. Accepts numbers and numeric
+ * strings only — objects, arrays, booleans and trailing-garbage strings
+ * ("12abc") are rejected instead of being coerced.
+ */
 export function dollarsToCents(input: number | string): number {
-  const value = typeof input === "string" ? parseFloat(input) : input;
-  if (!Number.isFinite(value)) throw new Error("Invalid amount.");
+  const value = typeof input === "string" ? (input.trim() === "" ? NaN : Number(input)) : typeof input === "number" ? input : NaN;
+  if (!Number.isFinite(value)) throw new BadInputError("Invalid amount.");
   return Math.round(value * 100);
 }
 

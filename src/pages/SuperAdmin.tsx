@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import {
   Activity, AlertOctagon, AlertTriangle, BadgeCheck, Bell, Check, ClipboardList, Clock3, Download, FileText,
-  Landmark, Lock, LogOut, Mail, Megaphone, MessageSquare, Plus, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
+  ExternalLink, KeyRound, Landmark, Lock, LogOut, Mail, Megaphone, MessageSquare, Plus, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
   TrendingUp, UserCheck, UserPlus, UserRound, Users, Wallet,
 } from "lucide-react";
 import {
@@ -10,7 +10,7 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
-import { apiGet, apiPost, apiPut } from "../lib/api";
+import { apiGet, apiGetText, apiPatch, apiPost, apiPut } from "../lib/api";
 import {
   money, longDate, downloadFile,
   type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
@@ -21,6 +21,7 @@ import {
   PERMISSIONS, PERMISSION_LABELS, type Permission, type Role, type StaffRole,
 } from "../lib/permissions";
 import { useToast } from "../components/Toast";
+import { Logo } from "../components/common";
 
 type AdminUser = User & { role?: UserRole };
 type TabId =
@@ -53,9 +54,6 @@ const ago = (ts: number) => {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 };
-
-const csv = (rows: Array<Array<string | number>>) =>
-  rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
 
 /** Audit entry as served by GET /api/admin/state (append-only, server-side). */
 type AuditEntry = {
@@ -125,11 +123,10 @@ export function SuperAdminPage() {
   const toast = useToast();
   const navigate = useNavigate();
 
-  // Production is staff-only. The development console is intentionally open
-  // when the server's preview mode is enabled, so the product can be reviewed
-  // without maintaining a browser authentication session.
-  const demoConsole = import.meta.env.DEV && !isStaff(user?.role);
-  if (!demoConsole && !isStaff(user?.role)) return <Navigate to="/app" replace />;
+  // Staff only, in every environment: the console exposes other members' money
+  // and identity data, and the API enforces the same rule (`requirePerm`), so a
+  // non-staff viewer would only see a wall of 403s.
+  if (!isStaff(user?.role)) return <Navigate to="/app" replace />;
 
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [tick, setTick] = useState(0);
@@ -164,6 +161,10 @@ export function SuperAdminPage() {
   const [searchTerm, setSearchTerm] = useState("");
   // Transactions
   const [txnFilter, setTxnFilter] = useState<"all" | "in" | "out" | "pending">("all");
+  // Account number correction
+  const [acctModal, setAcctModal] = useState(false);
+  const [acctNumber, setAcctNumber] = useState("");
+  const [acctSaving, setAcctSaving] = useState(false);
   // Balance adjustment
   const [adjustModal, setAdjustModal] = useState(false);
   const [targetUser, setTargetUser] = useState<AdminUser | null>(null);
@@ -244,7 +245,7 @@ export function SuperAdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick]);
 
-  const role = (demoConsole ? "superadmin" : user?.role ?? "user") as Role;
+  const role = (user?.role ?? "user") as Role;
   const allow = (perm: Permission) => can(role, perm);
   const guard = (perm: Permission, action: string): boolean => {
     try { assertCan(role, perm, action); return true; }
@@ -440,25 +441,68 @@ export function SuperAdminPage() {
         .catch((err: Error) => toast({ tone: "error", title: "Broadcast failed", description: err.message }));
   };
 
-  const handleExport = (kind: "customers" | "accounts" | "transactions" | "kyc" | "audit") => {
-    if (!guard("transactions.export", "export data")) return;
+  /**
+   * CSV exports are built by the API, not in the browser: the route enforces the
+   * permission, logs the export to the audit trail, and reads the database (the
+   * system of record) rather than the snapshot this tab happens to hold.
+   */
+  const EXPORTS = {
+    customers: { permissions: ["reports.view"], path: "/api/admin/reports/customers.csv", file: "veyra-customers" },
+    accounts: { permissions: ["reports.view"], path: "/api/admin/reports/accounts.csv", file: "veyra-accounts" },
+    // The ledger export is also reachable from the Transactions console, and the
+    // route accepts either permission (transactions.export opens only this file —
+    // the directory, balances and KYC exports stay reports.view).
+    transactions: { permissions: ["reports.view", "transactions.export"], path: "/api/admin/reports/transactions.csv", file: "veyra-ledger" },
+    kyc: { permissions: ["reports.view"], path: "/api/admin/reports/kyc.csv", file: "veyra-kyc" },
+    audit: { permissions: ["audit.view"], path: "/api/admin/audit/export.csv", file: "veyra-audit" },
+  } as const;
+
+  const handleExport = async (kind: keyof typeof EXPORTS) => {
+    const spec = EXPORTS[kind];
+    if (!spec.permissions.some(perm => allow(perm))) {
+      toast({ tone: "error", title: "Permission denied", description: `Exporting this data requires the ${spec.permissions.join(" or ")} permission.` });
+      return;
+    }
     const date = new Date().toISOString().slice(0, 10);
-    if (kind === "customers") {
-      downloadFile(`veyra-customers-${date}.csv`, csv([["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Role"], ...users.map(u => [u.id, u.name, u.email, u.phone || "", u.business || "", u.accountType, u.plan, u.role ?? "user"])]), "text/csv");
-    } else if (kind === "accounts") {
-      downloadFile(`veyra-accounts-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "Balance", "Pending", "Cards", "Frozen cards", "KYC", "Status", "Last activity"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.balance.toFixed(2), a.pendingBalance.toFixed(2), a.cards, a.frozenCards, a.kycStatus, a.accountStatus, a.lastActivity ? longDate(a.lastActivity) : "Never"])]), "text/csv");
-    } else if (kind === "transactions") {
-      downloadFile(`veyra-ledger-${date}.csv`, csv([["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"], ...allTxns.map(t => [longDate(t.date), t.memberName, t.merchant, t.category, t.method ?? "", t.amount.toFixed(2), t.status ?? "cleared", t.reference ?? ""])]), "text/csv");
-    } else if (kind === "kyc") {
-      downloadFile(`veyra-kyc-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Requested at"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.kycStatus, `${a.kycStatus === "not_started" ? 0 : a.kycStatus === "approved" ? 100 : 72}%`, a.lastActivity ? longDate(a.lastActivity) : "—"])]), "text/csv");
-    } else {
-      // Audit trail (append-only, DB-enforced) exported straight from the API.
-      fetch("/api/admin/audit/export.csv")
-        .then(r => r.text())
-        .then(text => downloadFile(`veyra-audit-${date}.csv`, text, "text/csv"))
-        .catch(() => toast({ tone: "error", title: "Export failed", description: "The audit export couldn't be downloaded." }));
+    try {
+      const csvText = await apiGetText(spec.path);
+      downloadFile(`${spec.file}-${date}.csv`, csvText, "text/csv");
+    } catch (err) {
+      toast({ tone: "error", title: "Export failed", description: err instanceof Error ? err.message : "The export couldn't be downloaded." });
+      return;
     }
     toast({ tone: "success", title: "Export ready", description: `${kind[0].toUpperCase() + kind.slice(1)} CSV downloaded.` });
+  };
+
+  const openAccountNumber = (u: AdminUser) => {
+    setTargetUser(u);
+    setAcctNumber(accountBy(u.id)?.accountNumber ?? "");
+    setAcctModal(true);
+  };
+
+  const handleSaveAccountNumber = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!targetUser) return;
+    if (!guard("accounts.edit_number", "edit account numbers")) return;
+    const digits = acctNumber.replace(/[\s-]/g, "");
+    if (!/^\d{12}$/.test(digits)) {
+      toast({ tone: "error", title: "Account number not saved", description: "An account number is exactly 12 digits." });
+      return;
+    }
+    setAcctSaving(true);
+    apiPatch<{ accountNumber: string; changed: boolean }>(`/api/admin/members/${targetUser.id}/account-number`, { accountNumber: digits })
+      .then(r => {
+        toast({
+          tone: "success",
+          title: r.changed ? "Account number updated" : "Account number unchanged",
+          description: r.changed
+            ? `${targetUser.name} is now addressed as ${r.accountNumber}. The change is on the audit trail.`
+            : `${targetUser.name} already had ${r.accountNumber}.`,
+        });
+        setAcctModal(false); setAcctNumber(""); refresh();
+      })
+      .catch((err: Error) => toast({ tone: "error", title: "Account number not saved", description: err.message }))
+      .finally(() => setAcctSaving(false));
   };
 
   const handleSaveSettings = () => {
@@ -644,7 +688,56 @@ export function SuperAdminPage() {
 
   return (
     <div className="app-page superadmin-page">
-      {/* Console header */}
+      {/* Console chrome.
+          The hero below is the page's banner and scrolls away with it, which
+          used to leave a long tab with no brand, no status and no way out. This
+          bar stays — and it is the member app's own top bar (full width, flush
+          with the top, hairline underneath) rather than a card floating over
+          the page, so nothing reads as overlapped while a tab scrolls. */}
+      <header className="admin-topbar">
+        <div className="admin-topbar-left">
+          <Logo to="/app" />
+          <span className="admin-topbar-tag">Control center</span>
+        </div>
+        <div className="admin-topbar-right">
+          <span
+            className={`admin-topbar-health ${apiHealth}`}
+            title={systemFrozen ? "Payment rails halted" : "Payment rails available"}
+          >
+            <span className={`admin-health-dot ${apiHealth}`} />
+            <b>{apiHealth === "online" ? "Online" : apiHealth === "offline" ? "Degraded" : "Checking"}</b>
+          </span>
+          <button type="button" className="topbar-btn admin-refresh-btn" onClick={refresh} aria-label="Refresh console data">
+            <RefreshCw size={14} /><span>Refresh</span>
+          </button>
+          {allow("settings.manage") && (
+            <button
+              type="button"
+              className={`topbar-btn admin-emergency-btn ${systemFrozen ? "active-halt" : ""}`}
+              onClick={() => setHaltConfirm(true)}
+              aria-label={systemFrozen ? "Resume payment rails" : "Halt payment rails"}
+            >
+              <AlertTriangle size={14} /><span>{systemFrozen ? "Rails halted" : "Emergency halt"}</span>
+            </button>
+          )}
+          <Link to="/app" className="topbar-btn admin-topbar-exit">Member view <ExternalLink size={12} /></Link>
+          <span className="admin-topbar-id" title={`${user?.name ?? "Operator"} · ${user?.email ?? ""}`}>
+            <span className="admin-topbar-avatar" aria-hidden="true">
+              {(user?.name ?? "Operator").split(" ").filter(Boolean).map(part => part[0]).slice(0, 2).join("").toUpperCase()}
+            </span>
+            <span className="admin-topbar-id-copy">
+              <b>{user?.name ?? "Operator"}</b>
+              <small>{ROLE_LABELS[role]}</small>
+            </span>
+          </span>
+          <button type="button" className="icon-btn admin-signout-btn" onClick={() => { logout(); navigate("/"); }} aria-label="Sign out"><LogOut size={15} /></button>
+        </div>
+      </header>
+
+      {/* The bar spans the viewport; the console's own column starts here. */}
+      <div className="admin-body">
+
+      {/* Console hero — the banner for the console as a whole */}
       <header className="app-head admin-head admin-command-header">
         <div className="admin-command-copy">
           <span className="admin-master-badge">
@@ -654,17 +747,11 @@ export function SuperAdminPage() {
           <p>Real-time authority over member safety, money movement and platform configuration.</p>
           <div className="admin-command-meta">
             <span className="admin-role-chip">{ROLE_LABELS[role]}</span>
-            <span className="admin-identity">{user?.name ?? "Preview operator"} · {user?.email ?? "demo mode"}</span>
+            <span className="admin-identity">{systemFrozen ? "Payment rails halted platform-wide" : "All payment rails available"}</span>
+            {/* The phone top bar has room for the avatar only; the operator's
+                own name and email belong somewhere they can be read. */}
+            <span className="admin-identity admin-identity-phone">{user?.name ?? "Operator"} · {user?.email ?? ""}</span>
           </div>
-        </div>
-        <div className="admin-command-actions">
-          <div className="admin-command-health">
-            <span className={`admin-health-dot ${apiHealth}`} />
-            <span><b>{apiHealth === "online" ? "Platform online" : apiHealth === "offline" ? "Connection degraded" : "Checking platform"}</b><small>{systemFrozen ? "Payment rails halted" : "Payment rails available"}</small></span>
-          </div>
-          <button type="button" className="admin-refresh-btn" onClick={refresh}><RefreshCw size={14} /> Refresh</button>
-          {allow("settings.manage") && <button type="button" className={`admin-emergency-btn ${systemFrozen ? "active-halt" : ""}`} onClick={() => setHaltConfirm(true)}><AlertTriangle size={14} /> {systemFrozen ? "Rails halted" : "Emergency halt"}</button>}
-          <button type="button" className="admin-signout-btn" onClick={() => { logout(); navigate("/"); }} aria-label="Sign out"><LogOut size={15} /></button>
         </div>
       </header>
 
@@ -1012,6 +1099,9 @@ export function SuperAdminPage() {
                           <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
                             {allow("customers.adjust_balance") && (
                               <button type="button" className="solid-btn sm" onClick={() => { setTargetUser(u); setAdjustType("credit"); setAdjustModal(true); }}>Deposit / Withdraw</button>
+                            )}
+                            {allow("accounts.edit_number") && acct && (
+                              <button type="button" className="ghost-btn sm" onClick={() => openAccountNumber(u)}><KeyRound size={13} /> Account no.</button>
                             )}
                             {allow("kyc.request") && (
                               <button type="button" className="ghost-btn sm" onClick={() => { setTargetUser(u); setKycReqs(["identity", "address"]); setKycModal(true); }}><UserCheck size={13} /> Request KYC</button>
@@ -1623,6 +1713,32 @@ export function SuperAdminPage() {
         </div>
       )}
 
+      {/* Account number correction */}
+      {acctModal && targetUser && (
+        <div className="modal-scrim" onClick={() => setAcctModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head"><h3>Account number: {targetUser.name}</h3></div>
+            <form onSubmit={handleSaveAccountNumber} className="dash-form">
+              <label htmlFor="adm-acct-number">12-digit account number</label>
+              <input
+                id="adm-acct-number"
+                inputMode="numeric"
+                value={acctNumber}
+                onChange={e => setAcctNumber(e.target.value)}
+                placeholder="000000000000"
+              />
+              <p className="admin-before-after">
+                Current: <strong>{accountBy(targetUser.id)?.accountNumber || "not set"}</strong>
+              </p>
+              <div className="modal-actions">
+                <button type="button" className="ghost-btn" onClick={() => setAcctModal(false)}>Cancel</button>
+                <button type="submit" className="solid-btn" disabled={acctSaving}>{acctSaving ? "Saving…" : "Save account number"}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* KYC request */}
       {kycModal && targetUser && (
         <div className="modal-scrim" onClick={() => setKycModal(false)}>
@@ -1811,6 +1927,7 @@ export function SuperAdminPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

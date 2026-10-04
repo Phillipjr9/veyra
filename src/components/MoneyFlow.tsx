@@ -1,11 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowDownLeft, ArrowRight, Building2, Check, Download, Landmark, Lock, ShieldCheck, Sparkles, X, Zap } from "lucide-react";
+import { AlertCircle, ArrowDownLeft, ArrowRight, Building2, Check, Download, Landmark, Lock, ShieldCheck, Sparkles, X, Zap } from "lucide-react";
 import { downloadFile, longDate, money, rewardRate, useAcct, type MoveResult } from "../lib/store";
 import { useToast } from "./Toast";
 import { ease, useCountUp } from "./common";
 import { VeyraMark } from "./VeyraMark";
+import { lockScroll } from "../lib/scrollLock";
 
 /* ============================================================
    Types & constants
@@ -18,7 +19,7 @@ type DepositFlow = { kind: "deposit"; stage: Stage; sourceId: string; amount: nu
 type SendFlow = { kind: "send"; stage: Stage; draft: SendDraft };
 type FlowState = DepositFlow | SendFlow;
 type NodeInfo = { label: string; sub: string; icon: ReactNode };
-type Track = { from: NodeInfo; to: NodeInfo };
+export type Track = { from: NodeInfo; to: NodeInfo };
 type Row = { label: string; value: ReactNode; tone?: "free" | "reward" | "scout" };
 
 export const ETA: Record<SendMethod, string> = {
@@ -38,6 +39,17 @@ export function ZelleLogo({ size = 18 }: { size?: number }) {
     </svg>
   );
 }
+
+/**
+ * Deposit limits, in dollars. These mirror the server (see MAX_DEPOSIT_CENTS in
+ * server/src/app.ts): the form refuses an over-limit amount before the request
+ * is made, so the member sees why next to the field instead of a rejection
+ * arriving after the transfer was already submitted.
+ */
+const DEPOSIT_MIN = 10;
+const DEPOSIT_MAX = 100_000;
+const DEPOSIT_MIN_LABEL = "$10";
+const DEPOSIT_MAX_LABEL = "$100,000";
 
 const SOURCES = [
   { id: "processor", label: "Card processor payout", short: "Card processor", sub: "Daily sales settlement", Icon: Zap },
@@ -150,7 +162,7 @@ function StageDots({ kind, stage }: { kind: FlowState["kind"]; stage: Stage }) {
   );
 }
 
-function FlowTrack({ from, to, state, progress }: Track & { state: "idle" | "moving" | "done"; progress: number }) {
+export function FlowTrack({ from, to, state, progress }: Track & { state: "idle" | "moving" | "done"; progress: number }) {
   const reduce = useReducedMotion();
   const moving = state === "moving" && !reduce;
   return (
@@ -194,7 +206,11 @@ function DepositForm({ flow, balance, onSource, onContinue, onCancel }: {
 }) {
   const [value, setValue] = useState(String(flow.amount));
   const amount = Number.parseFloat(value) || 0;
-  const valid = amount >= 10 && amount <= 1_000_000;
+  const empty = value.trim() === "";
+  const tooSmall = !empty && amount < DEPOSIT_MIN;
+  const tooLarge = !empty && amount > DEPOSIT_MAX;
+  const invalid = !empty && (tooSmall || tooLarge);
+  const valid = !empty && !invalid;
   return (
     <form className="flow-pane" onSubmit={e => { e.preventDefault(); if (valid) onContinue(Math.round(amount * 100) / 100); }}>
       <h2 className="flow-title" id="flow-title">Add funds</h2>
@@ -213,22 +229,48 @@ function DepositForm({ flow, balance, onSource, onContinue, onCancel }: {
         })}
       </div>
       <label className="flow-label" htmlFor="flow-amount">Amount</label>
-      <div className="flow-amount-field">
+      <div className={`flow-amount-field ${invalid ? "is-invalid" : ""}`}>
         <span>$</span>
-        <input id="flow-amount" type="number" inputMode="decimal" min={10} max={1000000} step="0.01" value={value} onChange={e => setValue(e.target.value)} />
+        <input
+          id="flow-amount"
+          type="number"
+          inputMode="decimal"
+          min={DEPOSIT_MIN}
+          max={DEPOSIT_MAX}
+          step="0.01"
+          value={value}
+          aria-invalid={invalid}
+          aria-describedby={invalid ? "flow-amount-error" : "flow-amount-limit"}
+          onChange={e => setValue(e.target.value)}
+        />
       </div>
+      {/* The limit lives at the field, not below the fold: an over-limit amount
+          is refused here, with the reason in view, and never reaches the server. */}
+      {invalid ? (
+        <p className="flow-field-error" id="flow-amount-error" role="alert">
+          <AlertCircle size={14} />
+          <span>
+            {tooLarge
+              ? `Maximum ${DEPOSIT_MAX_LABEL} per deposit. Enter ${money(DEPOSIT_MAX, false)} or less.`
+              : `Minimum ${DEPOSIT_MIN_LABEL} per deposit.`}
+          </span>
+        </p>
+      ) : (
+        <p className="flow-field-note" id="flow-amount-limit">Minimum {DEPOSIT_MIN_LABEL} · Maximum {DEPOSIT_MAX_LABEL} per deposit</p>
+      )}
       <div className="quick-row">
         {[1000, 5000, 10000, 25000].map(q => (
           <button type="button" key={q} className={amount === q ? "on" : ""} onClick={() => setValue(String(q))}>{money(q, false)}</button>
         ))}
       </div>
-      {!valid && value !== "" && <p className="flow-hint">Enter an amount between $10 and $1,000,000.</p>}
       <div className="flow-rows compact">
         <div className="flow-row"><span>Balance after deposit</span><b>{money(balance + (valid ? amount : 0))}</b></div>
       </div>
       <div className="flow-actions">
         <button type="button" className="ghost-btn" onClick={onCancel}>Cancel</button>
-        <button type="submit" className="solid-btn" disabled={!valid}>Review deposit <ArrowRight size={15} /></button>
+        <button type="submit" className="solid-btn" disabled={!valid} title={invalid ? "Amount is outside the deposit limits" : undefined}>
+          Review deposit <ArrowRight size={15} />
+        </button>
       </div>
     </form>
   );
@@ -469,9 +511,8 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
+    const unlock = lockScroll();
+    return unlock;
   }, [open]);
 
   useEffect(() => {

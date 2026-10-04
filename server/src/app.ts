@@ -9,18 +9,21 @@
  *   4. runs financial operations inside IMMEDIATE transactions (atomic),
  *   5. writes an audit entry with before/after values.
  */
-import express, { type NextFunction, type Request, type Response } from "express";
+import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
-import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid } from "./db.js";
-import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, TOKEN_TTL_MS } from "./security.js";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError, generateAccountNumber } from "./db.js";
+import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
+import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
   PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS, type Permission, type StaffRole,
 } from "./rbac.js";
 import { logAdminAction } from "./audit.js";
+import { validateApplication, rowToApplication, memberIdentity, submissionFor, PROFILE_COLUMNS } from "./identity.js";
 import { seed } from "./seed.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
-import { ensurePreviewProfiles, previewAccessEnabled, previewUserId, type PreviewPersona } from "./preview.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -32,7 +35,7 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthedUser;
-      /** Raw credential accepted by requireAuth (bearer header or HttpOnly session cookie). */
+      /** Raw credential accepted by requireAuth (Authorization or X-Veyra-Token header). */
       authToken?: string;
     }
   }
@@ -43,8 +46,31 @@ const wrap = (fn: Handler) => (req: Request, res: Response, next: NextFunction) 
   Promise.resolve(fn(req, res)).catch(next);
 };
 
+/** A route failure with an explicit HTTP status (declines are 403, limits 400). */
+class RouteError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+/** Maps a thrown error to its response: RouteError keeps its status, anything else is a 400. */
+const fail = (res: Response, err: unknown, fallback: string) => {
+  if (err instanceof RouteError) return void res.status(err.status).json({ error: err.message });
+  if (err instanceof BadInputError) return void res.status(400).json({ error: err.message });
+  res.status(400).json({ error: err instanceof Error ? err.message : fallback });
+};
+
 const MAX_TRANSFER_CENTS = 250_000_00;      // $250k per transfer
 const MAX_DEPOSIT_CENTS = 100_000_00;       // $100k per deposit
+
+/**
+ * What a reviewer can ask an applicant for. Deliberately a short, closed list:
+ * these map onto the documents the member's application screen knows how to ask
+ * for, so "we need more" never turns into an unactionable sentence.
+ */
+const REVIEW_REQUIREMENTS: readonly string[] = ["identity", "address", "selfie", "funds"];
+const requirementLabel = (key: string | number): string =>
+  ({ identity: "a government photo ID", address: "proof of address", selfie: "a selfie holding your ID", funds: "proof of the funds" } as Record<string, string>)[key] ?? key;
 const MAX_ADJUSTMENT_CENTS = 10_000_000_00; // $10M per admin adjustment
 
 export function createApp(dbPath?: string) {
@@ -53,13 +79,18 @@ export function createApp(dbPath?: string) {
 
   const app = express();
   app.disable("x-powered-by");
+  // Every /api response is per-session and may be read on a shared computer:
+  // an ETag/304 lets the browser replay one member's cached body after another
+  // member signs in, so responses are never stored and never revalidated.
+  app.disable("etag");
   app.use(express.json({ limit: "256kb" }));
   app.use((_req, res, next) => {
     res.set({
+      "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Veyra-Token",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     });
     if (_req.method === "OPTIONS") return res.sendStatus(204);
@@ -82,103 +113,68 @@ export function createApp(dbPath?: string) {
       "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at FROM users WHERE id = ?",
     ).get(userId) as Record<string, unknown> | undefined;
     if (!row) return null;
+    // The account the user just opened, so the sign-up response is already
+    // complete: the member never sees a blank account number.
+    const account = db.prepare(
+      "SELECT account_number, routing_number, bank_name FROM accounts WHERE user_id = ?",
+    ).get(userId) as Record<string, unknown> | undefined;
     return {
       id: String(row.id), name: String(row.name), email: String(row.email), phone: String(row.phone ?? ""),
       business: String(row.business ?? ""), accountType: row.account_type as "personal" | "business",
       avatarUrl: String(row.avatar_url ?? "/images/avatar-3d-default.svg"),
       role: row.role as string, plan: row.plan as "Starter" | "Pro", createdAt: row.created_at as number,
+      bankDetails: {
+        accountNumber: String(account?.account_number ?? ""),
+        routingNumber: String(account?.routing_number ?? ""),
+        bankName: String(account?.bank_name ?? ""),
+      },
     };
   }
 
-  const AUTH_COOKIE = "veyra_session";
-
-  // A same-origin, HttpOnly session cookie makes the embedded preview resilient
-  // when its browser blocks or rewrites localStorage. The bearer token remains
-  // supported for API clients and existing production integrations.
-  const readCookie = (req: Request, name: string): string | null => {
-    const encoded = String(req.headers.cookie ?? "")
-      .split(";")
-      .map(part => part.trim())
-      .find(part => part.startsWith(`${name}=`))
-      ?.slice(name.length + 1);
-    if (!encoded) return null;
-    try { return decodeURIComponent(encoded); } catch { return null; }
-  };
-
-  const setSessionCookie = (res: Response, token: string) => {
-    const attributes = [
-      `${AUTH_COOKIE}=${encodeURIComponent(token)}`,
-      "Path=/api",
-      "HttpOnly",
-      "SameSite=Strict",
-      `Max-Age=${Math.floor(TOKEN_TTL_MS / 1000)}`,
-    ];
-    // Production deployments should only expose the cookie over HTTPS. Local
-    // preview remains HTTP-compatible behind Vite's development proxy.
-    if (process.env.NODE_ENV === "production") attributes.push("Secure");
-    res.setHeader("Set-Cookie", attributes.join("; "));
-  };
-
-  const clearSessionCookie = (res: Response) => {
-    const attributes = [
-      `${AUTH_COOKIE}=`,
-      "Path=/api",
-      "HttpOnly",
-      "SameSite=Strict",
-      "Max-Age=0",
-    ];
-    if (process.env.NODE_ENV === "production") attributes.push("Secure");
-    res.setHeader("Set-Cookie", attributes.join("; "));
-  };
+  /**
+   * The bearer token is accepted from `Authorization: Bearer …` **or** from the
+   * `X-Veyra-Token` header.
+   *
+   * The second header is not decoration: preview hosts and other reverse
+   * proxies sometimes consume or rewrite `Authorization` for their own access
+   * control, so the app's token never reaches this process and every
+   * authenticated request fails with "Authentication required." — a sign-in
+   * loop that looks like a client bug from the outside. A custom header passes
+   * through untouched, so the client sends both and works either way.
+   */
+  function bearerToken(req: Request): { token: string | null; via: string | null } {
+    const header = req.headers.authorization;
+    if (header?.startsWith("Bearer ")) return { token: header.slice(7), via: "authorization" };
+    const custom = req.headers["x-veyra-token"];
+    if (typeof custom === "string" && custom.trim()) return { token: custom.trim(), via: "x-veyra-token" };
+    return { token: null, via: null };
+  }
 
   function requireAuth(req: Request, res: Response, next: NextFunction): void {
-    const header = req.headers.authorization;
-    const bearer = header?.startsWith("Bearer ") ? header.slice(7) : null;
-    const cookie = readCookie(req, AUTH_COOKIE);
-    // Prefer the HttpOnly cookie issued by the latest browser login. If a
-    // stale bearer header survives in blocked storage, it cannot override a
-    // newer preview role choice. Non-browser API clients still use bearer.
-    const candidates = [...new Set([cookie, bearer].filter((value): value is string => Boolean(value)))];
-    if (!candidates.length) {
-      // The Arena/Vite demo console is deliberately browseable without a
-      // browser login. It is not a production backdoor: previewAccessEnabled
-      // requires PREVIEW_ACCOUNTS=true and returns false in production.
-      if (previewAccessEnabled() && req.path.startsWith("/api/admin")) {
-        ensurePreviewProfiles(db);
-        const demoAdmin = loadUser(previewUserId("superadmin"));
-        if (demoAdmin) {
-          req.user = demoAdmin;
-          return next();
-        }
-      }
-      return void res.status(401).json({ error: "Authentication required." });
+    const { token, via } = bearerToken(req);
+    // `code` lets the client react precisely (and explain itself) instead of
+    // treating every 401 as the same thing.
+    if (!token) return void res.status(401).json({ error: "Authentication required.", code: "no_token" });
+    const payload = verifyToken(token);
+    if (!payload) return void res.status(401).json({ error: "Invalid or expired token.", code: "bad_token" });
+    const session = db.prepare("SELECT revoked, expires_at FROM sessions WHERE token_id = ?").get(payload.jti) as
+      | { revoked: number; expires_at: number }
+      | undefined;
+    if (!session || session.revoked || session.expires_at < Date.now()) {
+      return void res.status(401).json({ error: "Session revoked — sign in again.", code: "session_revoked" });
     }
-
-    for (const token of candidates) {
-      const payload = verifyToken(token);
-      if (!payload) continue;
-      const session = db.prepare("SELECT revoked, expires_at FROM sessions WHERE token_id = ?").get(payload.jti) as
-        | { revoked: number; expires_at: number }
-        | undefined;
-      if (!session || session.revoked || session.expires_at < Date.now()) continue;
-      const user = loadUser(payload.sub);
-      if (!user) continue;
-      req.user = user;
-      req.authToken = token;
-      return next();
+    const user = loadUser(payload.sub);
+    if (!user) return void res.status(401).json({ error: "Account no longer exists.", code: "no_account" });
+    if (process.env.NODE_ENV !== "production" && via === "x-veyra-token") {
+      // Worth knowing in dev: it means a proxy between the browser and this
+      // process is eating the Authorization header.
+      console.warn(`[auth] ${req.method} ${req.path}: Authorization was missing — authenticated via X-Veyra-Token`);
     }
-    // If a preview tab retained an expired bearer during hot reload, fall
-    // through to the same intentionally anonymous demo identity instead of
-    // stranding the visible admin console behind a stale credential.
-    if (previewAccessEnabled() && req.path.startsWith("/api/admin")) {
-      ensurePreviewProfiles(db);
-      const demoAdmin = loadUser(previewUserId("superadmin"));
-      if (demoAdmin) {
-        req.user = demoAdmin;
-        return next();
-      }
-    }
-    return void res.status(401).json({ error: "Invalid or expired token." });
+    req.user = user;
+    // The credential that authenticated this request, whatever header carried
+    // it: logout revokes exactly this session, so it must not re-parse headers.
+    req.authToken = token;
+    next();
   }
 
   function requirePerm(permission: Permission) {
@@ -191,12 +187,67 @@ export function createApp(dbPath?: string) {
     };
   }
 
+  /**
+   * A route reachable through any one of several permissions, for endpoints
+   * whose data is legitimately in more than one operator's remit — the
+   * transaction ledger export is both a report (`reports.view`) and the
+   * transactions console's export (`transactions.export`).
+   */
+  function requireAnyPerm(...permissions: Permission[]) {
+    return (req: Request, res: Response, next: NextFunction): void => {
+      if (!isStaffRole(req.user?.role ?? "")) return void res.status(403).json({ error: "Admin access required." });
+      if (!permissions.some(permission => can(db, req.user!.role, permission))) {
+        return void res.status(403).json({ error: `Access denied — your role does not permit you to ${permissions.join(" or ")}.` });
+      }
+      next();
+    };
+  }
+
   const audit = (req: Request, action: string, category: Parameters<typeof logAdminAction>[1]["category"], target: string, summary: string, before?: string, after?: string) =>
     logAdminAction(db, { adminId: req.user!.id, adminName: req.user!.name, action, category, target, summary, before, after });
 
   const notify = (userId: string, type: string, title: string, detail: string) =>
     db.prepare("INSERT INTO notifications (id, user_id, type, title, detail, read, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)")
       .run(rid("n"), userId, type, title, detail, now());
+
+  /**
+   * Member-management routes operate on member accounts only. Staff and Super
+   * Admin accounts are not member surface: an operator with customer
+   * permissions must not be able to credit, debit or restrict a colleague
+   * (including the Super Admin) through them. Unknown and non-member ids both
+   * answer 404 so the route can't be used to enumerate staff.
+   */
+  /**
+   * Typed access to the application decision.
+   *
+   * `approved` covers every account that existed before the review queue (the
+   * migration defaults it that way) and every member a human has cleared, so
+   * this never locks out an established customer.
+   */
+  const reviewRow = (userId: string) =>
+    db.prepare("SELECT review_state, review_note, review_reqs_json FROM kyc_records WHERE user_id = ?")
+      .get(userId) as { review_state?: string; review_note?: string; review_reqs_json?: string } | undefined;
+  const reviewState = (userId: string) => String(reviewRow(userId)?.review_state ?? "approved");
+
+  /**
+   * Money and account changes wait until the application is approved. The
+   * dashboard is already hidden from an unapproved member; this is the part that
+   * holds when the request comes straight to the API instead of the UI.
+   */
+  const requireApproved: RequestHandler = (req, res, next) => {
+    const state = reviewState(req.user!.id);
+    if (state === "approved") return void next();
+    res.status(403).json({
+      error: state === "rejected"
+        ? "This account application was declined, so the account cannot be used."
+        : "Your account is still in review. You'll be able to move money as soon as it's approved.",
+      code: "review_pending",
+      reviewState: state,
+    });
+  };
+
+  const memberRow = (id: string) =>
+    db.prepare("SELECT * FROM users WHERE id = ? AND role = 'user'").get(id) as Record<string, unknown> | undefined;
 
   /* ============================== health ============================== */
 
@@ -207,56 +258,42 @@ export function createApp(dbPath?: string) {
 
   /* ============================== auth routes ============================== */
 
-  // Explicitly opt-in role shortcuts for a disposable local/Vite preview. The
-  // endpoint is absent in production and the matching UI is dev-build only.
-  app.post("/api/auth/preview-access", wrap((req, res) => {
-    if (!previewAccessEnabled()) return void res.sendStatus(404);
-    const persona = req.body?.persona;
-    if (persona !== "personal" && persona !== "business" && persona !== "superadmin") {
-      return void res.status(400).json({ error: "Choose a valid preview account." });
-    }
-    ensurePreviewProfiles(db);
-    const userId = previewUserId(persona as PreviewPersona);
-    const user = loadUser(userId);
-    if (!user) return void res.status(500).json({ error: "Preview profile was not created." });
-    const tokenId = randomUUID();
-    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
-      .run(tokenId, user.id, now(), now() + TOKEN_TTL_MS);
-    const token = signToken({ sub: user.id, jti: tokenId, role: user.role });
-    const account = buildMemberState(db, user.id);
-    if (!account) return void res.status(500).json({ error: "Preview account state was not created." });
-    setSessionCookie(res, token);
-    // The server snapshot lets an embedded preview render immediately even if
-    // its browser delays a follow-up authenticated fetch. It is created by the
-    // same guarded preview endpoint and is never exposed in production.
-    res.json({ token, user: fullUser(user.id), account });
-  }));
-
   app.post("/api/auth/login", wrap((req, res) => {
     const ip = req.ip ?? "unknown";
-    if (!rateLimit(`login:${ip}`)) return void res.status(429).json({ error: "Too many attempts — try again in a minute." });
     const { email, password } = req.body ?? {};
     if (typeof email !== "string" || typeof password !== "string") {
       return void res.status(400).json({ error: "Email and password are required." });
+    }
+    // Only failed credentials spend the budget, so signing in successfully —
+    // repeatedly, from a shared address, which is how a preview proxy looks to
+    // the server — can never lock anyone out. Two buckets: one per account
+    // (stops guessing a password) and a looser one per address (stops spraying
+    // many accounts).
+    const accountKey = `login:acct:${email.trim().toLowerCase()}`;
+    const ipKey = `login:ip:${ip}`;
+    if (failureBudgetExceeded(accountKey, 6) || failureBudgetExceeded(ipKey, 30)) {
+      return void res.status(429).json({ error: "Too many failed attempts — wait a minute, then try again." });
     }
     const row = db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").get(email) as
       | (AuthedUser & { password_hash: string; account_type: string })
       | undefined;
     // Constant-ish response regardless of which factor failed.
     if (!row || !verifyPassword(password, row.password_hash)) {
+      recordFailure(accountKey);
+      recordFailure(ipKey);
       return void res.status(401).json({ error: "Email or password doesn't match our records." });
     }
+    clearFailures(accountKey);
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, row.id, now(), now() + TOKEN_TTL_MS);
     const user = loadUser(row.id)!;
     const token = signToken({ sub: row.id, jti: tokenId, role: user.role });
-    setSessionCookie(res, token);
     res.json({ token, user: publicUser(user) });
   }));
 
   app.post("/api/auth/register", wrap((req, res) => {
-    const { name, email, password, accountType, business, phone, plan } = req.body ?? {};
+    const { name, email, password, accountType, business, phone, plan, profile } = req.body ?? {};
     if (typeof name !== "string" || !name.trim()) return void res.status(400).json({ error: "Name is required." });
     if (typeof email !== "string" || !/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "A valid email is required." });
     if (typeof password !== "string" || password.length < 8) return void res.status(400).json({ error: "Use at least 8 characters for your password." });
@@ -264,23 +301,54 @@ export function createApp(dbPath?: string) {
       return void res.status(409).json({ error: "An account with that email already exists." });
     }
     const type = accountType === "personal" ? "personal" : "business";
-    if (type === "business" && typeof business !== "string" && !business) {
+    // A business account must name the business (empty/whitespace/non-string
+    // values are rejected, not silently stored as "").
+    if (type === "business" && (typeof business !== "string" || !business.trim())) {
       return void res.status(400).json({ error: "Business name is required for a business account." });
     }
+    // Opening an account requires a complete application: legal identity, tax
+    // ID, address and government ID (plus the business and its beneficial
+    // owner for business accounts). The account is never created without it.
+    const application = validateApplication(type, {
+      ...(profile && typeof profile === "object" ? profile : {}),
+      email: (typeof profile?.email === "string" && profile.email.trim()) ? profile.email : email,
+      phone: (typeof profile?.phone === "string" && profile.phone.trim()) ? profile.phone : phone,
+    });
+    if (!application.ok) return void res.status(422).json({ error: application.error, field: application.field });
+    // Opening an account is the most expensive thing an anonymous caller can ask
+    // for (scrypt + five inserts), so the budget counts only applications that
+    // got this far — a typo costs nothing, a scripted sign-up run does not.
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`register:${ip}`, 20, 60 * 60_000)) {
+      return void res.status(429).json({ error: "Too many accounts opened from this connection — try again in an hour." });
+    }
+    const values = application.value;
     const id = rid("u");
-    const accountNumber = Array.from({ length: 12 }, () => Math.floor(Math.random() * 10)).join("");
+    const accountNumber = generateAccountNumber(db);
     inTransaction(db, () => {
       db.prepare(
         `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
          VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?, 'active', ?)`,
-      ).run(id, name.trim(), email, typeof phone === "string" ? phone.trim() : "", typeof business === "string" ? business : "", type,
+      ).run(id, name.trim(), email, values.phone, typeof business === "string" ? business : "", type,
         plan === "Starter" ? "Starter" : "Pro", hashPassword(password), now());
+      // The application itself. One row, one shape, normalised by identity.ts.
+      const columns = PROFILE_COLUMNS.map(([, column]) => column);
+      db.prepare(
+        `INSERT INTO identity_profiles (user_id, ${columns.join(", ")}, submitted_at)
+         VALUES (?, ${columns.map(() => "?").join(", ")}, ?)`,
+      ).run(id, ...PROFILE_COLUMNS.map(([key]) => values[key]), now());
       // Production start: a real, empty account — $0 balance, no cards, no history.
       db.prepare(
         `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
          VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
       ).run(id, accountNumber, now(), now());
-      db.prepare("INSERT INTO kyc_records (user_id, status, completeness, updated_at) VALUES (?, 'not_started', 0, ?)").run(id, now());
+      // The application is complete and goes straight into compliance's queue —
+      // nothing to chase, nothing missing. `review_state` is what actually holds
+      // the dashboard shut until a human decides; `status` records the documents.
+      db.prepare(
+        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at, review_state)
+         VALUES (?, 'in_review', 100, ?, ?, ?, ?, 'in_review')`,
+      ).run(id, values.idType, values.country, JSON.stringify(submissionFor(type, values, now())), now());
       db.prepare("INSERT INTO preferences (user_id, two_factor, login_alerts, scout_auto, weekly_digest) VALUES (?, 1, 1, 1, 0)").run(id);
       db.prepare(
         `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status) VALUES (?, ?, ?, ?, 'Owner', 0, 0, 'active')`,
@@ -292,15 +360,15 @@ export function createApp(dbPath?: string) {
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
-    const token = signToken({ sub: id, jti: tokenId, role: "user" });
-    setSessionCookie(res, token);
-    res.status(201).json({ token, user: fullUser(id) });
+    notify(id, "security", "Application received — we're reviewing it",
+      "Thanks, we have your details. A specialist is reviewing your application now: most take 1–2 business days. We'll email you the moment there's news, and your dashboard unlocks as soon as you're approved.");
+    res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
+
   }));
 
   app.post("/api/auth/logout", requireAuth, wrap((req, res) => {
     const payload = verifyToken(req.authToken ?? "");
     if (payload) db.prepare("UPDATE sessions SET revoked = 1 WHERE token_id = ?").run(payload.jti);
-    clearSessionCookie(res);
     res.json({ ok: true });
   }));
 
@@ -329,6 +397,8 @@ export function createApp(dbPath?: string) {
     const row = typeof email === "string" && email
       ? (db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string } | undefined)
       : undefined;
+    /** Development only — see the note on the TODO below. */
+    let devCode = "";
     if (row) {
       const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
       const tokenHash = createHash("sha256").update(token).digest("hex");
@@ -336,11 +406,20 @@ export function createApp(dbPath?: string) {
         "INSERT INTO password_resets (token_hash, user_id, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)",
       ).run(tokenHash, row.id, Date.now() + 30 * 60_000, now());
       // TODO(send-email): deliver the token to `email` via the transactional
-      // email provider. Until a provider is configured it is only logged in
-      // development mode so the flow stays testable.
-      if (process.env.NODE_ENV !== "production") console.log(`[dev] password reset token for ${email}: ${token}`);
+      // email provider. Until a provider is configured, development hands the
+      // code back in the response as well as logging it, so the reset screen —
+      // and anyone trying the demo — is not left waiting for mail that never
+      // arrives. Production never puts a reset token in a response body.
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[dev] password reset token for ${email}: ${token}`);
+        devCode = token;
+      }
     }
-    res.json({ ok: true, message: "If an account exists for that email, reset instructions have been sent." });
+    res.json({
+      ok: true,
+      message: "If an account exists for that email, reset instructions have been sent.",
+      ...(devCode ? { devCode } : {}),
+    });
   }));
 
   app.post("/api/auth/reset-password", wrap((req, res) => {
@@ -362,6 +441,23 @@ export function createApp(dbPath?: string) {
       db.prepare("UPDATE sessions SET revoked = 1 WHERE user_id = ?").run(row.user_id);
     });
     res.json({ ok: true });
+  }));
+
+  /**
+   * The accounts the login page may offer with one click.
+   *
+   * Public and unauthenticated on purpose (it is what a signed-out visitor
+   * needs), but it only ever answers on a server that holds demo accounts —
+   * a production build returns an empty list, so no credentials are advertised
+   * where members sign up for real. See server/src/demo.ts.
+   */
+  app.get("/api/demo/accounts", wrap((_req, res) => {
+    if (!demoLoginsEnabled()) return void res.json({ accounts: [] });
+    const known = new Set(
+      (db.prepare("SELECT email FROM users").all() as Array<{ email: string }>).map(r => r.email.toLowerCase()),
+    );
+    const accounts = demoLoginOptions().filter(a => known.has(a.email.toLowerCase()));
+    res.json({ accounts });
   }));
 
   /* ============================== member routes ============================== */
@@ -390,7 +486,7 @@ export function createApp(dbPath?: string) {
     res.json({ transactions: rows.map(txnOut) });
   }));
 
-  app.post("/api/me/deposits", requireAuth, wrap((req, res) => {
+  app.post("/api/me/deposits", requireAuth, requireApproved, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_DEPOSIT_CENTS) return void res.status(400).json({ error: "Deposits are limited to $100,000 per transaction." });
@@ -427,7 +523,7 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/transfers", requireAuth, wrap((req, res) => {
+  app.post("/api/me/transfers", requireAuth, requireApproved, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_TRANSFER_CENTS) return void res.status(400).json({ error: "Transfers are limited to $250,000 per transaction." });
@@ -454,6 +550,34 @@ export function createApp(dbPath?: string) {
           | undefined;
         if (!account) throw new Error("No account found.");
         if (account.balance_cents < cents) throw new Error("Insufficient funds for this transfer.");
+        // Card spending honours the card's own controls. Freeze, limits and
+        // locks are security controls the member sets in the UI — the server is
+        // the system of record, so it enforces them instead of trusting that
+        // nothing will spend on a frozen card. (contactless/atm/magstripe are
+        // terminal-side controls with no meaning for a ledger transfer.)
+        if (cardId) {
+          const card = db.prepare("SELECT * FROM cards WHERE id = ? AND user_id = ?").get(cardId, req.user!.id) as Record<string, unknown> | undefined;
+          if (!card) throw new RouteError(404, "Card not found.");
+          if (card.frozen === 1) throw new RouteError(403, "This card is frozen. Unfreeze it before spending.");
+          const controls = JSON.parse(String(card.controls_json ?? "{}")) as { online?: boolean };
+          if (controls.online === false) throw new RouteError(403, "Online payments are turned off for this card.");
+          const limit = card.limit_cents as number;
+          if ((card.spent_cents as number) + cents > limit) {
+            throw new RouteError(400, `This payment exceeds the card's ${centsToDecimal(limit)} monthly limit.`);
+          }
+          const perTxn = card.single_txn_limit_cents as number;
+          if (cents > perTxn) {
+            throw new RouteError(400, `This payment exceeds the card's ${centsToDecimal(perTxn)} per-transaction limit.`);
+          }
+          const merchantLock = card.merchant_lock ? String(card.merchant_lock) : null;
+          if (merchantLock && merchantLock.toLowerCase() !== counterparty.toLowerCase()) {
+            throw new RouteError(400, `This card is locked to ${merchantLock}.`);
+          }
+          const categoryLock = card.category_lock ? String(card.category_lock) : null;
+          if (categoryLock && categoryLock !== category) {
+            throw new RouteError(400, `This card is locked to the ${categoryLock} category.`);
+          }
+        }
         const before = account.balance_cents;
         const after = before - cents + scout; // Scout savings are credited immediately
         if (after < 0) throw new Error("Insufficient funds for this transfer.");
@@ -475,7 +599,7 @@ export function createApp(dbPath?: string) {
         balance: money(result.after),
       });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Transfer failed." });
+      fail(res, err, "Transfer failed.");
     }
   }));
 
@@ -484,7 +608,7 @@ export function createApp(dbPath?: string) {
     res.json({ notifications: rows, unread: rows.filter((r) => (r as { read: number }).read === 0).length });
   }));
 
-  app.post("/api/me/notifications/read-all", requireAuth, wrap((req, res) => {
+  app.post("/api/me/notifications/read-all", requireAuth, requireApproved, wrap((req, res) => {
     db.prepare("UPDATE notifications SET read = 1 WHERE user_id = ?").run(req.user!.id);
     res.json({ ok: true });
   }));
@@ -494,28 +618,58 @@ export function createApp(dbPath?: string) {
     res.json({ kyc: row ?? { status: "not_started", completeness: 0 } });
   }));
 
+  /**
+   * The member's own application, read back to them. Tax IDs are masked here
+   * (their full value exists in exactly two places: the database and the staff
+   * console) and the shape matches what they filled in at sign-up.
+   */
+  app.get("/api/me/profile", requireAuth, wrap((req, res) => {
+    const row = db.prepare("SELECT * FROM identity_profiles WHERE user_id = ?").get(req.user!.id) as Record<string, unknown> | undefined;
+    if (!row) return void res.json({ profile: null, submittedAt: null });
+    res.json({
+      profile: memberIdentity(req.user!.accountType, rowToApplication(row)),
+      submittedAt: row.submitted_at ?? null,
+    });
+  }));
+
   app.post("/api/me/kyc/submit", requireAuth, wrap((req, res) => {
-    const { legalName, dob, country, documentType, source, taxId, documents } = req.body ?? {};
-    if (typeof legalName !== "string" || !legalName.trim()) return void res.status(400).json({ error: "Legal name is required." });
-    if (!Array.isArray(documents) || documents.length === 0) return void res.status(400).json({ error: "At least one document is required." });
+    const { legalName, dob, country, documentType, source, taxId, documents, note } = req.body ?? {};
+    // A member answering a request for information often has the name fields
+    // blank (they came from the application, not a wizard) — the documents are
+    // what the reviewer asked for, so that is the requirement.
+    if (!Array.isArray(documents) || documents.length === 0) {
+      return void res.status(400).json({ error: "Add at least one item before sending." });
+    }
+    const row = reviewRow(req.user!.id);
+    const before = String(row?.review_state ?? "approved");
+    // Only a held application returns to the queue. Someone already approved who
+    // sends us a document must not be dropped back into review and locked out.
+    const state = before === "more_info" || before === "in_review" ? "in_review" : before;
     const submission = {
-      legalName, dob: String(dob ?? ""), country: String(country ?? ""), documentType: String(documentType ?? ""),
-      source: String(source ?? ""), taxId: String(taxId ?? ""), documents,
+      legalName: String(legalName ?? ""), dob: String(dob ?? ""), country: String(country ?? ""),
+      documentType: String(documentType ?? ""), source: String(source ?? ""), taxId: String(taxId ?? ""),
+      documents,
+      // The applicant's own words, shown to the reviewer next to the documents.
+      note: String(note ?? "").trim(),
       submittedAt: now(),
     };
     inTransaction(db, () => {
       db.prepare(
-        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at)
-         VALUES (?, 'in_review', 100, ?, ?, ?, ?)
+        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at, review_state)
+         VALUES (?, 'in_review', 100, ?, ?, ?, ?, ?)
          ON CONFLICT(user_id) DO UPDATE SET status = 'in_review', completeness = 100,
            document_type = excluded.document_type, country = excluded.country,
-           submission_json = excluded.submission_json, updated_at = excluded.updated_at`,
-      ).run(req.user!.id, submission.documentType, submission.country, JSON.stringify(submission), now());
+           submission_json = excluded.submission_json, review_state = excluded.review_state,
+           updated_at = excluded.updated_at`,
+      ).run(req.user!.id, submission.documentType, submission.country, JSON.stringify(submission), now(), state);
     });
-    res.status(201).json({ ok: true, status: "in_review" });
+    if (state === "in_review" && before === "more_info") {
+      notify(req.user!.id, "security", "Information received", "Thanks — your application is back with our review team. We'll be in touch within 1–2 business days.");
+    }
+    res.status(201).json({ ok: true, status: "in_review", reviewState: state });
   }));
 
-  app.post("/api/me/disputes", requireAuth, wrap((req, res) => {
+  app.post("/api/me/disputes", requireAuth, requireApproved, wrap((req, res) => {
     const reason = String(req.body?.reason ?? "").trim();
     if (!reason) return void res.status(400).json({ error: "A reason is required." });
     const txnId = typeof req.body?.transactionId === "string" ? req.body.transactionId : null;
@@ -524,6 +678,12 @@ export function createApp(dbPath?: string) {
       : undefined;
     const cents = txn ? Math.abs(txn.amount_cents as number) : dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "A disputed transaction or amount is required." });
+    // One open case per transaction — the app hides the action, the server is
+    // the one that guarantees it (retries and second tabs included).
+    const alreadyOpen = txnId
+      ? db.prepare("SELECT id FROM disputes WHERE user_id = ? AND transaction_id = ? AND status != 'denied'").get(req.user!.id, txnId)
+      : undefined;
+    if (alreadyOpen) return void res.status(409).json({ error: "A dispute for this transaction is already open." });
     const id = rid("dsp");
     db.prepare(
       `INSERT INTO disputes (id, user_id, transaction_id, merchant, amount_cents, reason, detail, status, opened_at, updated_at)
@@ -545,7 +705,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- profile & preferences ---------- */
 
-  app.patch("/api/me/profile", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/profile", requireAuth, requireApproved, wrap((req, res) => {
     const patch = req.body ?? {};
     const sets: string[] = [];
     const vals: Array<string | number> = [];
@@ -559,7 +719,7 @@ export function createApp(dbPath?: string) {
     res.json({ user: fullUser(req.user!.id) });
   }));
 
-  app.put("/api/me/preferences", requireAuth, wrap((req, res) => {
+  app.put("/api/me/preferences", requireAuth, requireApproved, wrap((req, res) => {
     const key = String(req.body?.key ?? "");
     const value = req.body?.value === true;
     const map: Record<string, string> = { twoFactor: "two_factor", loginAlerts: "login_alerts", scoutAuto: "scout_auto", weeklyDigest: "weekly_digest" };
@@ -600,7 +760,7 @@ export function createApp(dbPath?: string) {
   const cardRow = (id: string, userId: string) =>
     db.prepare("SELECT * FROM cards WHERE id = ? AND user_id = ?").get(id, userId) as Record<string, unknown> | undefined;
 
-  app.post("/api/me/cards", requireAuth, wrap((req, res) => {
+  app.post("/api/me/cards", requireAuth, requireApproved, wrap((req, res) => {
     const label = String(req.body?.label ?? "").trim();
     const type = req.body?.type === "physical" ? "physical" : "virtual";
     const limit = dollarsToCents(req.body?.limit ?? 0);
@@ -625,7 +785,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ card: { id, last4: nums.last4, fullNumber: nums.fullNumber, exp: nums.exp, cvv: nums.cvv } });
   }));
 
-  app.patch("/api/me/cards/:id", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/cards/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
@@ -651,20 +811,20 @@ export function createApp(dbPath?: string) {
     res.json({ ok: true });
   }));
 
-  app.delete("/api/me/cards/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/cards/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const info = db.prepare("DELETE FROM cards WHERE id = ? AND user_id = ?").run(id, req.user!.id);
     if (info.changes === 0) return void res.status(404).json({ error: "Card not found." });
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/cards/freeze-all", requireAuth, wrap((req, res) => {
+  app.post("/api/me/cards/freeze-all", requireAuth, requireApproved, wrap((req, res) => {
     db.prepare("UPDATE cards SET frozen = 1 WHERE user_id = ?").run(req.user!.id);
     notify(req.user!.id, "security", "All cards frozen", "New card purchases will be declined until you unfreeze a card.");
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/cards/:id/replace", requireAuth, wrap((req, res) => {
+  app.post("/api/me/cards/:id/replace", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
@@ -688,7 +848,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ card: { id: newId, last4: nums.last4, fullNumber: nums.fullNumber, exp: nums.exp, cvv: nums.cvv } });
   }));
 
-  app.post("/api/me/cards/:id/shipping/advance", requireAuth, wrap((req, res) => {
+  app.post("/api/me/cards/:id/shipping/advance", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
@@ -705,7 +865,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- invoices ---------- */
 
-  app.post("/api/me/invoices", requireAuth, wrap((req, res) => {
+  app.post("/api/me/invoices", requireAuth, requireApproved, wrap((req, res) => {
     const client = String(req.body?.client ?? "").trim();
     const clientEmail = String(req.body?.clientEmail ?? "").trim();
     const cents = dollarsToCents(req.body?.amount ?? 0);
@@ -723,7 +883,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ invoice: { id, client, amount: cents / 100, status: "open", due: now() + dueDays * 86_400_000 } });
   }));
 
-  app.post("/api/me/invoices/:id/paid", requireAuth, wrap((req, res) => {
+  app.post("/api/me/invoices/:id/paid", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const inv = db.prepare("SELECT * FROM invoices WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
     if (!inv) return void res.status(404).json({ error: "Invoice not found." });
@@ -746,7 +906,7 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/invoices/:id/remind", requireAuth, wrap((req, res) => {
+  app.post("/api/me/invoices/:id/remind", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const inv = db.prepare("SELECT * FROM invoices WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
     if (!inv) return void res.status(404).json({ error: "Invoice not found." });
@@ -756,7 +916,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- team ---------- */
 
-  app.post("/api/me/team", requireAuth, wrap((req, res) => {
+  app.post("/api/me/team", requireAuth, requireApproved, wrap((req, res) => {
     const name = String(req.body?.name ?? "").trim();
     const email = String(req.body?.email ?? "").trim();
     const role = String(req.body?.role ?? "Member");
@@ -771,7 +931,7 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ member: { id, name, email, role, cardCount: role === "Bookkeeper" ? 0 : 1, monthlyLimit: monthlyLimit / 100, status: "invited" } });
   }));
 
-  app.delete("/api/me/team/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/team/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const member = db.prepare("SELECT role FROM team_members WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { role: string } | undefined;
     if (!member) return void res.status(404).json({ error: "Team member not found." });
@@ -782,7 +942,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- savings pockets (money ops) ---------- */
 
-  app.post("/api/me/pockets", requireAuth, wrap((req, res) => {
+  app.post("/api/me/pockets", requireAuth, requireApproved, wrap((req, res) => {
     const name = String(req.body?.name ?? "").trim();
     const target = dollarsToCents(req.body?.target ?? 0);
     if (!name) return void res.status(400).json({ error: "A name is required." });
@@ -793,11 +953,19 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ pocket: { id, name, balance: 0, target: target / 100 } });
   }));
 
-  app.post("/api/me/pockets/:id/move", requireAuth, wrap((req, res) => {
+  app.post("/api/me/pockets/:id/move", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const cents = dollarsToCents(req.body?.amount ?? 0);
-    const direction = req.body?.direction === "to_checking" ? "to_checking" : "to_pocket";
+    const direction = req.body?.direction;
+    if (direction !== "to_pocket" && direction !== "to_checking") {
+      return void res.status(400).json({ error: "direction must be 'to_pocket' or 'to_checking'." });
+    }
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
+    // A pocket that isn't the caller's is a 404 — never a 400 that hides an
+    // ownership check (and never a write).
+    if (!db.prepare("SELECT 1 FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Pocket not found." });
+    }
     try {
       inTransaction(db, () => {
         const pocket = db.prepare("SELECT * FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
@@ -827,8 +995,11 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.delete("/api/me/pockets/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/pockets/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
+    if (!db.prepare("SELECT 1 FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Pocket not found." });
+    }
     try {
       inTransaction(db, () => {
         const pocket = db.prepare("SELECT * FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
@@ -845,7 +1016,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- payees & scheduled payments ---------- */
 
-  app.post("/api/me/payees", requireAuth, wrap((req, res) => {
+  app.post("/api/me/payees", requireAuth, requireApproved, wrap((req, res) => {
     const name = String(req.body?.name ?? "").trim();
     const bankName = String(req.body?.bankName ?? "").trim();
     const routingNumber = String(req.body?.routingNumber ?? "").trim();
@@ -862,20 +1033,23 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ payee: { id, name } });
   }));
 
-  app.delete("/api/me/payees/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/payees/:id", requireAuth, requireApproved, wrap((req, res) => {
     const info = db.prepare("DELETE FROM payees WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
     if (info.changes === 0) return void res.status(404).json({ error: "Payee not found." });
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/scheduled", requireAuth, wrap((req, res) => {
+  app.post("/api/me/scheduled", requireAuth, requireApproved, wrap((req, res) => {
     const payeeName = String(req.body?.payeeName ?? "").trim();
     const cents = dollarsToCents(req.body?.amount ?? 0);
     const nextDate = Number(req.body?.nextDate ?? 0);
     if (!payeeName) return void res.status(400).json({ error: "A payee is required." });
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (!Number.isFinite(nextDate) || nextDate <= 0) return void res.status(400).json({ error: "A next payment date is required." });
-    const frequency = ["once", "weekly", "monthly"].includes(String(req.body?.frequency)) ? String(req.body?.frequency) : "monthly";
+    const frequency = req.body?.frequency ?? "monthly";
+    if (!["once", "weekly", "monthly"].includes(String(frequency))) {
+      return void res.status(400).json({ error: "frequency must be once, weekly or monthly." });
+    }
     const id = rid("bill");
     db.prepare(
       `INSERT INTO scheduled_payments (id, user_id, payee_id, payee_name, amount_cents, category, frequency, next_date, status, autopay, memo)
@@ -885,26 +1059,35 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ payment: { id, payeeName, amount: cents / 100, status: "active" } });
   }));
 
-  app.patch("/api/me/scheduled/:id", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/scheduled/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
     const payment = db.prepare("SELECT status FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { status: string } | undefined;
     if (!payment) return void res.status(404).json({ error: "Payment not found." });
     if (payment.status === "completed") return void res.status(400).json({ error: "Completed payments cannot be changed." });
-    const next = payment.status === "paused" ? "active" : "paused";
+    // Pause/resume. An explicit status wins (the app sends the state its
+    // optimistic update already applied); no body keeps the toggle behaviour.
+    const requested = req.body?.status;
+    if (requested !== undefined && requested !== "active" && requested !== "paused") {
+      return void res.status(400).json({ error: "status must be 'active' or 'paused'." });
+    }
+    const next = requested ?? (payment.status === "paused" ? "active" : "paused");
     db.prepare("UPDATE scheduled_payments SET status = ? WHERE id = ?").run(next, id);
     res.json({ status: next });
   }));
 
-  app.delete("/api/me/scheduled/:id", requireAuth, wrap((req, res) => {
+  app.delete("/api/me/scheduled/:id", requireAuth, requireApproved, wrap((req, res) => {
     const info = db.prepare("DELETE FROM scheduled_payments WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
     if (info.changes === 0) return void res.status(404).json({ error: "Payment not found." });
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/scheduled/:id/pay", requireAuth, wrap((req, res) => {
+  app.post("/api/me/scheduled/:id/pay", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
+    if (!db.prepare("SELECT 1 FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Payment not found." });
+    }
     try {
-      inTransaction(db, () => {
+      const txnId = inTransaction(db, () => {
         const payment = db.prepare("SELECT * FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
         if (!payment) throw new Error("Payment not found.");
         if (payment.status === "completed") throw new Error("This payment is already completed.");
@@ -920,15 +1103,19 @@ export function createApp(dbPath?: string) {
         db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents - cents, now(), account.id);
         db.prepare("UPDATE scheduled_payments SET next_date = ?, status = ? WHERE id = ?")
           .run(nextDate, payment.frequency === "once" ? "completed" : String(payment.status), id);
+        const txn = rid("txn");
         db.prepare(
           `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
            VALUES (?, ?, ?, ?, ?, 'ACH', ?, 'cleared', ?, ?, ?)`,
-        ).run(rid("txn"), account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
+        ).run(txn, account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
           makeReference(), String(payment.memo ?? "Scheduled payment"), now());
         notify(req.user!.id, "transfer", `${centsToDecimal(cents)} paid to ${String(payment.payee_name)}`,
           payment.frequency === "once" ? "One-time payment completed." : "Next payment scheduled.");
+        return txn;
       });
-      res.json({ ok: true });
+      // The ledger row's id, so the client can act on the payment the server
+      // just wrote (dispute it) before the refreshed snapshot lands.
+      res.json({ ok: true, transaction: { id: txnId } });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Payment failed." });
     }
@@ -936,7 +1123,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- rewards, Scout, perks, sessions, notifications ---------- */
 
-  app.post("/api/me/rewards/redeem", requireAuth, wrap((req, res) => {
+  app.post("/api/me/rewards/redeem", requireAuth, requireApproved, wrap((req, res) => {
     try {
       const amount = inTransaction(db, () => {
         const account = db.prepare("SELECT id, balance_cents, rewards_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
@@ -959,7 +1146,7 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/scout/apply", requireAuth, wrap((req, res) => {
+  app.post("/api/me/scout/apply", requireAuth, requireApproved, wrap((req, res) => {
     const opportunityId = String(req.body?.opportunityId ?? "");
     const merchant = String(req.body?.merchant ?? "merchant");
     const note = String(req.body?.note ?? "");
@@ -989,24 +1176,24 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/perks/:id/redeem", requireAuth, wrap((req, res) => {
+  app.post("/api/me/perks/:id/redeem", requireAuth, requireApproved, wrap((req, res) => {
     const info = db.prepare("UPDATE perks SET status = 'redeemed' WHERE id = ? AND user_id = ? AND status = 'available'")
       .run(String(req.params.id), req.user!.id);
     if (info.changes === 0) return void res.status(404).json({ error: "Perk not available." });
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/notifications/:id/read", requireAuth, wrap((req, res) => {
+  app.post("/api/me/notifications/:id/read", requireAuth, requireApproved, wrap((req, res) => {
     db.prepare("UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/sessions/:id/revoke", requireAuth, wrap((req, res) => {
+  app.post("/api/me/sessions/:id/revoke", requireAuth, requireApproved, wrap((req, res) => {
     db.prepare("DELETE FROM security_sessions WHERE id = ? AND user_id = ? AND current = 0").run(String(req.params.id), req.user!.id);
     res.json({ ok: true });
   }));
 
-  app.patch("/api/me/sessions/:id", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/sessions/:id", requireAuth, requireApproved, wrap((req, res) => {
     if (typeof req.body?.trusted !== "boolean") return void res.status(400).json({ error: "Nothing to update." });
     db.prepare("UPDATE security_sessions SET trusted = ? WHERE id = ? AND user_id = ?").run(req.body.trusted ? 1 : 0, String(req.params.id), req.user!.id);
     res.json({ ok: true });
@@ -1014,7 +1201,7 @@ export function createApp(dbPath?: string) {
 
   /* ---------- KYC wizard progress + member dispute tracking ---------- */
 
-  app.patch("/api/me/kyc", requireAuth, wrap((req, res) => {
+  app.patch("/api/me/kyc", requireAuth, requireApproved, wrap((req, res) => {
     const patch = req.body ?? {};
     const sets: string[] = [];
     const vals: Array<string | number> = [];
@@ -1061,33 +1248,42 @@ export function createApp(dbPath?: string) {
     const q = String(req.query.q ?? "").toLowerCase();
     const rows = db.prepare(
       `SELECT u.id, u.name, u.email, u.phone, u.business, u.account_type, u.plan, u.status,
-              a.balance_cents, a.pending_cents, k.status AS kyc_status
+              a.account_number, a.routing_number, a.balance_cents, a.pending_cents, k.status AS kyc_status,
+              p.dob, p.ssn, p.city, p.state, p.id_type, p.submitted_at
        FROM users u
        LEFT JOIN accounts a ON a.user_id = u.id
        LEFT JOIN kyc_records k ON k.user_id = u.id
+       LEFT JOIN identity_profiles p ON p.user_id = u.id
        WHERE u.role = 'user'
        ORDER BY u.created_at DESC`,
     ).all() as Array<Record<string, unknown>>;
     const filtered = q
-      ? rows.filter(r => `${r.name} ${r.email} ${r.business}`.toLowerCase().includes(q))
+      ? rows.filter(r => `${r.name} ${r.email} ${r.business} ${r.ssn ?? ""}`.toLowerCase().includes(q))
       : rows;
     res.json({
       members: filtered.map(r => ({
         id: r.id, name: r.name, email: r.email, phone: r.phone, business: r.business,
         accountType: r.account_type, plan: r.plan, status: r.status,
+        accountNumber: r.account_number ?? null, routingNumber: r.routing_number ?? null,
         balance: money((r.balance_cents as number) ?? 0),
         pending: money((r.pending_cents as number) ?? 0),
         kycStatus: r.kyc_status ?? "not_started",
+        // Enough for the directory table; the full application is one request
+        // away at /api/admin/members/:id.
+        dob: r.dob ?? null, ssn: r.ssn ?? null,
+        city: r.city ?? null, state: r.state ?? null, idType: r.id_type ?? null,
+        profileSubmittedAt: r.submitted_at ?? null,
       })),
     });
   }));
 
   app.get("/api/admin/members/:id", requireAuth, requirePerm("customers.view"), wrap((req, res) => {
-    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const user = memberRow(String(req.params.id));
     if (!user) return void res.status(404).json({ error: "Member not found." });
     const account = db.prepare("SELECT * FROM accounts WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
     const txns = db.prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").all(String(req.params.id));
     const kyc = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(String(req.params.id));
+    const identityRow = db.prepare("SELECT * FROM identity_profiles WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
     res.json({
       member: {
         id: user.id, name: user.name, email: user.email, phone: user.phone, business: user.business,
@@ -1095,6 +1291,11 @@ export function createApp(dbPath?: string) {
         balance: money((account?.balance_cents as number) ?? 0),
         accountNumber: account?.account_number, routingNumber: account?.routing_number,
       },
+      // The full application, unmasked: staff reviewing an account see the
+      // Social Security and EIN numbers exactly as the member entered them.
+      identity: identityRow
+        ? { ...rowToApplication(identityRow), submittedAt: identityRow.submitted_at ?? null }
+        : null,
       transactions: txns.map(txnOut),
       kyc,
     });
@@ -1102,10 +1303,14 @@ export function createApp(dbPath?: string) {
 
   /** Cross-account treasury adjustment (deposit / withdrawal). */
   app.post("/api/admin/members/:id/adjust", requireAuth, requirePerm("customers.adjust_balance"), wrap((req, res) => {
-    const target = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const target = memberRow(String(req.params.id));
     if (!target) return void res.status(404).json({ error: "Member not found." });
     const cents = dollarsToCents(req.body?.amount ?? 0);
-    const direction = req.body?.direction === "debit" ? "debit" : "credit";
+    // Money direction is never guessed: a typo must not silently credit.
+    const direction = req.body?.direction;
+    if (direction !== "credit" && direction !== "debit") {
+      return void res.status(400).json({ error: "direction must be 'credit' or 'debit'." });
+    }
     const requestedDescription = String(req.body?.description ?? "").trim();
     const memo = String(req.body?.memo ?? "").trim();
     const fallbackDescription = direction === "credit" ? "Direct deposit" : "ACH withdrawal";
@@ -1159,11 +1364,55 @@ export function createApp(dbPath?: string) {
     }
   }));
 
+  /**
+   * Correct a member's account number.
+   *
+   * The number is printed on statements and handed out for ACH and wire, so a
+   * wrong one has to be fixable from the console rather than by a migration.
+   * Twelve digits, unique across the platform, and rewritten only for a member
+   * who exists — with the old value recorded in the audit log.
+   */
+  app.patch("/api/admin/members/:id/account-number", requireAuth, requirePerm("accounts.edit_number"), wrap((req, res) => {
+    const target = memberRow(String(req.params.id));
+    if (!target) return void res.status(404).json({ error: "Member not found." });
+    const digits = String(req.body?.accountNumber ?? "").replace(/[\s-]/g, "");
+    if (!/^\d{12}$/.test(digits)) {
+      return void res.status(400).json({ error: "An account number is exactly 12 digits." });
+    }
+    const clash = db.prepare("SELECT user_id FROM accounts WHERE account_number = ? AND user_id != ?")
+      .get(digits, String(req.params.id)) as { user_id: string } | undefined;
+    if (clash) return void res.status(409).json({ error: "That account number is already assigned to another account." });
+    const account = db.prepare("SELECT account_number FROM accounts WHERE user_id = ?")
+      .get(String(req.params.id)) as { account_number: string } | undefined;
+    const before = account?.account_number ?? "";
+    if (before === digits) return void res.json({ accountNumber: digits, changed: false });
+    if (account) {
+      db.prepare("UPDATE accounts SET account_number = ?, updated_at = ? WHERE user_id = ?")
+        .run(digits, now(), String(req.params.id));
+    } else {
+      // A member without an account row still gets a real account, not just a
+      // number floating in the console.
+      db.prepare(
+        `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
+         VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
+      ).run(String(req.params.id), digits, now(), now());
+    }
+    audit(req, "account.number", "Financial", `user:${String(req.params.id)} · ${target.name}`,
+      `Account number set to ${digits}.`, before || "(none)", digits);
+    notify(String(req.params.id), "security", "Your account number was updated",
+      `Veyra Support changed the account number on your checking account to ${digits}. If you did not expect this, contact us right away.`);
+    res.json({ accountNumber: digits, changed: true });
+  }));
+
   /** Restrict / restore an account. Restriction blocks the member's transfers server-side. */
   app.post("/api/admin/members/:id/status", requireAuth, requirePerm("accounts.set_status"), wrap((req, res) => {
-    const target = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const target = memberRow(String(req.params.id));
     if (!target) return void res.status(404).json({ error: "Member not found." });
-    const status = req.body?.status === "restricted" ? "restricted" : "active";
+    // Never guess a security control: an explicit, known status is required.
+    const status = req.body?.status;
+    if (status !== "active" && status !== "restricted") {
+      return void res.status(400).json({ error: "status must be 'active' or 'restricted'." });
+    }
     const reason = String(req.body?.reason ?? "").trim();
     if (status === "restricted" && !reason) return void res.status(400).json({ error: "A reason is required to restrict an account." });
     const before = target.status as string;
@@ -1207,49 +1456,96 @@ export function createApp(dbPath?: string) {
 
   app.get("/api/admin/kyc/queue", requireAuth, requirePerm("kyc.review"), wrap((_req, res) => {
     const rows = db.prepare(
-      `SELECT u.id, u.name, u.email, u.account_type, k.submission_json, k.updated_at
+      `SELECT u.id, u.name, u.email, u.account_type, u.business, k.submission_json, k.updated_at,
+              k.review_state, k.status, k.review_note, k.review_reqs_json
        FROM kyc_records k JOIN users u ON u.id = k.user_id
-       WHERE k.status = 'in_review' ORDER BY k.updated_at ASC`,
+       WHERE k.status = 'in_review' AND k.review_state IN ('in_review', 'more_info')
+       ORDER BY k.updated_at ASC`,
     ).all() as Array<Record<string, unknown>>;
     res.json({
       queue: rows.map(r => ({
-        userId: r.id, name: r.name, email: r.email, accountType: r.account_type,
+        userId: r.id, name: r.name, email: r.email, business: r.business ?? "", accountType: r.account_type,
         submission: r.submission_json ? JSON.parse(r.submission_json as string) : null,
         submittedAt: r.updated_at,
+        reviewState: r.review_state ?? "in_review",
+        reviewNote: String(r.review_note ?? ""),
+        reviewRequirements: JSON.parse(String(r.review_reqs_json ?? "[]")),
       })),
     });
   }));
 
+  /**
+   * The decision that opens, holds or closes an application.
+   *
+   * Three outcomes, each recorded with who decided and why:
+   *   approved         — the account is usable, the dashboard unlocks
+   *   needs_attention  — we need more from the applicant (the fraud-hold path)
+   *   rejected         — we are not opening this account
+   *
+   * The reason is required for anything other than approval: an applicant who is
+   * held or declined is told why, in their own words, rather than being left to
+   * guess. An already-decided application can be re-decided (a hold becomes an
+   * approval once the documents arrive) but a member who is already approved is
+   * left alone — closing an open account is an account action, not a review one.
+   */
   app.post("/api/admin/kyc/:userId/decision", requireAuth, requirePerm("kyc.review"), wrap((req, res) => {
     const target = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.userId)) as Record<string, unknown> | undefined;
     if (!target) return void res.status(404).json({ error: "Member not found." });
-    const decision = req.body?.decision === "needs_attention" ? "needs_attention" : "approved";
+    const raw = String(req.body?.decision ?? "");
+    if (raw !== "approved" && raw !== "needs_attention" && raw !== "rejected") {
+      return void res.status(400).json({ error: "decision must be 'approved', 'needs_attention' or 'rejected'." });
+    }
+    const decision = raw as "approved" | "needs_attention" | "rejected";
     const note = String(req.body?.note ?? "").trim();
-    if (decision === "needs_attention" && !note) {
-      return void res.status(400).json({ error: "A note is required when requesting changes." });
+    const requirements = Array.isArray(req.body?.requirements)
+      ? req.body.requirements.map(String).filter((r: string) => REVIEW_REQUIREMENTS.includes(r))
+      : [];
+    if (decision !== "approved" && !note) {
+      return void res.status(400).json({ error: "A reason is required — the applicant is shown it." });
+    }
+    if (decision === "needs_attention" && requirements.length === 0) {
+      return void res.status(400).json({ error: "Choose at least one item to ask the applicant for." });
     }
     const record = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(String(req.params.userId)) as Record<string, unknown> | undefined;
-    if (!record || record.status !== "in_review") return void res.status(409).json({ error: "This member has no verification awaiting review." });
+    if (!record) return void res.status(409).json({ error: "This member has no application to review." });
+    const before = String(record.review_state ?? "approved");
+    if (before === "approved") {
+      return void res.status(409).json({ error: "This member is already approved. Restrict the account instead of re-reviewing it." });
+    }
+
+    const reviewState = decision === "approved" ? "approved" : decision === "needs_attention" ? "more_info" : "rejected";
     inTransaction(db, () => {
       if (decision === "approved") {
         db.prepare(
-          `UPDATE kyc_records SET status = 'approved', completeness = 100, requested_by = NULL,
-             requested_at = NULL, request_reason = NULL, updated_at = ? WHERE user_id = ?`,
-        ).run(now(), String(req.params.userId));
+          `UPDATE kyc_records SET status = 'approved', review_state = 'approved', completeness = 100,
+             review_note = '', review_reqs_json = '[]', requested_by = NULL, requested_at = NULL,
+             request_reason = NULL, reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE user_id = ?`,
+        ).run(req.user!.id, now(), now(), String(req.params.userId));
       } else {
-        db.prepare("UPDATE kyc_records SET status = 'needs_attention', updated_at = ? WHERE user_id = ?").run(now(), String(req.params.userId));
+        db.prepare(
+          `UPDATE kyc_records SET status = ?, review_state = ?, review_note = ?, review_reqs_json = ?,
+             reviewed_by = ?, reviewed_at = ?, updated_at = ? WHERE user_id = ?`,
+        ).run(
+          decision === "needs_attention" ? "needs_attention" : "in_review",
+          reviewState, note, JSON.stringify(requirements), req.user!.id, now(), now(), String(req.params.userId),
+        );
       }
     });
-    audit(req, decision === "approved" ? "kyc.approve" : "kyc.request_changes", "KYC",
-      `user:${String(req.params.userId)} · ${target.name}`,
-      decision === "approved" ? "Approved identity verification." : `Requested changes — ${note}`,
-      "in_review", decision);
-    notify(String(req.params.userId), "security",
-      decision === "approved" ? "Identity verification approved" : "Verification changes requested",
+
+    audit(req, decision === "approved" ? "application.approve" : decision === "rejected" ? "application.reject" : "application.request_info",
+      "KYC", `user:${String(req.params.userId)} · ${target.name}`,
       decision === "approved"
-        ? `Your identity is verified and all account limits are now unlocked. Reviewed by ${req.user!.name}.`
-        : `${note} Reviewed by ${req.user!.name}.`);
-    res.json({ status: decision });
+        ? "Approved the account application."
+        : `${decision === "rejected" ? "Rejected" : "Requested more information for"} the account application — ${note}`,
+      before, reviewState);
+    notify(String(req.params.userId), "security",
+      decision === "approved" ? "Your account is approved" : decision === "rejected" ? "About your Veyra application" : "We need a little more from you",
+      decision === "approved"
+        ? `Welcome to Veyra — your account is open. Sign in to move money, set up cards and meet Scout. Approved by ${req.user!.name}.`
+        : decision === "rejected"
+        ? `${note} If you think this is a mistake, reply to this message and our team will take another look.`
+        : `${note} Open your application to send what we need${requirements.length ? `: ${requirements.map((r: string) => requirementLabel(r)).join(", ")}` : ""}. Reviewed by ${req.user!.name}.`);
+    res.json({ status: reviewState, decision });
   }));
 
   /* ============================== admin: risk & fraud ============================== */
@@ -1391,8 +1687,12 @@ export function createApp(dbPath?: string) {
   app.post("/api/admin/broadcasts", requireAuth, requirePerm("notifications.broadcast"), wrap((req, res) => {
     const title = String(req.body?.title ?? "").trim();
     const detail = String(req.body?.detail ?? "").trim();
-    const audience = String(req.body?.audience ?? "all");
+    const audience = req.body?.audience ?? "all";
     if (!title || !detail) return void res.status(400).json({ error: "Title and message are required." });
+    // A mistyped audience must not silently broadcast platform-wide.
+    if (!["all", "business", "personal", "unverified"].includes(String(audience))) {
+      return void res.status(400).json({ error: "audience must be all, business, personal or unverified." });
+    }
     const targets = db.prepare("SELECT id, account_type FROM users WHERE role = 'user'").all() as Array<{ id: string; account_type: string }>;
     const audienceFilter = (u: { id: string; account_type: string }) => {
       if (audience === "business") return u.account_type === "business";
@@ -1415,27 +1715,86 @@ export function createApp(dbPath?: string) {
     res.json({ delivered });
   }));
 
-  app.get("/api/admin/reports/:kind.csv", requireAuth, requirePerm("reports.view"), wrap((req, res) => {
+  // The ledger export serves the Reports tab and the Transactions console, so
+  // either of their permissions opens it (`transactions.export` gated only the
+  // button before this, and the button's holder was refused by the route).
+  app.get("/api/admin/reports/:kind.csv", requireAuth, requireAnyPerm("reports.view", "transactions.export"), wrap((req, res) => {
     const kind = String(req.params.kind);
+    // `transactions.export` is the ledger console's export permission: it opens
+    // the ledger file only, not the customer directory, balances or KYC status.
+    if (kind !== "transactions" && !can(db, req.user!.role, "reports.view")) {
+      return void res.status(403).json({ error: "Access denied — exporting reports requires the reports.view permission." });
+    }
     const stamp = new Date().toISOString().slice(0, 10);
     let rows: Array<Array<string | number>>;
     if (kind === "customers") {
-      rows = [["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Status", "Role"],
-        ...db.prepare("SELECT id, name, email, phone, business, account_type, plan, status, role FROM users ORDER BY created_at").all()
-          .map((r: any) => [r.id, r.name, r.email, r.phone, r.business, r.account_type, r.plan, r.status, r.role])];
+      // Every column the directory shows, including the identity the member
+      // applied with: this is the register compliance works from.
+      rows = [["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Status", "Role",
+        "Date of birth", "SSN", "Legal name (business)", "EIN", "Address", "City", "State", "ZIP", "Country",
+        "ID document", "ID number", "ID expiry", "Applied at"],
+        ...db.prepare(`SELECT u.id, u.name, u.email, u.phone, u.business, u.account_type, u.plan, u.status, u.role,
+                              p.dob, p.ssn, p.legal_name, p.ein, p.address_line1, p.city, p.state, p.postal_code,
+                              p.country, p.id_type, p.id_number, p.id_expiry, p.submitted_at
+                       FROM users u LEFT JOIN identity_profiles p ON p.user_id = u.id
+                       ORDER BY u.created_at`).all()
+          .map((r: any) => [r.id, r.name, r.email, r.phone, r.business, r.account_type, r.plan, r.status, r.role,
+            r.dob ?? "", r.ssn ?? "", r.legal_name ?? "", r.ein ?? "", r.address_line1 ?? "", r.city ?? "",
+            r.state ?? "", r.postal_code ?? "", r.country ?? "", r.id_type ?? "", r.id_number ?? "", r.id_expiry ?? "",
+            r.submitted_at ? new Date(r.submitted_at).toISOString() : ""])];
     } else if (kind === "accounts") {
-      rows = [["User ID", "Member", "Account number", "Balance", "Pending", "Rewards"],
-        ...db.prepare(`SELECT a.user_id, u.name, a.account_number, a.balance_cents, a.pending_cents, a.rewards_cents
-                       FROM accounts a JOIN users u ON u.id = a.user_id ORDER BY a.balance_cents DESC`).all()
-          .map((r: any) => [r.user_id, r.name, r.account_number, centsToDecimal(r.balance_cents), centsToDecimal(r.pending_cents), centsToDecimal(r.rewards_cents)])];
+      // Columns mirror the Accounts console: the same counts (cards, frozen
+      // cards, transactions incl. how many are pending), KYC standing, status
+      // and last activity, computed from the same source of truth.
+      // The accounts export carries the account application too — a compliance
+      // officer pulling the register needs the identity behind each account in
+      // the same file.
+      rows = [["User ID", "Member", "Email", "Business", "Type", "Date of birth", "SSN", "Legal name (business)", "EIN",
+        "Address", "City", "State", "ZIP", "Country", "ID document", "ID number", "ID expiry",
+        "Account number", "Balance", "Pending", "Rewards", "Cards", "Frozen cards", "Transactions", "Pending transactions", "KYC", "Status", "Last activity"],
+        ...db.prepare(`SELECT a.user_id, u.name, u.email, u.business, u.account_type, u.status, a.account_number,
+                              a.balance_cents, a.pending_cents, a.rewards_cents,
+                              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
+                              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.frozen = 1) AS frozen_count,
+                              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
+                              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id AND t.status = 'pending') AS pending_count,
+                              (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status,
+                              (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity,
+                              p.dob, p.ssn, p.legal_name, p.ein, p.address_line1, p.city, p.state, p.postal_code,
+                              p.country, p.id_type, p.id_number, p.id_expiry
+                       FROM accounts a JOIN users u ON u.id = a.user_id
+                       LEFT JOIN identity_profiles p ON p.user_id = u.id
+                       ORDER BY a.balance_cents DESC`).all()
+          .map((r: any) => [r.user_id, r.name, r.email, r.business ?? "", r.account_type,
+            r.dob ?? "", r.ssn ?? "", r.legal_name ?? "", r.ein ?? "",
+            r.address_line1 ?? "", r.city ?? "", r.state ?? "", r.postal_code ?? "", r.country ?? "",
+            r.id_type ?? "", r.id_number ?? "", r.id_expiry ?? "", r.account_number,
+            centsToDecimal(r.balance_cents), centsToDecimal(r.pending_cents), centsToDecimal(r.rewards_cents),
+            r.card_count, r.frozen_count, r.txn_count, r.pending_count, r.kyc_status ?? "not_started", r.status,
+            r.last_activity ? new Date(r.last_activity).toISOString() : "Never"])];
     } else if (kind === "transactions") {
       rows = [["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"],
         ...db.prepare(`SELECT t.*, u.name AS member FROM transactions t JOIN users u ON u.id = t.user_id ORDER BY t.created_at DESC`).all()
           .map((r: any) => [new Date(r.created_at).toISOString(), r.member, r.merchant, r.category, r.method, centsToDecimal(r.amount_cents), r.status, r.reference])];
     } else if (kind === "kyc") {
-      rows = [["User ID", "Member", "Status", "Completeness", "Updated"],
-        ...db.prepare(`SELECT k.user_id, u.name, k.status, k.completeness, k.updated_at FROM kyc_records k JOIN users u ON u.id = k.user_id`).all()
-          .map((r: any) => [r.user_id, r.name, r.status, `${r.completeness}%`, new Date(r.updated_at).toISOString()])];
+      // Status columns plus the columns the review queue shows for a submitted
+      // case (submitted date, legal name, document, file count, source of
+      // funds) — one file covers both KYC views in the console.
+      rows = [["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Submitted", "Legal name", "Document", "Files", "Source of funds", "Requested at", "Updated"],
+        ...db.prepare(`SELECT k.user_id, u.name, u.email, u.account_type, k.status, k.completeness,
+                              k.document_type, k.submission_json, k.requested_at, k.updated_at
+                       FROM kyc_records k JOIN users u ON u.id = k.user_id`).all()
+          .map((r: any) => {
+            let submission: { submittedAt?: number; legalName?: string; documentType?: string; documents?: unknown[]; source?: string } = {};
+            try { submission = r.submission_json ? JSON.parse(String(r.submission_json)) : {}; } catch { /* unreadable submission — export the status columns only */ }
+            return [r.user_id, r.name, r.email, r.account_type, r.status, `${r.completeness}%`,
+              submission.submittedAt ? new Date(submission.submittedAt).toISOString() : "—",
+              submission.legalName || "—",
+              submission.documentType || r.document_type || "—",
+              Array.isArray(submission.documents) ? submission.documents.length : 0,
+              submission.source || "—",
+              r.requested_at ? new Date(r.requested_at).toISOString() : "—", new Date(r.updated_at).toISOString()];
+          })];
     } else {
       return void res.status(404).json({ error: "Unknown report. Use customers|accounts|transactions|kyc." });
     }
@@ -1659,20 +2018,24 @@ export function createApp(dbPath?: string) {
 
     const accounts = (db.prepare(`
       SELECT u.id, u.name, u.email, u.business, u.account_type, u.status,
-             a.balance_cents, a.pending_cents, a.rewards_cents,
+             a.account_number, a.routing_number, a.balance_cents, a.pending_cents, a.rewards_cents,
              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.frozen = 1) AS frozen_count,
              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id AND t.status = 'pending') AS pending_txn_count,
              (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity,
-             (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status
+             (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status,
+             p.dob, p.ssn, p.city, p.state, p.id_type, p.legal_name, p.owner_name, p.submitted_at
       FROM users u LEFT JOIN accounts a ON a.user_id = u.id
+      LEFT JOIN identity_profiles p ON p.user_id = u.id
       WHERE u.role = 'user' OR u.role IS NULL
       ORDER BY u.created_at
     `).all() as Array<Record<string, unknown>>).map(a => ({
       userId: String(a.id), name: String(a.name), email: String(a.email), business: String(a.business ?? ""),
       accountType: a.account_type as "personal" | "business",
       hasAccount: a.balance_cents != null,
+      accountNumber: (a.account_number as string) ?? null,
+      routingNumber: (a.routing_number as string) ?? null,
       balance: Math.round((a.balance_cents as number ?? 0)) / 100,
       pendingBalance: Math.round((a.pending_cents as number ?? 0)) / 100,
       rewards: Math.round((a.rewards_cents as number ?? 0)) / 100,
@@ -1683,6 +2046,16 @@ export function createApp(dbPath?: string) {
       kycStatus: (a.kyc_status as string) ?? "not_started",
       accountStatus: a.status === "restricted" ? "restricted" : "active",
       lastActivity: (a.last_activity as number) ?? 0,
+      // The application, visible to staff in the console: date of birth, tax
+      // ID, address and the ID document each member applied with.
+      dob: (a.dob as string) ?? null,
+      ssn: (a.ssn as string) ?? null,
+      city: (a.city as string) ?? null,
+      state: (a.state as string) ?? null,
+      idType: (a.id_type as string) ?? null,
+      legalName: (a.legal_name as string) ?? null,
+      ownerName: (a.owner_name as string) ?? null,
+      applicationAt: (a.submitted_at as number) ?? null,
     }));
 
     const transactions = (db.prepare(`
@@ -1712,7 +2085,7 @@ export function createApp(dbPath?: string) {
     const kycQueue = (db.prepare(`
       SELECT u.id, u.name, u.email, u.business, u.account_type, k.*
       FROM users u JOIN kyc_records k ON k.user_id = u.id
-      WHERE k.status = 'in_review' AND u.role = 'user'
+      WHERE k.review_state IN ('in_review', 'more_info') AND u.role = 'user'
       ORDER BY k.updated_at
     `).all() as Array<Record<string, unknown>>).map(r => {
       const requester = r.requested_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(r.requested_by)) as { name: string } | undefined) : undefined;
@@ -1726,7 +2099,18 @@ export function createApp(dbPath?: string) {
           requestedBy: requester?.name, requestReason: r.request_reason ? String(r.request_reason) : undefined,
           requirements: JSON.parse(String(r.request_reqs_json ?? "[]")),
           submission: r.submission_json ? JSON.parse(String(r.submission_json)) : undefined,
+          review: {
+            state: String(r.review_state ?? "in_review"),
+            note: String(r.review_note ?? ""),
+            requirements: JSON.parse(String(r.review_reqs_json ?? "[]")),
+            reviewedBy: r.reviewed_by ? (db.prepare("SELECT name FROM users WHERE id = ?").get(String(r.reviewed_by)) as { name: string } | undefined)?.name : undefined,
+            reviewedAt: (r.reviewed_at as number) ?? null,
+            submittedAt: (db.prepare("SELECT submitted_at FROM identity_profiles WHERE user_id = ?").get(String(r.id)) as { submitted_at: number } | undefined)?.submitted_at ?? null,
+          },
         },
+        reviewState: String(r.review_state ?? "in_review"),
+        reviewNote: String(r.review_note ?? ""),
+        reviewRequirements: JSON.parse(String(r.review_reqs_json ?? "[]")),
       };
     });
 
@@ -1750,10 +2134,38 @@ export function createApp(dbPath?: string) {
 
   /* ============================== errors ============================== */
 
+  /**
+   * Serve the built app from the same origin as the API when `dist/` exists
+   * (`npm run build`). One process, one port, no proxy: the preview — and any
+   * deployment of the built bundle — gets the app and `/api` together, which
+   * removes the whole class of "the frontend is up but its API isn't" failures.
+   * Registered before the JSON 404 so a page request is never answered with
+   * `{"error":"Not found."}`, and never for /api so routes above always win.
+   */
+  const distIndex = resolve("dist/index.html");
+  if (existsSync(distIndex)) {
+    app.use(express.static(resolve("dist"), { index: false }));
+    app.use((req, res, next) => {
+      if (req.method !== "GET" || req.path.startsWith("/api")) return next();
+      res.sendFile(distIndex);
+    });
+  }
+
   app.use((_req, res) => res.status(404).json({ error: "Not found." }));
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: Error & { status?: number; statusCode?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+    // Malformed caller input is a 400, not a server fault. Everything else is
+    // an internal error, logged server-side and never leaked as a stack trace.
+    if (err instanceof BadInputError) return void res.status(400).json({ error: err.message });
+    // body-parser tags its own client errors: malformed JSON (400) and bodies
+    // over the 256 kb limit (413). Passing them through would mask a caller
+    // mistake as a 500.
+    const status = Number(err.status ?? err.statusCode);
+    if (Number.isInteger(status) && status >= 400 && status < 500) {
+      const message = status === 413 ? "Request body is too large." : "Malformed request body.";
+      return void res.status(status).json({ error: message });
+    }
     console.error("[api]", err.message);
-    res.status(500).json({ error: "Internal server error." }); // never leak stack traces
+    res.status(500).json({ error: "Internal server error." });
   });
 
   return { app, db };

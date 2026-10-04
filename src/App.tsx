@@ -19,7 +19,10 @@ import {
   ScoutAIPage, TeamPage, PerksPage, StatementsPage,
   AccountsPage, BillsPage, DisputesPage, SecurityCenterPage, KYCPage
 } from "./pages/Dashboard";
+import { ClassicApp } from "./pages/dashboards/ClassicDashboard";
+import { useAcct } from "./lib/store";
 import { SuperAdminPage } from "./pages/SuperAdmin";
+import { ApplicationStatusPage } from "./pages/ApplicationStatus";
 import { SupportCenterPage } from "./pages/SupportCenter";
 import { EmailTemplatesPage } from "./pages/EmailTemplates";
 import { MoneyPlanPage } from "./components/MoneyPlan";
@@ -39,6 +42,38 @@ function RedirectIfAuthed({ children }: { children: React.ReactNode }) {
 function BusinessOnly({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   return user?.accountType === "business" ? <>{children}</> : <Navigate to="/app" replace />;
+}
+
+/**
+ * Which dashboard a member gets.
+ * Personal accounts keep the original member dashboard — its own chrome, home
+ * page and routing (`ClassicApp`). Business accounts get the treasury shell and
+ * staff get the control room, both of which bring their own layouts.
+ */
+/**
+ * Holds the dashboard shut until a human has approved the application.
+ *
+ * The account exists as soon as someone signs up — what they don't get yet is
+ * the dashboard. Anything other than `approved` lands on the status page, which
+ * tells them where the application stands and what to do next.
+ */
+function RequireApproved({ children }: { children: React.ReactNode }) {
+  const { account, accountError } = useAcct();
+  const location = useLocation();
+  // A failed load is not a review decision: let RequireAuth and the shell deal
+  // with it rather than trapping the member on the status page.
+  if (accountError) return <>{children}</>;
+  if (!account) return <div className="route-loading"><span className="spinner" /></div>;
+  if (account.kyc.review.state !== "approved" && location.pathname !== "/application") {
+    return <Navigate to="/application" replace />;
+  }
+  return <>{children}</>;
+}
+
+function MemberSurface() {
+  const { user } = useAuth();
+  const staff = Boolean(user?.role && user.role !== "user");
+  return !staff && user?.accountType !== "business" ? <ClassicApp /> : <DashboardLayout />;
 }
 
 function Shell() {
@@ -79,19 +114,15 @@ function Shell() {
         <Route path="/forgot-password" element={<RedirectIfAuthed><ForgotPasswordPage /></RedirectIfAuthed>} />
         <Route path="/invite/accept" element={<RedirectIfAuthed><InviteAcceptPage /></RedirectIfAuthed>} />
 
-        {/* The staff console is intentionally outside the member account shell.
-            A bootstrap Super Admin is an operator identity, not a checking
-            account holder; requiring a member account here previously left a
-            valid admin session on a perpetual empty/loading dashboard. */}
-        <Route path="/app/superadmin" element={import.meta.env.DEV ? <SuperAdminPage /> : <RequireAuth><SuperAdminPage /></RequireAuth>} />
-
         <Route
           path="/app"
           element={
             <RequireAuth>
               <AccountProvider>
                 <MoneyFlowProvider>
-                  <DashboardLayout />
+                  <RequireApproved>
+                    <MemberSurface />
+                  </RequireApproved>
                 </MoneyFlowProvider>
               </AccountProvider>
             </RequireAuth>
@@ -118,6 +149,21 @@ function Shell() {
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/app" replace />} />
         </Route>
+
+        {/* Between sign-up and approval: the member's whole account experience. */}
+        <Route
+          path="/application"
+          element={
+            <RequireAuth>
+              <AccountProvider>
+                <ApplicationStatusPage />
+              </AccountProvider>
+            </RequireAuth>
+          }
+        />
+
+        {/* Staff console: its own shell (dark control room), not the member dashboard chrome. */}
+        <Route path="/app/superadmin" element={<RequireAuth><SuperAdminPage /></RequireAuth>} />
 
         <Route path="*" element={<SiteLayout><NotFoundPage /></SiteLayout>} />
       </Routes>

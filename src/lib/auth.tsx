@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { apiGet, apiPost, apiPatch, probeApi, getToken, setToken, clearToken, ApiError } from "./api";
+import { apiGet, apiPost, apiPatch, probeApi, getToken, setToken, clearToken, onUnauthorized, ApiError } from "./api";
 
 export type UserRole = "user" | "support" | "compliance" | "admin" | "superadmin";
 
@@ -16,24 +16,41 @@ export type User = {
   createdAt: number;
 };
 
-export type PreviewAccountSnapshot = { userId: string; account: unknown };
-
 type AuthValue = {
   user: User | null;
-  /** Server-supplied state from the one-click development preview endpoint. */
-  previewAccount: PreviewAccountSnapshot | null;
   ready: boolean;
   /** True when the API could not be reached on the last probe. */
   offline: boolean;
+  /**
+   * Set when the server rejected the stored session (revoked, expired, or the
+   * token never made it out of a storage-blocked browser) or when a request
+   * came back 401 mid-session. The login page shows it, so an interrupted
+   * session explains itself instead of dumping the user on a bare form.
+   */
+  sessionNotice: string;
+  /** The server's own wording for the rejection — shown small, for diagnosis. */
+  sessionDetail: string;
+  dismissSessionNotice: () => void;
+  /** Forgets this browser's session entirely (every token store) and returns to the form. */
+  resetSession: () => void;
   login: (email: string, password: string) => Promise<User>;
-  /** Development-preview role switcher; the server keeps this endpoint disabled outside an explicit preview runtime. */
-  previewLogin: (persona: "personal" | "business" | "superadmin") => Promise<User>;
-  signup: (input: { name: string; phone?: string; business?: string; accountType: User["accountType"]; email: string; password: string; plan?: User["plan"] }) => Promise<void>;
+  /** `profile` carries the full account application (see server/src/identity.ts). */
+  signup: (input: {
+    name: string; phone?: string; business?: string; accountType: User["accountType"];
+    email: string; password: string; plan?: User["plan"]; profile?: Record<string, unknown>;
+  }) => Promise<void>;
+
   logout: () => void;
   updateUser: (patch: Partial<Pick<User, "name" | "phone" | "business" | "accountType" | "email" | "plan" | "role" | "avatarUrl">>) => void;
   changePassword: (current: string, next: string) => Promise<void>;
   /** Step 1 of password recovery — always resolves with a generic response. */
-  forgotPassword: (email: string) => Promise<void>;
+  /**
+   * Step 1 — requests a reset. Resolves with a `devCode` when the server is
+   * running outside production and no mail provider is configured (see
+   * TODO(send-email) in server/src/app.ts): without it the reset screen would
+   * ask for a code that only exists in the server log.
+   */
+  forgotPassword: (email: string) => Promise<{ devCode?: string }>;
   /** Step 2 — completes the reset with the token from the email. */
   resetPassword: (token: string, password: string) => Promise<void>;
 };
@@ -42,7 +59,6 @@ const AuthCtx = createContext<AuthValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [previewAccount, setPreviewAccount] = useState<PreviewAccountSnapshot | null>(null);
   // Keep the active credential in React state as well as the API module. Vite
   // can hot-reload that module while preserving this provider and user state;
   // without this bridge the UI could still look authenticated while the next
@@ -50,6 +66,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [activeToken, setActiveToken] = useState<string | null>(() => getToken());
   const [ready, setReady] = useState(false);
   const [offline, setOffline] = useState(false);
+  const [sessionNotice, setSessionNotice] = useState("");
+  const [sessionDetail, setSessionDetail] = useState("");
 
   useEffect(() => {
     if (activeToken && getToken() !== activeToken) setToken(activeToken);
@@ -57,23 +75,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      // Keep the token that initiated restoration. A user can choose a preview
-      // role while this request is still in flight; an old rejected request
-      // must never erase that newly-issued session token.
-      const restoringToken = getToken();
       const online = await probeApi();
       setOffline(!online);
       if (online) {
         try {
-          // /api/auth/me accepts the same-origin HttpOnly session cookie as
-          // well as a bearer token. Always try it so a secure cookie session
-          // survives a refresh even when browser storage is unavailable.
-          const { user: me } = await apiGet<{ user: User }>("/api/auth/me");
-          if (getToken() === restoringToken) setUser(me);
-        } catch {
-          if (getToken() === restoringToken) {
-            clearToken(); // revoked or expired — sign in again
-            setActiveToken(null);
+          // Quiet: a refusal here means a stale token, not a session ending now.
+          const { user: me } = await apiGet<{ user: User }>("/api/auth/me", { handleUnauthorized: false });
+          setUser(me);
+        } catch (err) {
+          // A token left over from a previous visit was refused (it expired, was
+          // revoked, or the account is gone — a restarted server with a rebuilt
+          // database does this). That is the normal start of a new visit, not a
+          // failure worth a banner: drop it quietly and show a clean sign-in.
+          // Only losing a session you were actively using gets the notice below.
+          clearToken();
+          if (err instanceof ApiError && err.status === 401) {
+            console.info(`[veyra] discarded a stored session: ${err.message}`);
+
           }
         }
       }
@@ -81,38 +99,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
+  useEffect(() => onUnauthorized(reason => {
+    setUser(null);
+    setSessionNotice("Your session ended — sign in again to pick up where you left off.");
+    setSessionDetail(reason);
+  }), []);
+
+  const dismissSessionNotice = useCallback(() => { setSessionNotice(""); setSessionDetail(""); }, []);
+
+  /** Clears every place a token could hide and drops back to the form. */
+  const resetSession = useCallback(() => {
+    clearToken();
+    setUser(null);
+    dismissSessionNotice();
+  }, [dismissSessionNotice]);
+
   const login = useCallback(async (email: string, password: string): Promise<User> => {
+    // A leftover token must not ride along with a sign-in attempt: if the server
+    // rejected the request, the automatic 401 handling would clear the session
+    // and claim it "ended" — confusing when the real cause is a typed password.
+    clearToken();
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
     setToken(token);
     setActiveToken(token);
-    setPreviewAccount(null);
     setUser(me);
     return me;
   }, []);
 
-  const previewLogin = useCallback<AuthValue["previewLogin"]>(async persona => {
-    const { token, user: me, account } = await apiPost<{ token: string; user: User; account: unknown }>("/api/auth/preview-access", { persona });
-    setToken(token);
-    setActiveToken(token);
-    // This data is an authoritative snapshot supplied by the guarded server
-    // endpoint, not a client-side demo. It avoids a second auth round trip
-    // before the preview dashboard can render.
-    setPreviewAccount({ userId: me.id, account });
-    setUser(me);
-    return me;
-  }, []);
-
-  const signup = useCallback<AuthValue["signup"]>(async ({ name, phone = "", business = "", accountType, email, password, plan = "Pro" }) => {
+  const signup = useCallback<AuthValue["signup"]>(async ({ name, phone = "", business = "", accountType, email, password, plan = "Pro", profile }) => {
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
       name: name.trim(), phone: phone.trim(), business: accountType === "business" ? business.trim() : "",
-      accountType, email: email.trim(), password, plan,
+      accountType, email: email.trim(), password, plan, profile,
     });
     setToken(token);
     setActiveToken(token);
-    setPreviewAccount(null);
     setUser(me);
+    setSessionNotice("");
   }, []);
 
   const logout = useCallback(() => {
@@ -120,8 +144,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     apiPost("/api/auth/logout").catch(() => undefined);
     clearToken();
     setActiveToken(null);
-    setPreviewAccount(null);
     setUser(null);
+    setSessionNotice("");
   }, []);
 
   const updateUser = useCallback<AuthValue["updateUser"]>(patch => {
@@ -136,7 +160,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const forgotPassword = useCallback(async (email: string) => {
-    await apiPost("/api/auth/forgot-password", { email: email.trim() });
+    const res = await apiPost<{ devCode?: string }>("/api/auth/forgot-password", { email: email.trim() });
+    return res && typeof res.devCode === "string" ? { devCode: res.devCode } : {};
   }, []);
 
   const resetPassword = useCallback(async (token: string, password: string) => {
@@ -144,8 +169,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, previewAccount, ready, offline, login, previewLogin, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, previewAccount, ready, offline, login, previewLogin, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

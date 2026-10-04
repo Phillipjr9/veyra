@@ -37,6 +37,38 @@ Admin is created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` on boot; members create
 accounts through the signup flow and start with a real, empty account ($0
 balance, no cards, no history).
 
+
+### Demo accounts (one-click sign-in)
+
+Start `npm run server` — it seeds the demo accounts on boot — and the login page
+shows a **Demo accounts** panel that signs you straight into each of the three
+dashboards, no typing:
+
+| Button | Account | What it opens |
+|---|---|---|
+| Personal | `demo.personal@veyra.dev` / `veyra-demo-2026` | Personal dashboard (goals, cash back, card) |
+| Business | `demo.business@veyra.dev` / `veyra-demo-2026` | Business dashboard (treasury, invoices, team) |
+| Super Admin | `admin@veyra.dev` / `veyra-admin-2026` | Admin console (from `ADMIN_EMAIL`/`ADMIN_PASSWORD`) |
+
+The **dev server seeds these accounts on boot**: `server/veyra.db` is gitignored
+and disposable, so a fresh database would otherwise leave you with no way in. It
+creates the two members through the public API (so every number the dashboards
+show comes from the backend), gives each one history for its dashboard, and
+falls back to the panel's admin credentials when `ADMIN_EMAIL`/`ADMIN_PASSWORD`
+aren't set. Set `DEMO_SEED=0` to opt out. `npm run demo:seed` does the same
+against a running API at any time — re-running is safe, an account with activity
+is left alone, and it warns if the admin password no longer matches the panel.
+
+If a stored session goes stale (expired token, or a browser that blocks web
+storage), the app clears it and returns to the login page with a notice instead
+of a dead-end error screen.
+
+The panel is **dev-only**: it renders when `import.meta.env.DEV` is true (any
+`npm run dev` session) or when a build is opened with `?demo=1`. Production
+builds without that flag never ship the credentials. Before a real launch,
+change `ADMIN_PASSWORD` and delete the `DEMO_ACCOUNTS` block in
+`src/pages/Auth.tsx`.
+
 ## Super Admin control center
 
 `/app/superadmin` — permission-gated modules (RBAC in `src/lib/permissions.ts`):
@@ -53,6 +85,26 @@ derived risk signals) · **Staff** (promote/revoke on the existing auth system) 
 Every mutating action checks permissions via `assertCan()`, writes an audit entry
 (admin, action, target, before/after) and notifies the affected member. Account
 restriction blocks the member's outgoing sends at the store layer.
+
+## Three dashboards, three designs
+
+Members and staff do different jobs with different urgency, so the three
+authenticated surfaces are deliberately different applications rather than one
+layout with swapped labels:
+
+| | Personal | Business | Admin console |
+|---|---|---|---|
+| Navigation | Horizontal pill nav + phone-style bottom tabs | Dark icon rail + company header band | Near-black module rail + status bar |
+| Canvas | Warm paper (`#fbf7f1`), 24px radii | Cool grey (`#eef0f4`), hairline rules, 8px radii | Near-black (`#0b0e14`), monospace data |
+| Home | One oversized balance hero, quick-action tiles, goal rings, cash-back strip, activity feed | KPI strip (available/30d in/out/net + runway), receivables & payables tables, card programme, team & approvals, ledger | Module dashboard: totals, gateway health, live activity, audit feed |
+| Numbers | Display face, large and friendly | Monospace, tabular, grid-aligned | Monospace, dense |
+
+They share behaviour, not looks: the same account snapshot, the same money
+moves, the same command palette and notification menu (see
+`src/pages/dashboards/parts.tsx`). Route coverage, the account snapshot and the
+member pages are identical across personal and business — only the chrome and
+the home view change. The console keeps its own permission-gated modules and
+runs outside the member shell entirely.
 
 ## Design system
 
@@ -81,7 +133,12 @@ src/
     store.tsx           Account state: money, cards, invoices, KYC, team…
     scoutEngine.ts      Scout AI insight generation
   pages/
-    Dashboard.tsx       App shell + every authenticated page
+    Dashboard.tsx       Member data layer + shared authenticated pages
+    dashboards/
+      PersonalDashboard.tsx  Personal chrome + "everyday money" overview
+      BusinessDashboard.tsx  Business chrome + treasury overview
+      AdminShell.tsx         Control-room chrome for the admin console
+      parts.tsx              Shared behaviour: notification menu, sparkline, ring
     Marketing.tsx       Public marketing pages
     Auth.tsx            Sign in / sign up / forgot password / invite accept
     SuperAdmin.tsx      Admin console (users, ledger, KYC requests)
@@ -92,11 +149,12 @@ src/
   emails/
     design.ts           Email design system (tokens → inline-style HTML)
     templates.ts        24 transactional templates
-  styles/               Shared CSS per area
+  styles/               Shared CSS per area (personal.css, business.css, admin.css…)
 emails/                 Exported standalone HTML (build:emails)
 scripts/
   test-permissions.ts  RBAC mirror unit tests (14 checks)
   check-emails.mjs     Email template validation (25 checks)
+  check-api-coverage.mjs  Route coverage: every server route has a caller (1 check)
   build-emails.ts      Email export
 public/images/email/    Hosted logo PNG for emails (Gmail/Outlook-safe)
 server/
@@ -109,7 +167,8 @@ server/
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   112-check integration suite (boots the real server)
+  scripts/test-api.ts   153-check integration suite (boots the real server)
+  scripts/audit-routes.ts  69 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -153,7 +212,9 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 105-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 153-check integration suite (fresh DB, ephemeral port)
+npm run check:routes      # fails if a server route has no caller in the app
+npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
 ```
 
@@ -163,16 +224,78 @@ npm run typecheck:server  # strict NodeNext typecheck
 |---|---|
 | Passwords | scrypt (`s2$salt$hash`), never plaintext or reversible |
 | Sessions | HS256 bearer tokens (12 h) with a `sessions` table — logout and admin revocation kill them instantly |
-| Login abuse | In-memory rate limit: 8 attempts / 60 s / email+IP |
+| Login abuse | In-memory rate limit: 8 attempts / 60 s per IP (login and password-reset requests) |
 | RBAC | 17 permissions × 5 roles, resolved **fresh from the DB on every request** (role changes take effect immediately, no re-login) |
 | Money | Integer cents everywhere; every mutation inside `BEGIN IMMEDIATE` |
 | Audit trail | `audit_log` is append-only **by database trigger** — `UPDATE`/`DELETE` raise `ABORT` |
 | Financial limits | $250 k transfer cap, $100 k deposit cap, $10 M admin adjustment cap |
 | Account states | `restricted` members can deposit but not transfer; `payment_rails: halted` blocks all transfers with 503 |
 | Overdrafts | Rejected — balances can never go negative |
+| Card controls | Freeze, per-transaction and monthly limits, merchant/category locks and the online-payments switch are enforced server-side when a card spends |
+| Export scoping | The ledger export opens with `reports.view` or `transactions.export`; the directory, balances and KYC exports stay behind `reports.view` |
 | Secrets | `TOKEN_SECRET` env required in production (refuses to boot on the dev fallback) |
 | Password reset | Single-use SHA-256-hashed tokens, 30-minute expiry, reset revokes all sessions |
 | Bootstrap | First Super Admin created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` — no seeded accounts in production |
+
+### Route coverage
+
+`npm run check:routes` diffs the routes declared in `server/src/app.ts` against
+every call site in the app (`src/lib/*`, `src/pages/*`, `src/components/*`,
+including lookup tables and `fetch` downloads) and fails on either kind of
+drift: a server route nobody calls, or a client call with no route behind it.
+Reads that already ship inside the `GET /api/me/state` / `GET /api/admin/state`
+snapshots are the only allowlisted exceptions, spelled out in the script.
+
+### Route security audit
+
+`npm run audit:routes` boots the real server on a throwaway database and probes
+**every route with six identities** — no token, a member, and each staff role —
+then checks the responses against an **independent baseline policy** written in
+the script:
+
+- a route the baseline marks private must answer 401 without a token
+- a route requiring permission `P` must answer 403 for every role whose live
+  grant list (from `GET /api/admin/roles`) lacks `P`, and must not answer 403
+  for a role that has it
+- member surface must not answer 403 to a member
+- a route missing from the baseline fails the audit, so new surface must be
+  classified deliberately
+
+Because the expectations live outside the code under test, the audit catches a
+gate that was *deleted* or a permission typo — the failure modes that a
+same-source check (and most unit tests) cannot see. It also verifies
+cross-member isolation: another member's card, invoice, pocket, payee,
+scheduled payment and session ids must all answer 404/403, and their state must
+be untouched afterwards.
+
+Every member mutation is optimistic in the UI and replayed against the API, then
+reconciled with the refreshed snapshot: the server is authoritative, so a
+rejected action (insufficient funds, halted rails, restricted account) rolls the
+optimistic state back and surfaces the server's error. A mutation that could not
+be *sent* is surfaced too: with no session token, or with the API known to be
+unreachable, the action is refused and the member is told it was not saved —
+there is no offline replay queue, so it would be lost on refresh. (An unresolved
+health probe is not treated as offline; the request itself is the better probe,
+and its failure travels the normal error path.) Requests are serialised through
+one queue so the optimistic state and the server can't interleave, and the
+path/body of a queued call is resolved when it runs rather than when it is
+created.
+
+Records created client-side get a local id until the create response returns
+the server's id (`adoptId`/`resolveId` in `src/lib/store.tsx`), so a follow-up
+action taken in the same breath — pay this invoice, move money out of this
+pocket, dispute the payment you just scheduled — still hits the row the server
+actually stored. Deposits, transfers and scheduled payments adopt the ledger
+row's id from the response for the same reason.
+
+Console CSV exports are generated server-side from the database (full ledger,
+not the console's window) via `GET /api/admin/reports/:kind.csv` and
+`GET /api/admin/audit/export.csv`, downloaded with the session token. The
+accounts and KYC files carry the columns the console shows — the accounts file
+includes cards, frozen cards, transaction and pending-transaction counts, KYC
+standing, status and last activity, and the KYC file adds the review queue's
+submission columns (submitted date, legal name, document, file count, source of
+funds) to the status columns.
 
 ### API surface (summary)
 
@@ -217,7 +340,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + API integration (112) = 151 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (153) = 194 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

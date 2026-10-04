@@ -17,6 +17,7 @@
  * Run: npm run test:api   (or: npx tsx server/scripts/test-api.ts)
  */
 import { createApp } from "../src/app.js";
+import { applicationFor } from "./fixtures.js";
 import { resetRateLimits } from "../src/security.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +27,28 @@ let failures = 0;
 const expect = (label: string, cond: boolean, extra?: string) => {
   console.log(`${cond ? "✓" : "✗ FAIL:"} ${label}${extra && !cond ? ` — ${extra}` : ""}`);
   if (!cond) failures++;
+};
+
+/** Parses one CSV line into cells (handles the exports' quoted fields). */
+const csvCells = (line: string): string[] => {
+  const cells: string[] = [];
+  let cell = "", quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch !== '"') cell += ch;
+      else if (line[i + 1] === '"') { cell += '"'; i++; }
+      else quoted = false;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { cells.push(cell); cell = ""; }
+    else cell += ch;
+  }
+  cells.push(cell);
+  return cells;
+};
+const csvRowFor = (csv: string, needle: string): string[] | null => {
+  const line = csv.split("\n").find(l => l.includes(needle));
+  return line ? csvCells(line) : null;
 };
 
 const tmp = mkdtempSync(join(tmpdir(), "veyra-api-test-"));
@@ -54,16 +77,24 @@ const api = async (method: string, path: string, token?: string, body?: unknown)
   return { status: res.status, json, text, headers: res.headers };
 };
 
-const register = async (name: string, email: string, password: string, extra: Record<string, unknown> = {}) =>
-  api("POST", "/api/auth/register", undefined, { name, email, password, ...extra });
+const register = async (name: string, email: string, password: string, extra: Record<string, unknown> = {}) => {
+  const accountType = extra.accountType === "personal" ? "personal" : "business";
+  const profile = (extra.profile as Record<string, unknown> | undefined)
+    ?? applicationFor(accountType, name, typeof extra.business === "string" && extra.business.trim() ? extra.business : undefined);
+  return api("POST", "/api/auth/register", undefined, { name, email, password, ...extra, profile });
+};
+
+/**
+ * Sign-up parks every account in the review queue and the money routes refuse to
+ * move until a human clears it. This is how the suite clears the members it is
+ * about to move money with — the same decision a reviewer makes.
+ */
+let decideFor: (userId: string) => Promise<{ status: number }> = async () => ({ status: 0 });
 
 try {
   /* ---------- health & auth ---------- */
   const health = await api("GET", "/api/health");
   expect("health check", health.status === 200 && health.json.ok === true);
-
-  const previewDisabled = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
-  expect("preview role shortcuts are unavailable unless explicitly enabled", previewDisabled.status === 404);
 
   const bootCount = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
   expect("clean database contains only the bootstrap admin", bootCount === 1);
@@ -84,12 +115,14 @@ try {
   expect("env-bootstrapped superadmin login", adminLogin.status === 200 && adminLogin.json.token && adminLogin.json.user.role === "superadmin");
   const admin = adminLogin.json.token;
   const adminId = adminLogin.json.user.id;
+  decideFor = (userId: string) => api("POST", `/api/admin/kyc/${userId}/decision`, admin, { decision: "approved", note: "" });
 
   const hashRow = db.prepare("SELECT password_hash FROM users WHERE email = 'ops@veyra.test'").get() as { password_hash: string };
   expect("passwords stored as scrypt digests, never plaintext", hashRow.password_hash.startsWith("s2$") && !hashRow.password_hash.includes("admin-pass-123"));
 
   /* ---------- every account is created through the API ---------- */
   const raeReg = await register("Rae Kim", "rae@member.test", "member-pass-1", { accountType: "business", business: "Rae & Co Studio" });
+  await decideFor(raeReg.json.user.id); // rae is the suite's working account
   const alexReg = await register("Alex Stone", "alex@member.test", "member-pass-2", { accountType: "personal" });
   const adaReg = await register("Ada Mensah", "ada@staff.test", "staff-pass-1", { accountType: "business", business: "Veyra Financial HQ" });
   const leoReg = await register("Leo Frost", "leo@staff.test", "staff-pass-2", { accountType: "business", business: "Veyra Financial HQ" });
@@ -215,6 +248,14 @@ try {
   expect("member can open a dispute", memberDispute.status === 201);
   const disputeId = memberDispute.json.dispute.id;
 
+  // The app files disputes against a specific ledger row; the server enforces
+  // one open case per transaction (retries and second tabs included).
+  const raeOutflow = (await api("GET", "/api/me/state", rae)).json.account.transactions.find((t: any) => t.amount < 0);
+  const linkedDispute = await api("POST", "/api/me/disputes", rae, { transactionId: raeOutflow.id, reason: "Unauthorized charge", detail: "Card was in my possession." });
+  expect("member can dispute a specific transaction", linkedDispute.status === 201);
+  const duplicateDispute = await api("POST", "/api/me/disputes", rae, { transactionId: raeOutflow.id, reason: "Unauthorized charge", detail: "" });
+  expect("second filing for the same transaction rejected (409)", duplicateDispute.status === 409);
+
   const disputes = await api("GET", "/api/admin/risk/disputes", admin);
   expect("risk queue lists the filed dispute", disputes.status === 200 && disputes.json.disputes.length >= 1 &&
     disputes.json.disputes.some((d: any) => d.id === disputeId && d.status === "submitted"));
@@ -272,10 +313,71 @@ try {
     const report = await api("GET", `/api/admin/reports/${kind}.csv`, admin);
     expect(`report export: ${kind}`, report.status === 200 && report.text.includes(",") && (report.headers.get("content-type") ?? "").includes("text/csv"));
   }
+  // The exports mirror the console tables column for column: a column the
+  // console shows but the file omits is a gap, so both are asserted here.
+  const accountsCsv = await api("GET", "/api/admin/reports/accounts.csv", admin);
+  const accountsHeader = accountsCsv.text.split("\n")[0];
+  const accountColumns = ["Member", "Type", "Balance", "Pending", "Cards", "Frozen cards",
+    "Transactions", "Pending transactions", "KYC", "Status", "Last activity"];
+  expect("accounts export carries every Accounts-console column",
+    accountColumns.every(c => accountsHeader.includes(c)));
+  const consoleAccounts = ((await api("GET", "/api/admin/state", admin)).json as any).accounts as any[];
+  const raeConsole = consoleAccounts.find(a => a.email === "rae@member.test");
+  // Read the file by column NAME, not position: the export grows columns as the
+  // console does, and a positional test would break every time it does.
+  const headerColumns = accountsHeader.split(",").map(h => h.replace(/^"|"$/g, ""));
+  const valueFor = (row: string[], column: string) => {
+    const i = headerColumns.indexOf(column);
+    return i === -1 ? undefined : row[i];
+  };
+  const raeRow = csvRowFor(accountsCsv.text, "rae@member.test") ?? [];
+  expect("accounts export matches the console's own counts for a member",
+    raeRow.length > 14 && raeConsole !== undefined &&
+    valueFor(raeRow, "Cards") === String(raeConsole.cards) &&
+    valueFor(raeRow, "Frozen cards") === String(raeConsole.frozenCards) &&
+    valueFor(raeRow, "Transactions") === String(raeConsole.txnCount) &&
+    valueFor(raeRow, "Pending transactions") === String(raeConsole.pendingTxns) &&
+    valueFor(raeRow, "KYC") === raeConsole.kycStatus &&
+    valueFor(raeRow, "Status") === raeConsole.accountStatus,
+    `csv=${JSON.stringify(raeRow)} console=${JSON.stringify(raeConsole)}`);
+  expect("accounts export reports real activity, not placeholders",
+    raeConsole !== undefined && raeConsole.txnCount > 0 && Number(valueFor(raeRow, "Transactions")) === raeConsole.txnCount);
+  expect("accounts export carries the member's application (identity columns filled)",
+    valueFor(raeRow, "Date of birth") === raeConsole.dob && valueFor(raeRow, "SSN") === raeConsole.ssn &&
+    valueFor(raeRow, "ID document") === raeConsole.idType);
+
+  const kycCsv = await api("GET", "/api/admin/reports/kyc.csv", admin);
+  const kycHeader = kycCsv.text.split("\n")[0];
+  const kycColumns = ["KYC status", "Completeness", "Submitted", "Legal name", "Document", "Files",
+    "Source of funds", "Requested at", "Updated"];
+  expect("kyc export carries every KYC-console column",
+    kycColumns.every(c => kycHeader.includes(c)));
+  // 0 User ID, 1 Member, 2 Email, 3 Type, 4 KYC status, 5 Completeness,
+  // 6 Submitted, 7 Legal name, 8 Document, 9 Files, 10 Source of funds, 11 Requested at, 12 Updated.
+  const alexKycRow = csvRowFor(kycCsv.text, "alex@member.test") ?? [];
+  // The case has been decided by now, so its row is no longer in the review
+  // queue — the console's Accounts view is where its KYC standing shows.
+  const alexConsoleKyc = consoleAccounts.find(a => a.email === "alex@member.test")?.kycStatus;
+  expect("kyc export carries the reviewed case's submission details",
+    alexKycRow[7] === "Alex Stone" && alexKycRow[8] === "Drivers License" &&
+    alexKycRow[9] === "1" && alexKycRow[10] === "Salary income",
+    `row=${JSON.stringify(alexKycRow)}`);
+  expect("kyc export status matches the console's KYC column",
+    alexKycRow[4] === alexConsoleKyc && alexKycRow[5] === "100%" && alexKycRow[6] !== "—",
+    `csv=${JSON.stringify(alexKycRow.slice(4, 7))} console=${alexConsoleKyc}`);
   const auditCsv = await api("GET", "/api/admin/audit/export.csv", admin);
   expect("report export: audit (CSV)", auditCsv.status === 200 && auditCsv.text.includes(",") && (auditCsv.headers.get("content-type") ?? "").includes("text/csv"));
   const exportNoPerm = await api("GET", "/api/admin/reports/customers.csv", support);
   expect("support cannot export reports (403)", exportNoPerm.status === 403);
+  // `transactions.export` is the Transactions console's own permission: it
+  // opens the ledger file only — the directory, balances and KYC files stay
+  // behind reports.view.
+  await api("PUT", "/api/admin/roles", admin, { role: "support", permissions: ["dashboard.view", "transactions.export"] });
+  const ledgerByTxnExport = await api("GET", "/api/admin/reports/transactions.csv", support);
+  const directoryByTxnExport = await api("GET", "/api/admin/reports/customers.csv", support);
+  expect("transactions.export opens the ledger export (200)", ledgerByTxnExport.status === 200 && ledgerByTxnExport.text.includes(","));
+  expect("transactions.export does not open the other reports (403)", directoryByTxnExport.status === 403);
+  await api("POST", "/api/admin/roles/reset", admin, { role: "support" });
 
   /* ---------- audit trail ---------- */
   const auditList = await api("GET", "/api/admin/audit?category=Financial", admin);
@@ -318,14 +420,23 @@ try {
 
   /* ---------- member lifecycle: empty start → real activity ---------- */
   const juneToken = juneReg.json.token;
+  const juneId = juneReg.json.user.id;
+  const adaId = adaReg.json.user.id;
   const juneState = await api("GET", "/api/me/state", juneToken);
   const js = juneState.json.account;
   expect("new member starts EMPTY (production behavior)", juneState.status === 200 &&
     js.balance === 0 && js.pendingBalance === 0 && js.cards.length === 0 && js.transactions.length === 0 &&
     js.invoices.length === 0 && js.team.length === 1 && js.team[0].role === "Owner" &&
     js.savingsPockets.length === 0 && js.payees.length === 0 && js.scheduledPayments.length === 0 &&
-    js.perks.length === 0 && js.disputes.length === 0 && js.notifications.length === 0 &&
-    js.bankDetails.accountNumber.length === 12 && js.kyc.status === "not_started" && js.accountStatus === "active");
+    js.perks.length === 0 && js.disputes.length === 0 &&
+    js.notifications.length === 1 && js.notifications[0].title === "Application received — we're reviewing it" &&
+    js.bankDetails.accountNumber.length === 12 && js.kyc.status === "in_review" && js.kyc.completeness === 100 &&
+    js.accountStatus === "active");
+  const heldMove = await api("POST", "/api/me/deposits", juneToken, { amount: 10, source: "Too early" });
+  expect("money is blocked while the application is in review (403 review_pending)",
+    heldMove.status === 403 && heldMove.json.code === "review_pending");
+  const juneApproval = await decideFor(juneId);
+  expect("reviewer approves the application", juneApproval.status === 200);
   await api("PUT", "/api/me/preferences", juneToken, { key: "scoutAuto", value: false }); // deterministic balances
   await api("POST", "/api/me/deposits", juneToken, { amount: 1200, source: "Payroll" });
   const juneCard = await api("POST", "/api/me/cards", juneToken, { label: "Everyday", type: "virtual", limit: 500, cardholder: "June Okafor" });
@@ -396,8 +507,20 @@ try {
   const payNow = await api("POST", `/api/me/scheduled/${sched.json.payment.id}/pay`, rae);
   expect("pay-now debits and advances next date", payNow.status === 200 &&
     (await api("GET", "/api/me/state", rae)).json.account.balance === balPreSched - 250);
+  // The response carries the id of the ledger row the server just wrote, so a
+  // dispute filed before the snapshot refreshes still links to that row.
+  const paidTxnId = payNow.json.transaction?.id as string | undefined;
+  expect("pay-now returns the ledger row id", typeof paidTxnId === "string" && paidTxnId.startsWith("txn"));
+  const disputePaidTxn = await api("POST", "/api/me/disputes", rae, { transactionId: paidTxnId, reason: "Duplicate charge", detail: "Filed immediately after paying." });
+  expect("a dispute filed with that id links to the row (201)", disputePaidTxn.status === 201);
   const paused = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, rae);
   expect("scheduled payment pause/resume toggle", paused.status === 200 && paused.json.status === "paused");
+  const resumed = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, rae, { status: "active" });
+  expect("explicit status wins over the toggle (app contract)", resumed.status === 200 && resumed.json.status === "active");
+  const badStatus = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, rae, { status: "cancelled" });
+  expect("unknown scheduled status rejected (400)", badStatus.status === 400);
+  const foreignSched = await api("PATCH", `/api/me/scheduled/${sched.json.payment.id}`, alex, { status: "paused" });
+  expect("cannot pause another member's payment (404)", foreignSched.status === 404);
 
   // Rewards redemption
   const rewardsPre = (await api("GET", "/api/me/state", rae)).json.account;
@@ -442,6 +565,230 @@ try {
   const memberAdvance = await api("POST", `/api/me/disputes/${disputeId}/advance`, alex);
   expect("member self-resolution blocked (404 — no such route)", memberAdvance.status === 404);
 
+  /* ---------- card controls are enforced when the card spends ---------- */
+
+  await api("POST", "/api/me/deposits", juneToken, { amount: 900, source: "Card control funding" });
+  const controlled = await api("POST", "/api/me/cards", juneToken, { label: "Controls", limit: 300, type: "virtual" });
+  const controlId = controlled.json.card.id;
+  const spendWithCard = (body: Record<string, unknown>) =>
+    api("POST", "/api/me/transfers", juneToken, { counterparty: "Northstar Ads", amount: 10, category: "Software", method: "Card", cardId: controlId, ...body });
+  const cardSpent = async () =>
+    (await api("GET", "/api/me/state", juneToken)).json.account.cards.find((c: any) => c.id === controlId).spent;
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { frozen: true });
+  const frozenSpend = await spendWithCard({});
+  expect("frozen card declines spending (403)", frozenSpend.status === 403);
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { frozen: false });
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { controls: { online: false } });
+  const onlineOff = await spendWithCard({});
+  expect("online payments switched off decline spending (403)", onlineOff.status === 403);
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { controls: { online: true } });
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { merchantLock: "Northstar Ads" });
+  const wrongMerchant = await spendWithCard({ counterparty: "Someone Else" });
+  expect("merchant lock declines a different merchant (400)", wrongMerchant.status === 400);
+  const rightMerchant = await spendWithCard({ counterparty: "northstar ads" });
+  expect("merchant lock allows its own merchant (case-insensitive, 201)", rightMerchant.status === 201);
+  expect("declines never touched the card's spend", await cardSpent() === 10);
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { merchantLock: "", categoryLock: "Software" });
+  const wrongCategory = await spendWithCard({ category: "Travel" });
+  expect("category lock declines another category (400)", wrongCategory.status === 400);
+  const rightCategory = await spendWithCard({ category: "Software" });
+  expect("category lock allows its own category (201)", rightCategory.status === 201);
+
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { categoryLock: "", singleTransactionLimit: 50 });
+  const overPerTxn = await spendWithCard({ amount: 60 });
+  expect("per-transaction limit enforced (400)", overPerTxn.status === 400 && /per-transaction/.test(overPerTxn.json.error));
+  await api("PATCH", `/api/me/cards/${controlId}`, juneToken, { singleTransactionLimit: 1000 });
+  const withinLimits = await spendWithCard({ amount: 100 });
+  expect("spending within every limit succeeds (201)", withinLimits.status === 201);
+  const overMonthly = await spendWithCard({ amount: 200 }); // 120 spent + 200 > 300 limit
+  expect("monthly card limit enforced (400)", overMonthly.status === 400 && /monthly limit/.test(overMonthly.json.error));
+  expect("rejected spend rolled back (spent unchanged at 120)", await cardSpent() === 120);
+
+  /* ---------- body parsing errors are 4xx, never 500 ---------- */
+
+  const malformedJson = await fetch(`${base}/api/me/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${juneToken}` },
+    body: '{"name": ',
+  });
+  expect("malformed JSON body rejected with 400", malformedJson.status === 400);
+  const oversized = await fetch(`${base}/api/me/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${juneToken}` },
+    body: JSON.stringify({ name: "x".repeat(300_000) }),
+  });
+  expect("oversized body rejected with 413", oversized.status === 413);
+
+  /* ---------- input hardening (malformed input is 400, never 500) ---------- */
+
+  const hardenState = (await api("GET", "/api/me/state", juneToken)).json.account;
+  const hardenCard = hardenState.cards[0];
+  const malformed: Array<[string, string, string, unknown]> = [
+    ["deposits", "POST", "/api/me/deposits", { amount: "abc", source: "x" }],
+    ["deposits (object)", "POST", "/api/me/deposits", { amount: { evil: true }, source: "x" }],
+    ["transfers", "POST", "/api/me/transfers", { counterparty: "x", amount: "abc" }],
+    ["invoices", "POST", "/api/me/invoices", { client: "x", amount: "abc", dueDays: 1 }],
+    ["cards", "POST", "/api/me/cards", { label: "x", limit: "abc", type: "virtual" }],
+    ["card patch", "PATCH", `/api/me/cards/${hardenCard.id}`, { limit: "abc" }],
+    ["pockets", "POST", "/api/me/pockets", { name: "x", target: "abc" }],
+    ["scheduled", "POST", "/api/me/scheduled", { payeeName: "x", amount: "abc", nextDate: Date.now() + 86_400_000 }],
+    ["team", "POST", "/api/me/team", { name: "x", email: "x@y.co", role: "Member", monthlyLimit: "abc" }],
+    ["admin adjust", "POST", `/api/admin/members/${juneId}/adjust`, { direction: "credit", amount: "abc", memo: "x" }],
+  ];
+  let badInputAll400 = true;
+  let badInputDetail = "";
+  for (const [label, method, path, body] of malformed) {
+    const token = label.startsWith("admin") ? admin : juneToken;
+    const res = await api(method, path, token, body);
+    if (res.status !== 400) { badInputAll400 = false; badInputDetail += `${label}→${res.status} `; }
+  }
+  expect("malformed amounts rejected with 400, never 500", badInputAll400, badInputDetail);
+  expect("non-numeric strings are not silently parsed (\"12abc\")",
+    (await api("POST", "/api/me/deposits", juneToken, { amount: "12abc", source: "x" })).status === 400);
+
+  /* ---------- enums are validated, never guessed ---------- */
+
+  const badDirection = await api("POST", `/api/admin/members/${juneId}/adjust`, admin, { direction: "debit-typo", amount: 5, memo: "x" });
+  expect("unknown adjustment direction rejected (400 — no silent credit)", badDirection.status === 400);
+  const badAccStatus = await api("POST", `/api/admin/members/${juneId}/status`, admin, { status: "restrictd", reason: "typo" });
+  expect("unknown account status rejected (400 — no silent restore)", badAccStatus.status === 400);
+  const badAudience = await api("POST", "/api/admin/broadcasts", admin, { title: "t", detail: "d", audience: "everyone" });
+  expect("unknown broadcast audience rejected (400 — no platform-wide send)", badAudience.status === 400);
+  const badFrequency = await api("POST", "/api/me/scheduled", juneToken, { payeeName: "x", amount: 1, nextDate: Date.now() + 86_400_000, frequency: "yearly" });
+  expect("unknown payment frequency rejected (400)", badFrequency.status === 400);
+
+  /* ---------- member routes act on member accounts only ---------- */
+
+  const staffTargets: Array<[string, string, string, unknown]> = [
+    ["view a staff account as a member record", "GET", `/api/admin/members/${adaId}`, undefined],
+    ["credit a staff account", "POST", `/api/admin/members/${adaId}/adjust`, { direction: "credit", amount: 1, memo: "x" }],
+    ["restrict the Super Admin's account", "POST", `/api/admin/members/${adminId}/status`, { status: "restricted", reason: "x" }],
+  ];
+  let staffScoped = true;
+  let staffDetail = "";
+  for (const [label, method, path, body] of staffTargets) {
+    const res = await api(method, path, admin, body);
+    if (res.status !== 404) { staffScoped = false; staffDetail += `${label}→${res.status} `; }
+  }
+  expect("staff accounts are not member surface (404, no enumeration)", staffScoped, staffDetail);
+  expect("staff account left untouched", (db.prepare("SELECT status FROM users WHERE id = ?").get(adaId) as { status: string }).status === "active");
+
+  /* ---------- foreign resources are 404, not a misleading 400 ---------- */
+
+  const junePocket = (await api("POST", "/api/me/pockets", juneToken, { name: "Foreign probe", target: 10 })).json.pocket;
+  const foreignPocket = await api("POST", `/api/me/pockets/${junePocket.id}/move`, alex, { amount: 1, direction: "to_checking" });
+  expect("another member's pocket is 404 (move)", foreignPocket.status === 404);
+  const foreignPocketDelete = await api("DELETE", `/api/me/pockets/${junePocket.id}`, alex);
+  expect("another member's pocket is 404 (delete)", foreignPocketDelete.status === 404);
+  const juneSchedule = (await api("POST", "/api/me/scheduled", juneToken, { payeeName: "Foreign probe", amount: 1, nextDate: Date.now() + 86_400_000 })).json.payment;
+  const foreignSchedule = await api("POST", `/api/me/scheduled/${juneSchedule.id}/pay`, alex);
+  expect("another member's scheduled payment is 404 (pay)", foreignSchedule.status === 404);
+  expect("pocket still owned and intact after foreign attempts",
+    (await api("GET", "/api/me/state", juneToken)).json.account.savingsPockets.some((p: any) => p.id === junePocket.id));
+
+  /* ---------- registration validation ---------- */
+
+  const emptyBusiness = await register("Empty Biz", "empty-biz@member.test", "member-pass-9", { accountType: "business", business: "   " });
+  expect("blank business name rejected for business accounts (400)", emptyBusiness.status === 400);
+  const wrongTypeBusiness = await register("Wrong Type", "wrong-type@member.test", "member-pass-9", { accountType: "business", business: 42 });
+  expect("non-string business name rejected (400)", wrongTypeBusiness.status === 400);
+  const personalNoBusiness = await register("Solo Person", "solo@member.test", "member-pass-9", { accountType: "personal" });
+  expect("personal accounts need no business name (201)", personalNoBusiness.status === 201);
+  const injectedRole = await register("Role Injector", "role-inject@member.test", "member-pass-9", { accountType: "business", business: "Inject Co", role: "superadmin", status: "active" });
+  const injectedRow = db.prepare("SELECT role, status, plan FROM users WHERE email = ?").get("role-inject@member.test") as { role: string; status: string; plan: string };
+  expect("registration ignores injected role/status/plan (member, active, Pro)", injectedRole.status === 201 &&
+    injectedRole.json.user.role === "user" && injectedRow.role === "user" && injectedRow.status === "active" && injectedRow.plan === "Pro");
+
+  /* ---------- the account application (identity data) ---------- */
+
+  const noProfile = await api("POST", "/api/auth/register", undefined, { name: "No App", email: "no-app@member.test", password: "member-pass-9", accountType: "personal" });
+  expect("registration without an application is rejected (422)",
+    noProfile.status === 422 && noProfile.json.field === "firstName");
+
+  const weakSsn = await register("Weak Ssn", "weak-ssn@member.test", "member-pass-9", {
+    accountType: "personal", profile: { ...applicationFor("personal", "Weak Ssn"), ssn: "666-12-3456" },
+  });
+  expect("impossible SSN rejected with a field-level error (422)",
+    weakSsn.status === 422 && weakSsn.json.field === "ssn" && /Social Security/.test(weakSsn.json.error));
+
+  const child = await register("Too Young", "too-young@member.test", "member-pass-9", {
+    accountType: "personal", profile: { ...applicationFor("personal", "Too Young"), dob: "2012-02-02" },
+  });
+  expect("applicants under 18 rejected (422)", child.status === 422 && child.json.field === "dob");
+
+  const badEin = await register("Bad Ein Co", "bad-ein@member.test", "member-pass-9", {
+    accountType: "business", business: "Bad Ein Co",
+    profile: { ...applicationFor("business", "Bad Ein Co", "Bad Ein Co"), ein: "07-1234567" },
+  });
+  expect("invalid EIN rejected for business accounts (422)", badEin.status === 422 && badEin.json.field === "ein");
+
+  const ownerTooSmall = await register("Small Owner Co", "small-owner@member.test", "member-pass-9", {
+    accountType: "business", business: "Small Owner Co",
+    profile: { ...applicationFor("business", "Small Owner Co", "Small Owner Co"), ownerOwnership: 10 },
+  });
+  expect("beneficial ownership below 25% rejected (422)", ownerTooSmall.status === 422 && ownerTooSmall.json.field === "ownerOwnership");
+
+  const stored = db.prepare("SELECT first_name, last_name, dob, ssn, state, id_type, ein FROM identity_profiles WHERE user_id = ?").get(raeId) as
+    { first_name: string; last_name: string; dob: string; ssn: string; state: string; id_type: string; ein: string };
+  expect("the application is stored normalised (name, SSN and EIN shapes)",
+    stored.first_name === "Rae" && stored.last_name === "Kim" && stored.ssn === "527-44-8213" && stored.ein === "83-1174265" && stored.state === "TX");
+
+  const fresh = await register("Iris Fresh", "iris@member.test", "member-pass-9", { accountType: "personal" });
+  const kycAfterSignup = db.prepare("SELECT status, completeness FROM kyc_records WHERE user_id = ?").get(fresh.json.user.id) as { status: string; completeness: number };
+  expect("a completed application enters compliance review (in_review, 100%)",
+    fresh.status === 201 && kycAfterSignup.status === "in_review" && kycAfterSignup.completeness === 100);
+
+  const myProfile = await api("GET", "/api/me/profile", rae);
+  expect("the member reads their own application back with the SSN masked",
+    myProfile.status === 200 && myProfile.json.profile.ssn === "•••-••-8213" &&
+    myProfile.json.profile.ein === "••-•••4265" && myProfile.json.profile.addressLine1 === "88 Harper Street" &&
+    myProfile.json.profile.legalName === "Rae & Co Studio");
+
+  const alexProfile = await api("GET", "/api/me/profile", alex);
+  expect("personal applications carry no business section", alexProfile.status === 200 &&
+    alexProfile.json.profile.legalName === undefined && alexProfile.json.profile.ein === undefined);
+
+  const adminSees = await api("GET", `/api/admin/members/${raeId}`, admin);
+  expect("staff see the full application, tax IDs unmasked",
+    adminSees.status === 200 && adminSees.json.identity.ssn === "527-44-8213" &&
+    adminSees.json.identity.ein === "83-1174265" && adminSees.json.identity.ownerSsn === "527-44-8213" &&
+    adminSees.json.identity.idType === "Driver's license" && adminSees.json.member.email === "rae@member.test");
+
+  // A fresh applicant of its own: rae was cleared above so the money routes could
+  // run, and these two checks are specifically about an application that is still
+  // waiting for a decision.
+  const pending = await register("Mira Cole", "mira@member.test", "member-pass-9", { accountType: "business", business: "Cole Studio" });
+  const pendingId = pending.json.user.id;
+
+  const dir = await api("GET", "/api/admin/members", admin);
+  const dirRow = dir.json.members.find((m: any) => m.id === pendingId);
+  expect("the customer directory exposes date of birth and tax ID to staff",
+    dir.status === 200 && dirRow?.dob === "1990-05-12" && dirRow?.ssn === "527-44-8213" && dirRow?.kycStatus === "in_review");
+
+  const queued = await api("GET", "/api/admin/kyc/queue", admin);
+  const queuedPending = queued.json.queue.find((q: any) => q.userId === pendingId);
+  expect("the signup application lands in the KYC review queue with its details",
+    queued.status === 200 && queuedPending?.submission?.legalName === "Mira Cole" &&
+    queuedPending?.submission?.taxId === "527-44-8213" && queuedPending?.submission?.application?.businessType === "Multi-member LLC");
+
+  // Registration budget: only applications that pass validation spend it, and a
+  // run of scripted sign-ups from one connection is what it exists to stop.
+  resetRateLimits();
+  const flood = [];
+  for (let i = 0; i < 21; i += 1) {
+    const r = await register(`Flood ${String.fromCharCode(65 + i)}a`, `flood-${i}@member.test`, "member-pass-9", { accountType: "personal" });
+    flood.push(r.status);
+  }
+  expect("scripted sign-up runs are throttled (429 after the budget)",
+    flood.slice(0, 20).every(s => s === 201) && flood[20] === 429);
+  const afterThrottle = await api("POST", "/api/auth/login", undefined, { email: "flood-0@member.test", password: "member-pass-9" });
+  expect("an account created inside the budget still works", afterThrottle.status === 200);
+  resetRateLimits(); // the suites below keep registering fixtures
+
   // Change password + production token-based password reset
   resetRateLimits(); // this suite performs many logins — reset the limiter
   const changePw = await api("POST", "/api/auth/change-password", juneToken, { current: "supersafe123", next: "even safer 99" });
@@ -450,7 +797,18 @@ try {
   const forgotUnknown = await api("POST", "/api/auth/forgot-password", undefined, { email: "nobody@nowhere.example" });
   expect("forgot-password never reveals account existence", forgotUnknown.status === 200 && forgotUnknown.json.ok === true &&
     !forgotUnknown.json.token && !forgotUnknown.json.tempPassword);
-  await api("POST", "/api/auth/forgot-password", undefined, { email: "june@okafor.design" });
+  const devReset = await api("POST", "/api/auth/forgot-password", undefined, { email: "june@okafor.design" });
+  // Development hands the code back so the reset screen works without a mail
+  // provider; production must never put a reset token in a response body.
+  expect("development returns the reset code so the flow is usable without mail",
+    typeof devReset.json.devCode === "string" && devReset.json.devCode.length > 20);
+  const restoreEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  const prodReset = await api("POST", "/api/auth/forgot-password", undefined, { email: "june@okafor.design" });
+  if (restoreEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = restoreEnv;
+  expect("production never returns a reset code in the response",
+    prodReset.status === 200 && prodReset.json.devCode === undefined && prodReset.json.token === undefined &&
+    !("devCode" in prodReset.json));
   const badReset = await api("POST", "/api/auth/reset-password", undefined, { token: "forged-token", password: "new password 123" });
   expect("forged reset token rejected (400)", badReset.status === 400);
   // Mint a token through the same code path (sha256-hashed, 30-min expiry) for
@@ -520,28 +878,6 @@ try {
     a.userId === raeId && a.balance === raeMirror.balance && a.cards === raeMirror.cards.length));
   const memberState = await api("GET", "/api/admin/state", rae);
   expect("admin state blocked for members (403)", memberState.status === 403);
-
-  // Preview profiles are only opt-in, and issue ordinary revocable sessions.
-  process.env.PREVIEW_ACCOUNTS = "true";
-  // Development preview intentionally exposes only the admin console without
-  // a browser login. This is server-gated and never applies in production.
-  const anonymousPreviewAdmin = await api("GET", "/api/admin/state");
-  expect("preview admin console is available without authentication", anonymousPreviewAdmin.status === 200 &&
-    anonymousPreviewAdmin.json.users.some((u: any) => u.id === "preview_superadmin"));
-  const stalePreviewAdmin = await api("GET", "/api/admin/state", "forged.token.here");
-  expect("preview admin ignores a stale bearer and opens the demo console", stalePreviewAdmin.status === 200);
-  const previewBusiness = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
-  const previewAdmin = await api("POST", "/api/auth/preview-access", undefined, { persona: "superadmin" });
-  expect("preview role shortcuts create a business workspace", previewBusiness.status === 200 && previewBusiness.json.user.business === "Northstar Studio" && previewBusiness.json.user.role === "user" &&
-    Array.isArray(previewBusiness.json.account?.transactions) && previewBusiness.json.account.invoices.length === 3);
-  const previewCookie = previewBusiness.headers.get("set-cookie")?.split(";")[0] ?? "";
-  const cookieState = await fetch(base + "/api/me/state", { headers: { Cookie: previewCookie } });
-  const staleBearerCookieState = await fetch(base + "/api/me/state", { headers: { Cookie: previewCookie, Authorization: "Bearer forged.token.here" } });
-  expect("preview session cookie authenticates even with a stale bearer token", previewCookie.startsWith("veyra_session=") &&
-    cookieState.status === 200 && staleBearerCookieState.status === 200);
-  expect("preview role shortcuts issue a superadmin session", previewAdmin.status === 200 && previewAdmin.json.user.role === "superadmin" &&
-    (await api("GET", "/api/admin/state", previewAdmin.json.token)).status === 200);
-  delete process.env.PREVIEW_ACCOUNTS;
 
   console.log(failures === 0 ? "\nALL API INTEGRATION TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 } finally {
