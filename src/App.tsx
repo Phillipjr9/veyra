@@ -79,6 +79,12 @@ function Shell() {
         <Route path="/forgot-password" element={<RedirectIfAuthed><ForgotPasswordPage /></RedirectIfAuthed>} />
         <Route path="/invite/accept" element={<RedirectIfAuthed><InviteAcceptPage /></RedirectIfAuthed>} />
 
+        {/* The staff console is intentionally outside the member account shell.
+            A bootstrap Super Admin is an operator identity, not a checking
+            account holder; requiring a member account here previously left a
+            valid admin session on a perpetual empty/loading dashboard. */}
+        <Route path="/app/superadmin" element={<RequireAuth><SuperAdminPage /></RequireAuth>} />
+
         <Route
           path="/app"
           element={
@@ -109,7 +115,6 @@ function Shell() {
           <Route path="kyc" element={<KYCPage />} />
           <Route path="security" element={<SecurityCenterPage />} />
           <Route path="support-desk" element={<SupportCenterPage />} />
-          <Route path="superadmin" element={<SuperAdminPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/app" replace />} />
         </Route>

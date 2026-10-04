@@ -681,8 +681,17 @@ export function SuperAdminPage() {
         </div>
       )}
 
+      {/* Never render zero-value widgets as if the platform were empty while
+          the protected console snapshot is still in flight. */}
+      {!adminData && !adminLoadError && (
+        <div className="panel admin-panel admin-state-loading" role="status" aria-live="polite">
+          <RefreshCw size={18} className="spin" />
+          <div><h2>Loading secure console data</h2><span className="panel-sub">Fetching the current users, account summaries, cases and controls from the API.</span></div>
+        </div>
+      )}
+
       {/* ============================ DASHBOARD ============================ */}
-      {activeTab === "dashboard" && !adminLoadError && (
+      {activeTab === "dashboard" && adminData && !adminLoadError && (
         <div className="admin-tab-pane">
           <div className="admin-kpi-grid">
             {([
