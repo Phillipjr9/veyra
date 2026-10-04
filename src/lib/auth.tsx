@@ -54,8 +54,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const restoringToken = getToken();
       const online = await probeApi();
       setOffline(!online);
-      if (online && restoringToken) {
+      if (online) {
         try {
+          // /api/auth/me accepts the same-origin HttpOnly session cookie as
+          // well as a bearer token. Always try it so a secure cookie session
+          // survives a refresh even when browser storage is unavailable.
           const { user: me } = await apiGet<{ user: User }>("/api/auth/me");
           if (getToken() === restoringToken) setUser(me);
         } catch {

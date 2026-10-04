@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiOnline, getToken } from "./api";
+import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiOnline } from "./api";
 import { useToast } from "../components/Toast";
 import { useAuth } from "./auth";
 
@@ -611,10 +611,13 @@ function useAccountState() {
       }
     });
   }, [toast, refreshFromServer]);
-  const syncPost = useCallback((path: string, body?: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPost(path, body)); }, [enqueue]);
-  const syncPatch = useCallback((path: string, body: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPatch(path, body)); }, [enqueue]);
-  const syncPut = useCallback((path: string, body: unknown) => { if (apiOnline() && getToken()) enqueue(() => apiPut(path, body)); }, [enqueue]);
-  const syncDelete = useCallback((path: string) => { if (apiOnline() && getToken()) enqueue(() => apiDelete(path)); }, [enqueue]);
+  // Cookie-authenticated browser sessions intentionally have no JavaScript
+  // token after a refresh. Once the health probe succeeds, let the API queue
+  // use that same-origin session instead of treating it as signed out.
+  const syncPost = useCallback((path: string, body?: unknown) => { if (apiOnline()) enqueue(() => apiPost(path, body)); }, [enqueue]);
+  const syncPatch = useCallback((path: string, body: unknown) => { if (apiOnline()) enqueue(() => apiPatch(path, body)); }, [enqueue]);
+  const syncPut = useCallback((path: string, body: unknown) => { if (apiOnline()) enqueue(() => apiPut(path, body)); }, [enqueue]);
+  const syncDelete = useCallback((path: string) => { if (apiOnline()) enqueue(() => apiDelete(path)); }, [enqueue]);
 
   // Keep account holder + owner row in sync with profile edits.
   useEffect(() => {
