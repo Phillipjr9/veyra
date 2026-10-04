@@ -65,7 +65,9 @@ function UnderReview({ submittedAt }: { submittedAt?: number | null }) {
 
       <div className="appstatus-note">
         <Mail size={15} />
-        <span>We'll email you the moment there's news — you don't need to do anything else. Nothing is charged while you wait.</span>
+        {/* Sending mail needs an SMTP provider (see README), so the promise points
+            at the notification that this app really does deliver. */}
+        <span>We'll notify you here the moment there's news — you don't need to do anything else. Nothing is charged while you wait.</span>
       </div>
 
       <p className="appstatus-foot">

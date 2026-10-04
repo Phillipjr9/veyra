@@ -304,6 +304,13 @@ export function createApp(dbPath?: string) {
       phone: (typeof profile?.phone === "string" && profile.phone.trim()) ? profile.phone : phone,
     });
     if (!application.ok) return void res.status(422).json({ error: application.error, field: application.field });
+    // Opening an account is the most expensive thing an anonymous caller can ask
+    // for (scrypt + five inserts), so the budget counts only applications that
+    // got this far — a typo costs nothing, a scripted sign-up run does not.
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`register:${ip}`, 10, 60 * 60_000)) {
+      return void res.status(429).json({ error: "Too many accounts opened from this connection — try again in an hour." });
+    }
     const values = application.value;
     const id = rid("u");
     const accountNumber = generateAccountNumber(db);

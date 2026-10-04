@@ -763,6 +763,20 @@ try {
     queued.status === 200 && queuedPending?.submission?.legalName === "Mira Cole" &&
     queuedPending?.submission?.taxId === "527-44-8213" && queuedPending?.submission?.application?.businessType === "Multi-member LLC");
 
+  // Registration budget: only applications that pass validation spend it, and a
+  // run of scripted sign-ups from one connection is what it exists to stop.
+  resetRateLimits();
+  const flood = [];
+  for (let i = 0; i < 11; i += 1) {
+    const r = await register(`Flood ${String.fromCharCode(65 + i)}a`, `flood-${i}@member.test`, "member-pass-9", { accountType: "personal" });
+    flood.push(r.status);
+  }
+  expect("scripted sign-up runs are throttled (429 after the budget)",
+    flood.slice(0, 10).every(s => s === 201) && flood[10] === 429);
+  const afterThrottle = await api("POST", "/api/auth/login", undefined, { email: "flood-0@member.test", password: "member-pass-9" });
+  expect("an account created inside the budget still works", afterThrottle.status === 200);
+  resetRateLimits(); // the suites below keep registering fixtures
+
   // Change password + production token-based password reset
   resetRateLimits(); // this suite performs many logins — reset the limiter
   const changePw = await api("POST", "/api/auth/change-password", juneToken, { current: "supersafe123", next: "even safer 99" });
