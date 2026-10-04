@@ -6,7 +6,7 @@ import {
   TrendingUp, UserCheck, UserRound, Users, Wallet,
 } from "lucide-react";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
+  Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
@@ -581,7 +581,7 @@ export function SuperAdminPage() {
                     <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
                     <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
                     <Tooltip
-                      formatter={(value: number | string, name: string) => [money(Number(value), false), name === "inflow" ? "Inflow" : "Outflow"]}
+                      formatter={(value, name) => [money(Number(value ?? 0), false), name === "inflow" ? "Inflow" : "Outflow"]}
                       contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)", boxShadow: "0 18px 38px rgba(24,23,29,.12)" }}
                     />
                     <Area type="monotone" dataKey="outflow" stackId="1" stroke="#c2b4ff" strokeWidth={2.2} fill="rgba(117,88,220,0.14)" />
@@ -606,7 +606,7 @@ export function SuperAdminPage() {
                         {channelMix.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                       </Pie>
                       <Tooltip
-                        formatter={(value: number | string) => [`${value}%`, "Share"]}
+                        formatter={value => [`${value ?? 0}%`, "Share"]}
                         contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)" }}
                       />
                     </PieChart>
