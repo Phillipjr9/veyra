@@ -691,7 +691,10 @@ export function SuperAdminPage() {
               <h2>Can't load platform data</h2>
               <span className="panel-sub">{adminLoadError}</span>
             </div>
-            <button type="button" className="ghost-btn sm" onClick={refresh}><RefreshCw size={14} /> Retry</button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" className="ghost-btn sm" onClick={refresh}><RefreshCw size={14} /> Retry</button>
+              {/authentication required|invalid or expired token/i.test(adminLoadError) && <button type="button" className="solid-btn sm" onClick={() => { logout(); navigate("/login", { replace: true }); }}>Sign in again</button>}
+            </div>
           </div>
         </div>
       )}
