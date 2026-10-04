@@ -115,12 +115,27 @@
      pathologically long balance being clipped in an 8-figure edge case. */
   .app-topbar .topbar-amount { font-size: 14.5px; }
 
+  /* The hero mock cards deliberately hang off their frame; ~10px matters on a
+     phone and the clip was cutting off their rounded edge. */
+  @media (max-width: 700px) {
+    .hero-ui { overflow: visible; }
+    .savings-toast, .secure-card { right: 2px; }
+  }
+
   /* Dialogs get the whole screen instead of a cramped centred card. */
   .modal-scrim { padding: 12px; align-items: flex-end; }
   .modal, .admin-app .modal { width: 100%; max-width: 100%; max-height: 88dvh; border-radius: 18px 18px 14px 14px; }
 
   /* Marketing: the newsletter field is not where a thumb should have to aim. */
   .footer-form input { font-size: 16px !important; }
+
+  /* The marketing header floats 10px below the top edge once you scroll, and the
+     page runs underneath that strip — headlines showed in the gap above the bar.
+     While scrolled it sits flush and the strip is opaque, which is also why the
+     content behind it no longer tints the logo row. */
+  .site-header.is-scrolled { padding: 0; background: var(--paper); }
+  .is-scrolled .nav-wrap { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: 0 10px 26px rgba(31,23,50,.07); }
+  .mobile-nav { top: 58px; }
 }
 
 /* Anything still wider than the phone clips rather than making the page
