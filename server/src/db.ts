@@ -359,6 +359,25 @@ CREATE TABLE password_resets (
 CREATE INDEX idx_pw_resets_user ON password_resets(user_id);
 `,
   },
+  {
+    version: 4,
+    sql: `
+-- v4: member-owned spending plans. A budget is deliberately separate from
+-- transactions so both personal and business workspaces can compare live
+-- activity to a member-configured monthly operating limit.
+CREATE TABLE budgets (
+  id                    TEXT PRIMARY KEY,
+  user_id               TEXT NOT NULL REFERENCES users(id),
+  name                  TEXT NOT NULL,
+  category              TEXT NOT NULL DEFAULT 'All spending',
+  monthly_limit_cents   INTEGER NOT NULL CHECK (monthly_limit_cents > 0),
+  alert_percent         INTEGER NOT NULL DEFAULT 80 CHECK (alert_percent BETWEEN 50 AND 100),
+  created_at            INTEGER NOT NULL,
+  updated_at            INTEGER NOT NULL
+);
+CREATE INDEX idx_budgets_user ON budgets(user_id, created_at DESC);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

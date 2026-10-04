@@ -24,11 +24,12 @@ import { useToast } from "../components/Toast";
 
 type AdminUser = User & { role?: UserRole };
 type TabId =
-  | "dashboard" | "customers" | "accounts" | "transactions" | "kyc" | "risk"
+  | "dashboard" | "operations" | "customers" | "accounts" | "transactions" | "kyc" | "risk"
   | "staff" | "roles" | "reports" | "notifications" | "audit" | "settings" | "profile";
 
 const MODULES: Array<{ id: TabId; label: string; icon: React.ReactNode; perm?: Permission }> = [
   { id: "dashboard", label: "Dashboard", icon: <Activity size={15} />, perm: "dashboard.view" },
+  { id: "operations", label: "Operations", icon: <AlertTriangle size={15} />, perm: "dashboard.view" },
   { id: "customers", label: "Customers", icon: <Users size={15} />, perm: "customers.view" },
   { id: "accounts", label: "Accounts", icon: <Landmark size={15} />, perm: "accounts.view" },
   { id: "transactions", label: "Transactions", icon: <FileText size={15} />, perm: "transactions.view" },
@@ -215,6 +216,7 @@ export function SuperAdminPage() {
   const visibleModules = MODULES.filter(m => !m.perm || allow(m.perm));
   const moduleCount = (id: TabId) =>
     id === "customers" ? members.length
+    : id === "operations" ? totals.riskAlerts + totals.kycPending + totals.pendingTxns
     : id === "kyc" ? kycQueue.length
     : id === "risk" ? openDisputes.length
     : id === "audit" ? auditLogs.length
@@ -479,6 +481,18 @@ export function SuperAdminPage() {
     ...(totals.pendingTxns > 0 ? [{ tab: "transactions" as TabId, tone: "ledger", title: "Pending ledger activity", detail: `${totals.pendingTxns} transaction${totals.pendingTxns === 1 ? "" : "s"} still awaiting settlement`, count: totals.pendingTxns }] : []),
   ];
 
+  const operations = useMemo(() => {
+    const items: Array<{ id: string; priority: "urgent" | "high" | "review"; tab: TabId; title: string; detail: string; owner: string; createdAt: number }> = [];
+    if (systemFrozen) items.push({ id: "rails-halted", priority: "urgent", tab: "settings", title: "Payment rails are halted", detail: "Outgoing transfers are currently blocked for every member.", owner: "Treasury controls", createdAt: Date.now() });
+    if (apiHealth === "offline") items.push({ id: "api-offline", priority: "urgent", tab: "dashboard", title: "API health check is degraded", detail: "The control plane cannot confirm the member ledger is reachable.", owner: "Platform engineering", createdAt: Date.now() });
+    openDisputes.forEach(dispute => items.push({ id: `dispute-${dispute.id}`, priority: dispute.status === "submitted" ? "high" : "review", tab: "risk", title: `Dispute: ${dispute.merchant}`, detail: `${dispute.memberName} · ${money(dispute.amount)} · ${dispute.reason}`, owner: "Risk & fraud", createdAt: dispute.updatedAt }));
+    kycQueue.forEach(item => items.push({ id: `kyc-${item.userId}`, priority: item.kyc.status === "in_review" ? "high" : "review", tab: "kyc", title: `Verification: ${item.name}`, detail: `${item.kyc.status.replace("_", " ")} · ${item.kyc.completeness}% complete`, owner: "Compliance", createdAt: item.kyc.lastUpdated }));
+    accounts.filter(account => account.accountStatus === "restricted").forEach(account => items.push({ id: `restricted-${account.userId}`, priority: "high", tab: "customers", title: `Restricted account: ${account.name}`, detail: `${account.email} · ${money(account.balance)} available balance`, owner: "Risk & fraud", createdAt: account.lastActivity }));
+    allTxns.filter(transaction => transaction.status === "pending").forEach(transaction => items.push({ id: `pending-${transaction.id}`, priority: "review", tab: "transactions", title: `Pending movement: ${transaction.merchant}`, detail: `${transaction.memberName} · ${money(Math.abs(transaction.amount))} · ${transaction.method ?? "Unknown method"}`, owner: "Payments operations", createdAt: transaction.date }));
+    const rank = { urgent: 0, high: 1, review: 2 };
+    return items.sort((a, b) => rank[a.priority] - rank[b.priority] || b.createdAt - a.createdAt);
+  }, [accounts, allTxns, apiHealth, kycQueue, openDisputes, systemFrozen]);
+
   return (
     <div className="app-page superadmin-page">
       {/* Console header */}
@@ -717,6 +731,41 @@ export function SuperAdminPage() {
                   ))}
                 </div>
               ) : <div className="empty-state"><TrendingUp size={24} /><strong>No member activity yet</strong><p>Member transactions will appear here in real time.</p></div>}
+            </section>
+          </div>
+        </div>
+      )}
+
+      {/* ============================ OPERATIONS ============================ */}
+      {activeTab === "operations" && (
+        <div className="admin-tab-pane admin-operations-pane">
+          <section className="panel admin-panel">
+            <div className="panel-head">
+              <div><span className="admin-section-kicker">Live work queue</span><h2>Operations command queue</h2><span className="panel-sub">One prioritized view of payment controls, compliance reviews, disputes, restrictions and unsettled ledger activity.</span></div>
+              <span className={`admin-queue-count ${operations.length ? "has-items" : ""}`}>{operations.length}</span>
+            </div>
+            {operations.length ? <div className="admin-attention-list admin-operations-list">{operations.map(item => (
+              <button type="button" className={`admin-attention-row ${item.priority === "urgent" || item.priority === "high" ? "risk" : item.tab === "kyc" ? "kyc" : "ledger"}`} key={item.id} onClick={() => setActiveTab(item.tab)}>
+                <span className="admin-attention-count">{item.priority === "urgent" ? "!" : item.priority === "high" ? "!" : "•"}</span>
+                <span><b>{item.title}</b><small>{item.detail}</small></span>
+                <span className="admin-attention-cta">{item.owner} · {ago(item.createdAt)} →</span>
+              </button>
+            ))}</div> : <div className="admin-all-clear"><Check size={16} /><div><b>No live operational exceptions</b><small>Payments, risk, compliance and account controls have no open items in the current server snapshot.</small></div></div>}
+          </section>
+          <div className="admin-grid-split">
+            <section className="panel admin-panel">
+              <div className="panel-head"><div><h2>Control posture</h2><span className="panel-sub">Current platform safeguards at a glance.</span></div></div>
+              <div className="admin-activity-list">
+                <div className="admin-activity-row"><span className={`admin-activity-cat ${systemFrozen ? "t-out" : "t-in"}`}>{systemFrozen ? "HALTED" : "LIVE"}</span><div><strong>Payment rails</strong><small>{systemFrozen ? "Outgoing movements are blocked by the emergency control." : "Outgoing movements are available to eligible accounts."}</small></div></div>
+                <div className="admin-activity-row"><span className={`admin-activity-cat ${totals.restricted ? "t-out" : "t-in"}`}>{totals.restricted}</span><div><strong>Restricted accounts</strong><small>Members with outgoing transfers paused pending review.</small></div></div>
+                <div className="admin-activity-row"><span className={`admin-activity-cat ${totals.pendingTxns ? "t-out" : "t-in"}`}>{totals.pendingTxns}</span><div><strong>Unsettled ledger movements</strong><small>Transactions waiting for a final cleared or failed outcome.</small></div></div>
+              </div>
+            </section>
+            <section className="panel admin-panel">
+              <div className="panel-head"><div><h2>Review distribution</h2><span className="panel-sub">Direct each queue to the team that owns it.</span></div></div>
+              <div className="admin-activity-list">
+                {[{ label: "Risk & fraud", count: openDisputes.length + totals.restricted, tab: "risk" as TabId }, { label: "Compliance", count: kycQueue.length, tab: "kyc" as TabId }, { label: "Payments operations", count: totals.pendingTxns, tab: "transactions" as TabId }].map(queue => <button type="button" className="admin-attention-row ledger" key={queue.label} onClick={() => setActiveTab(queue.tab)}><span className="admin-attention-count">{queue.count}</span><span><b>{queue.label}</b><small>{queue.count ? "Open work items need attention." : "No open items right now."}</small></span><span className="admin-attention-cta">Open queue →</span></button>)}
+              </div>
             </section>
           </div>
         </div>

@@ -546,6 +546,31 @@ export function createApp(dbPath?: string) {
     res.json({ ok: true });
   }));
 
+  /* ---------- budgets & cash plans ---------- */
+
+  app.post("/api/me/budgets", requireAuth, wrap((req, res) => {
+    const name = String(req.body?.name ?? "").trim();
+    const category = String(req.body?.category ?? "All spending").trim() || "All spending";
+    const monthlyLimit = dollarsToCents(req.body?.monthlyLimit ?? 0);
+    const alertPercent = Number(req.body?.alertPercent ?? 80);
+    if (!name || name.length > 48) return void res.status(400).json({ error: "Use a budget name between 1 and 48 characters." });
+    if (monthlyLimit <= 0 || monthlyLimit > MAX_TRANSFER_CENTS) return void res.status(400).json({ error: "Use a valid monthly budget limit." });
+    if (!Number.isInteger(alertPercent) || alertPercent < 50 || alertPercent > 100) {
+      return void res.status(400).json({ error: "Alert threshold must be between 50% and 100%." });
+    }
+    const id = rid("budget");
+    db.prepare(
+      "INSERT INTO budgets (id, user_id, name, category, monthly_limit_cents, alert_percent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, req.user!.id, name, category, monthlyLimit, alertPercent, now(), now());
+    res.status(201).json({ budget: { id, name, category, monthlyLimit: monthlyLimit / 100, alertPercent, createdAt: now() } });
+  }));
+
+  app.delete("/api/me/budgets/:id", requireAuth, wrap((req, res) => {
+    const result = db.prepare("DELETE FROM budgets WHERE id = ? AND user_id = ?").run(String(req.params.id), req.user!.id);
+    if (!result.changes) return void res.status(404).json({ error: "Budget not found." });
+    res.json({ ok: true });
+  }));
+
   /* ---------- cards ---------- */
 
   const cardRow = (id: string, userId: string) =>

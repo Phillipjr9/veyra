@@ -122,6 +122,7 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/transfers", label: "Transfers", icon: <Send size={18} /> },
       { to: "/app/invoices", label: "Invoicing", icon: <ReceiptText size={18} /> },
       { to: "/app/bills", label: "Bills & scheduled", icon: <CalendarClock size={18} /> },
+      { to: "/app/plan", label: "Cash plan", icon: <TrendingUp size={18} />, badge: "NEW" },
     ],
   },
   {
@@ -155,6 +156,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
+      { to: "/app/plan", label: "Money plan", icon: <TrendingUp size={18} />, badge: "NEW" },
     ],
   },
   {

@@ -414,6 +414,18 @@ try {
   const pref = await api("PUT", "/api/me/preferences", rae, { key: "weeklyDigest", value: true });
   expect("preference updated", pref.status === 200 &&
     (await api("GET", "/api/me/state", rae)).json.account.preferences.weeklyDigest === true);
+
+  // Member cash plans: durable limits are part of the account snapshot.
+  const budget = await api("POST", "/api/me/budgets", rae, { name: "Monthly software", category: "Software", monthlyLimit: 800, alertPercent: 75 });
+  const budgetId = budget.json.budget?.id;
+  expect("member can create a live spending plan", budget.status === 201 && budget.json.budget.monthlyLimit === 800 &&
+    (await api("GET", "/api/me/state", rae)).json.account.budgets.some((item: any) => item.id === budgetId && item.alertPercent === 75));
+  const invalidBudget = await api("POST", "/api/me/budgets", rae, { name: "", category: "Software", monthlyLimit: 0, alertPercent: 20 });
+  expect("budget validation rejects invalid limits", invalidBudget.status === 400);
+  const deletedBudget = await api("DELETE", `/api/me/budgets/${budgetId}`, rae);
+  expect("member can remove a spending plan", deletedBudget.status === 200 &&
+    !(await api("GET", "/api/me/state", rae)).json.account.budgets.some((item: any) => item.id === budgetId));
+
   const profile = await api("PATCH", "/api/me/profile", rae, { name: "Rae Kim", phone: "+1 (555) 000-0001" });
   expect("profile patch persists", profile.status === 200 && profile.json.user.phone === "+1 (555) 000-0001");
   const kycPatch = await api("PATCH", "/api/me/kyc", rae, { nextStep: "Final review", completeness: 95 });
