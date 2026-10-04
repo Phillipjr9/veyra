@@ -11,11 +11,11 @@ import { useToast } from "../components/Toast";
 
 /** 3D artwork shown beside the form (desktop) and above it (phones). */
 const AUTH_ART = {
-  cards: { src: "/images/auth-cards.jpg", alt: "A Veyra card sealed inside a crystal sphere, ringed by lock, shield, freeze and fingerprint controls" },
-  rewards: { src: "/images/auth-rewards.jpg", alt: "A 2% cash-back ribbon surrounded by Veyra coins" },
+  signin: { src: "/images/auth-signin.jpg", alt: "A Veyra phone showing a glowing fingerprint pad beside a crystal sphere holding a key, with two toggle switches" },
+  signup: { src: "/images/auth-signup.jpg", alt: "A purple person and office building with a plus sign between them, beside a crystal sphere holding a key" },
 };
 
-function AuthShell({ title, sub, children, foot, art = AUTH_ART.cards }: { title: string; sub: string; children: ReactNode; foot: ReactNode; art?: { src: string; alt: string } }) {
+function AuthShell({ title, sub, children, foot, art = AUTH_ART.signin }: { title: string; sub: string; children: ReactNode; foot: ReactNode; art?: { src: string; alt: string } }) {
   return (
     <>
       <div className="auth-page">
@@ -346,7 +346,7 @@ export function SignupPage() {
   }
 
   return (
-    <AuthShell art={AUTH_ART.rewards} title="Open your account" sub={form.accountType === "personal" ? "Simple checking for spending, saving and everyday life." : "A few details and your business account is ready."}
+    <AuthShell art={AUTH_ART.signup} title="Open your account" sub={form.accountType === "personal" ? "Simple checking for spending, saving and everyday life." : "A few details and your business account is ready."}
       foot={<>Already with us? <Link to="/login">Sign in</Link></>}>
       <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
       <form className="auth-form" onSubmit={submit}>
