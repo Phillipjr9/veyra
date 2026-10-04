@@ -26,6 +26,7 @@ import { resolve } from "node:path";
 })();
 
 import { createApp } from "./app.js";
+import { describeRecaptcha, recaptchaConfig } from "./recaptcha.js";
 import { seedDemoAccounts, DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD, DEMO_PASSWORD } from "./demo.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -52,8 +53,20 @@ if (process.env.NODE_ENV === "production" && !process.env.TOKEN_SECRET) {
   process.exit(1);
 }
 
+/**
+ * Unlike TOKEN_SECRET this is a warning, not a refusal to boot: reCAPTCHA is
+ * defence in depth over the anonymous routes, and a deployment that has not
+ * provisioned keys yet is still correct — just more exposed to scripted
+ * sign-ups. The per-address budgets in security.ts stay in force either way.
+ */
+if (isProduction && !recaptchaConfig().enabled) {
+  console.warn("Warning: reCAPTCHA is not configured — the public auth routes are protected by rate limits alone.");
+  console.warn("  Set RECAPTCHA_SITE_KEY + RECAPTCHA_SECRET_KEY (classic v3), or + RECAPTCHA_PROJECT_ID/RECAPTCHA_API_KEY (Enterprise).");
+}
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Veyra API listening on http://0.0.0.0:${PORT}`);
+  console.log(describeRecaptcha());
 
   if (isProduction) {
     console.log("Mode: production (members sign up through the API)");

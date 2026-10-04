@@ -163,12 +163,13 @@ server/
     app.ts              createApp() — REST routes + middleware
     db.ts               SQLite (WAL, FK on): migrations, audit triggers, tx helper
     security.ts         scrypt hashing, HS256 tokens, rate limiter, TOKEN_SECRET
+    recaptcha.ts        reCAPTCHA v3 / Enterprise verifier for the anonymous routes
     rbac.ts             Server-authoritative permission matrix (DB overrides)
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   153-check integration suite (boots the real server)
-  scripts/audit-routes.ts  69 routes × 6 identities gate/isolation audit
+  scripts/test-api.ts   208-check integration suite (boots the real server)
+  scripts/audit-routes.ts  79 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -212,7 +213,7 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 153-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 208-check integration suite (fresh DB, ephemeral port)
 npm run check:routes      # fails if a server route has no caller in the app
 npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
@@ -225,6 +226,7 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Passwords | scrypt (`s2$salt$hash`), never plaintext or reversible |
 | Sessions | HS256 bearer tokens (12 h) with a `sessions` table — logout and admin revocation kill them instantly |
 | Login abuse | In-memory rate limit: 8 attempts / 60 s per IP (login and password-reset requests) |
+| Bot defence | reCAPTCHA v3 / Enterprise on sign in, sign up and password recovery — action-bound, score-thresholded, off until configured (see **reCAPTCHA** below) |
 | RBAC | 17 permissions × 5 roles, resolved **fresh from the DB on every request** (role changes take effect immediately, no re-login) |
 | Money | Integer cents everywhere; every mutation inside `BEGIN IMMEDIATE` |
 | Audit trail | `audit_log` is append-only **by database trigger** — `UPDATE`/`DELETE` raise `ABORT` |
@@ -299,7 +301,7 @@ funds) to the status columns.
 
 ### API surface (summary)
 
-- **Auth** — `POST /api/auth/login · register · logout`, `GET /api/auth/me`, `GET /api/health`
+- **Auth** — `POST /api/auth/login · register · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA settings), `GET /api/health`
 - **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
@@ -321,8 +323,64 @@ funds) to the status columns.
 | `PORT` | `8787` | API port |
 | `DB_PATH` | `server/veyra.db` | SQLite file (git-ignored) |
 | `CORS_ORIGIN` | `*` | Allow a specific browser origin |
+| `RECAPTCHA_*` | off | Bot defence on the anonymous auth routes — see below |
 
 Variables can live in a `.env` file (loaded automatically — see `.env.example`).
+
+### reCAPTCHA
+
+Sign in, sign up and password recovery are the only routes a script can reach
+without a session, and each one costs real work (scrypt, five inserts, a token
+mint). The in-memory budgets in `security.ts` throttle one address; reCAPTCHA
+is what answers a distributed run from many.
+
+**It is off until configured** — no site key means every check is a
+pass-through, so development, CI and the 208-check suite run without a Google
+round-trip. Pick one provider:
+
+| Provider | Variables | Endpoint |
+|---|---|---|
+| Classic v3 | `RECAPTCHA_SITE_KEY` + `RECAPTCHA_SECRET_KEY` | `siteverify` |
+| Enterprise | `RECAPTCHA_SITE_KEY` + `RECAPTCHA_PROJECT_ID` + `RECAPTCHA_API_KEY` | `createAssessment` |
+
+Enterprise is what Firebase App Check sits on, so starting there doesn't have
+to be redone if App Check is adopted later. Tuning:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RECAPTCHA_MIN_SCORE` | `0.5` | Reject below this (1.0 = human, 0.0 = bot) |
+| `RECAPTCHA_FAIL_CLOSED` | unset | `1` rejects requests when the verifier is unreachable |
+| `RECAPTCHA_HOSTNAMES` | any | Comma-separated hostname allowlist |
+| `RECAPTCHA_TIMEOUT_MS` | `4000` | Verification timeout |
+| `RECAPTCHA_VERIFY_URL` | provider default | Override (tests, egress proxy) |
+
+**Two kinds of failure, treated differently.** A *decision* (score below the
+threshold, wrong action, expired or replayed token, missing token) is always
+enforced — that is the feature. An *infrastructure* failure (Google
+unreachable, timeout, 5xx, a rejected secret) is governed by
+`RECAPTCHA_FAIL_CLOSED`, and **fails open by default**: an outage at Google, or
+one bad env var, would otherwise lock every customer out of their money, which
+is a worse incident than the bots it stops. Both are logged (throttled to once
+a minute per cause) so an outage is visible rather than silent.
+
+Replay is Google's job — tokens are single-use and expire after ~2 minutes, so
+there is no local nonce cache. Tokens are bound to an action
+(`login` / `register` / `forgot_password`), so one minted on a cheap public
+form cannot be replayed against sign-in.
+
+The browser reads `GET /api/auth/config` for the site key and whether the gate
+is live, rather than a build-time `VITE_` variable: enabling reCAPTCHA needs no
+frontend rebuild, and a cached bundle can never disagree with the server about
+whether tokens are required. If the script is blocked (ad blocker, strict
+extension, corporate proxy) the client sends no token and the **server**
+decides — `src/lib/recaptcha.ts` never pre-emptively blocks the member.
+
+> The v3 badge is left visible, which is how Google's terms are satisfied by
+> default. To hide it you must instead display the attribution text ("This site
+> is protected by reCAPTCHA and the Google
+> [Privacy Policy](https://policies.google.com/privacy) and
+> [Terms of Service](https://policies.google.com/terms) apply.") — add it to
+> `AuthShell` in `src/pages/Auth.tsx` alongside `.grecaptcha-badge { visibility: hidden; }`.
 
 The database schema is created by versioned migrations in `server/src/db.ts`
 (v1: `users`, `accounts`, `transactions`, `cards`, `kyc_records`, `disputes`,
@@ -340,7 +398,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (153) = 194 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (208) = 249 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

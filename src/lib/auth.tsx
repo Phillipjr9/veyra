@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { apiGet, apiPost, apiPatch, probeApi, getToken, setToken, clearToken, onUnauthorized, ApiError } from "./api";
+import { recaptchaField } from "./recaptcha";
 
 export type UserRole = "user" | "support" | "compliance" | "admin" | "superadmin";
 
@@ -120,7 +121,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // and claim it "ended" — confusing when the real cause is a typed password.
     clearToken();
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
-    const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
+    // A fresh reCAPTCHA token per attempt — they are single-use and expire in
+    // about two minutes, so one is never reused across submissions. Resolves
+    // to {} when the gate is off or Google is unreachable; the server decides.
+    const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password, ...(await recaptchaField("login")) });
     setToken(token);
     setActiveToken(token);
     setUser(me);
@@ -132,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
       name: name.trim(), phone: phone.trim(), business: accountType === "business" ? business.trim() : "",
       accountType, email: email.trim(), password, plan, profile,
+      ...(await recaptchaField("register")),
     });
     setToken(token);
     setActiveToken(token);
@@ -160,7 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const forgotPassword = useCallback(async (email: string) => {
-    const res = await apiPost<{ devCode?: string }>("/api/auth/forgot-password", { email: email.trim() });
+    const res = await apiPost<{ devCode?: string }>("/api/auth/forgot-password", { email: email.trim(), ...(await recaptchaField("forgotPassword")) });
     return res && typeof res.devCode === "string" ? { devCode: res.devCode } : {};
   }, []);
 

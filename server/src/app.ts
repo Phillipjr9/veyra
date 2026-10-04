@@ -15,6 +15,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError, generateAccountNumber } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
+import { requireRecaptcha, publicRecaptchaConfig, RECAPTCHA_ACTIONS } from "./recaptcha.js";
 import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
@@ -258,7 +259,20 @@ export function createApp(dbPath?: string) {
 
   /* ============================== auth routes ============================== */
 
-  app.post("/api/auth/login", wrap((req, res) => {
+  /**
+   * Public client configuration, read before the sign-in form is usable.
+   *
+   * The site key is public by design (it ships in the page that renders the
+   * widget), but *whether* reCAPTCHA is enforced is a server fact. Serving it
+   * from here rather than a build-time VITE_ variable means the browser and
+   * the API can never disagree: turning the gate on does not need a rebuild,
+   * and a stale bundle cannot start withholding tokens the server now demands.
+   */
+  app.get("/api/auth/config", wrap((_req, res) => {
+    res.json({ recaptcha: publicRecaptchaConfig() });
+  }));
+
+  app.post("/api/auth/login", requireRecaptcha(RECAPTCHA_ACTIONS.login), wrap((req, res) => {
     const ip = req.ip ?? "unknown";
     const { email, password } = req.body ?? {};
     if (typeof email !== "string" || typeof password !== "string") {
@@ -292,7 +306,7 @@ export function createApp(dbPath?: string) {
     res.json({ token, user: publicUser(user) });
   }));
 
-  app.post("/api/auth/register", wrap((req, res) => {
+  app.post("/api/auth/register", requireRecaptcha(RECAPTCHA_ACTIONS.register), wrap((req, res) => {
     const { name, email, password, accountType, business, phone, plan, profile } = req.body ?? {};
     if (typeof name !== "string" || !name.trim()) return void res.status(400).json({ error: "Name is required." });
     if (typeof email !== "string" || !/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "A valid email is required." });
@@ -390,7 +404,7 @@ export function createApp(dbPath?: string) {
   // same generic response (never reveals whether the email exists). The token
   // is stored hashed with a 30-minute expiry and is single-use. Delivery of
   // the email requires an SMTP provider (see README).
-  app.post("/api/auth/forgot-password", wrap((req, res) => {
+  app.post("/api/auth/forgot-password", requireRecaptcha(RECAPTCHA_ACTIONS.forgotPassword), wrap((req, res) => {
     const ip = req.ip ?? "unknown";
     if (!rateLimit(`forgot:${ip}`)) return void res.status(429).json({ error: "Too many attempts — try again in a minute." });
     const email = String(req.body?.email ?? "").trim().toLowerCase();

@@ -57,6 +57,11 @@ const BASELINE: Policy[] = [
   // by design (a signed-out visitor is who it's for) and empty in production —
   // see demoLoginsEnabled() in server/src/demo.ts.
   { method: "GET", path: "/api/demo/accounts", auth: false, perm: null },
+  // Tells a signed-out browser whether reCAPTCHA is enforced and which public
+  // site key to mint tokens with. Public by necessity — it is read before
+  // anyone can sign in — and carries no secret: the site key is designed to
+  // ship inside the page, while the secret/API key never leaves the server.
+  { method: "GET", path: "/api/auth/config", auth: false, perm: null },
   { method: "POST", path: "/api/auth/login", auth: false, perm: null },
   { method: "POST", path: "/api/auth/register", auth: false, perm: null },
   { method: "POST", path: "/api/auth/forgot-password", auth: false, perm: null },

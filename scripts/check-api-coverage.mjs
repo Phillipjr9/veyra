@@ -18,6 +18,7 @@ const SERVER_FILE = "server/src/app.ts";
 const CLIENT_FILES = [
   "src/lib/api.ts",
   "src/lib/auth.tsx",
+  "src/lib/recaptcha.ts",
   "src/lib/store.tsx",
   "src/pages/Dashboard.tsx",
   "src/pages/SuperAdmin.tsx",

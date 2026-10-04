@@ -19,6 +19,8 @@
 import { createApp } from "../src/app.js";
 import { applicationFor } from "./fixtures.js";
 import { resetRateLimits } from "../src/security.js";
+import { resetRecaptchaConfig } from "../src/recaptcha.js";
+import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -824,6 +826,161 @@ try {
     (await api("POST", "/api/auth/login", undefined, { email: "june@okafor.design", password: "totally new pass 77" })).status === 200);
   const replayReset = await api("POST", "/api/auth/reset-password", undefined, { token: rawToken, password: "another pass 88" });
   expect("reset token is single-use (replay rejected)", replayReset.status === 400);
+
+  /* ---------- reCAPTCHA on the anonymous auth routes ---------- */
+  //
+  // Google's endpoint is replaced by a local stub so the matrix is exercised
+  // for real over HTTP — the verifier does an actual round-trip, parses an
+  // actual response, and the middleware sits in the actual route chain. Only
+  // the far end is ours. Verdicts are driven by the token string.
+  {
+    const seen: { secret?: string; token?: string; body?: any }[] = [];
+    const stub = createServer((req, res) => {
+      let raw = "";
+      req.on("data", chunk => { raw += chunk; });
+      req.on("end", () => {
+        const enterprise = String(req.headers["content-type"]).includes("json");
+        const parsed = enterprise ? JSON.parse(raw || "{}") : Object.fromEntries(new URLSearchParams(raw));
+        const token = enterprise ? parsed.event?.token : parsed.response;
+        const expectedAction = enterprise ? parsed.event?.expectedAction : "login";
+        seen.push({ secret: enterprise ? parsed.event?.siteKey : parsed.secret, token, body: parsed });
+
+        const send = (status: number, payload: unknown) => {
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(payload));
+        };
+        if (token === "boom") return void send(500, { error: "upstream exploded" });
+
+        const verdicts: Record<string, { score: number; action: string } | { fail: string }> = {
+          good: { score: 0.9, action: expectedAction },
+          low: { score: 0.1, action: expectedAction },
+          otheraction: { score: 0.9, action: "contact_form" },
+          dupe: { fail: "timeout-or-duplicate" },
+          badsecret: { fail: "invalid-input-secret" },
+        };
+        const verdict = verdicts[token] ?? { fail: "invalid-input-response" };
+
+        if ("fail" in verdict) {
+          return void send(200, enterprise
+            ? { tokenProperties: { valid: false, invalidReason: verdict.fail === "timeout-or-duplicate" ? "DUPE" : "MALFORMED" } }
+            : { success: false, "error-codes": [verdict.fail] });
+        }
+        send(200, enterprise
+          ? { tokenProperties: { valid: true, action: verdict.action, hostname: "veyra.test" }, riskAnalysis: { score: verdict.score } }
+          : { success: true, score: verdict.score, action: verdict.action, hostname: "veyra.test" });
+      });
+    });
+    await new Promise<void>(r => stub.listen(0, "127.0.0.1", () => r()));
+    const stubUrl = `http://127.0.0.1:${(stub.address() as { port: number }).port}/siteverify`;
+
+    // Credentials are deliberately wrong throughout: reaching the handler at
+    // all (401 "doesn't match") is the proof that the gate let the request by,
+    // and no account is created or mutated by these probes.
+    const attempt = (token?: string, email = "recaptcha-probe@member.test") =>
+      api("POST", "/api/auth/login", undefined, { email, password: "definitely-wrong", ...(token ? { recaptchaToken: token } : {}) });
+
+    const restore = { ...process.env };
+    try {
+      // Off by default: every other test in this file posts to /api/auth/login
+      // with no token, which must keep working.
+      resetRecaptchaConfig();
+      expect("reCAPTCHA is off until configured (no token required)", (await attempt()).status === 401);
+      const offConfig = await api("GET", "/api/auth/config");
+      expect("config advertises the gate as off", offConfig.status === 200 && offConfig.json.recaptcha.enabled === false);
+
+      // Classic v3.
+      process.env.RECAPTCHA_SITE_KEY = "site-key-public";
+      process.env.RECAPTCHA_SECRET_KEY = "secret-key-private";
+      process.env.RECAPTCHA_VERIFY_URL = stubUrl;
+      process.env.RECAPTCHA_MIN_SCORE = "0.5";
+      delete process.env.RECAPTCHA_FAIL_CLOSED;
+      resetRecaptchaConfig();
+
+      const config = await api("GET", "/api/auth/config");
+      expect("config publishes the site key and the action names",
+        config.status === 200 && config.json.recaptcha.enabled === true &&
+        config.json.recaptcha.siteKey === "site-key-public" && config.json.recaptcha.actions.login === "login");
+      expect("config never leaks the secret key",
+        !JSON.stringify(config.json).includes("secret-key-private"));
+
+      const missing = await attempt();
+      expect("a request with no token is refused (400 recaptcha_required)",
+        missing.status === 400 && missing.json.code === "recaptcha_required");
+
+      expect("a good token reaches the handler", (await attempt("good")).status === 401);
+      expect("the secret is sent to the verifier, never to the browser",
+        seen.at(-1)?.secret === "secret-key-private" && seen.at(-1)?.token === "good");
+
+      const low = await attempt("low");
+      expect("a score below the threshold is refused (403 recaptcha_failed)",
+        low.status === 403 && low.json.code === "recaptcha_failed");
+
+      const mismatched = await attempt("otheraction");
+      expect("a token minted for another action is refused (action binding)",
+        mismatched.status === 400 && mismatched.json.code === "recaptcha_failed");
+
+      const duplicate = await attempt("dupe");
+      expect("a replayed or expired token is refused",
+        duplicate.status === 400 && duplicate.json.code === "recaptcha_failed");
+
+      // A token may also travel in a header, for proxies that strip bodies.
+      const viaHeader = await fetch(`${base}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Recaptcha-Token": "good" },
+        body: JSON.stringify({ email: "recaptcha-probe@member.test", password: "definitely-wrong" }),
+      });
+      expect("a token supplied via X-Recaptcha-Token is accepted", viaHeader.status === 401);
+
+      // Infrastructure failure: Google unreachable / misconfigured secret.
+      // Default is fail-open, because locking every customer out of their money
+      // is a worse outcome than letting a bot through during an outage.
+      expect("a verifier outage fails OPEN by default", (await attempt("boom")).status === 401);
+      expect("a rejected secret is treated as our outage, not the visitor's fault",
+        (await attempt("badsecret")).status === 401);
+
+      process.env.RECAPTCHA_FAIL_CLOSED = "1";
+      resetRecaptchaConfig();
+      const closed = await attempt("boom");
+      expect("RECAPTCHA_FAIL_CLOSED=1 turns an outage into a 503",
+        closed.status === 503 && closed.json.code === "recaptcha_unavailable");
+      expect("a decision failure is still enforced when failing closed", (await attempt("low")).status === 403);
+      delete process.env.RECAPTCHA_FAIL_CLOSED;
+
+      // Enterprise: different request shape, different response shape, same verdicts.
+      process.env.RECAPTCHA_PROJECT_ID = "veyra-prod";
+      process.env.RECAPTCHA_API_KEY = "enterprise-api-key";
+      resetRecaptchaConfig();
+      const enterpriseConfig = await api("GET", "/api/auth/config");
+      expect("Enterprise credentials switch the provider",
+        enterpriseConfig.json.recaptcha.provider === "enterprise");
+      expect("Enterprise createAssessment accepts a good token", (await attempt("good")).status === 401);
+      expect("Enterprise sends the expected action for binding",
+        seen.at(-1)?.body?.event?.expectedAction === "login");
+      expect("Enterprise refuses a low score", (await attempt("low")).status === 403);
+      expect("Enterprise refuses a duplicate token", (await attempt("dupe")).status === 400);
+
+      // The other two anonymous routes are gated with their own actions.
+      const gatedRegister = await api("POST", "/api/auth/register", undefined, {
+        name: "Gate Test", email: "gate-test@member.test", password: "member-pass-9",
+        accountType: "personal", profile: applicationFor("personal", "Gate Test"),
+      });
+      expect("sign-up is gated too (no token, no account)",
+        gatedRegister.status === 400 && gatedRegister.json.code === "recaptcha_required" &&
+        !db.prepare("SELECT 1 FROM users WHERE email = ?").get("gate-test@member.test"));
+      const gatedForgot = await api("POST", "/api/auth/forgot-password", undefined, { email: "june@okafor.design" });
+      expect("password recovery is gated too",
+        gatedForgot.status === 400 && gatedForgot.json.code === "recaptcha_required");
+    } finally {
+      for (const key of ["RECAPTCHA_SITE_KEY", "RECAPTCHA_SECRET_KEY", "RECAPTCHA_VERIFY_URL",
+        "RECAPTCHA_MIN_SCORE", "RECAPTCHA_FAIL_CLOSED", "RECAPTCHA_PROJECT_ID", "RECAPTCHA_API_KEY"]) {
+        if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
+      }
+      resetRecaptchaConfig();
+      await new Promise<void>(r => stub.close(() => r()));
+      resetRateLimits();
+    }
+    expect("the gate is fully off again for the rest of the suite", (await attempt()).status === 401);
+  }
 
   /* ---------- durable operations casework ---------- */
   const memberOps = await api("GET", "/api/admin/operations/cases", rae);

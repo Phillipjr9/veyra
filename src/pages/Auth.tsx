@@ -7,6 +7,7 @@ import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
 import { apiGet, describeAuthError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
+import { prewarmRecaptcha } from "../lib/recaptcha";
 import { useToast } from "../components/Toast";
 
 /** 3D artwork shown beside the form (desktop) and above it (phones). */
@@ -21,6 +22,12 @@ export function AuthShell({ title, sub, children, foot, art = AUTH_ART.signin, w
   /** Application forms (sign-up) need the room; sign-in stays a compact card. */
   wide?: boolean;
 }) {
+  // Every anonymous form lives inside this shell, so warming reCAPTCHA here
+  // covers sign-in, sign-up and password recovery in one place — and never
+  // loads Google's script on an authenticated dashboard. No-op when the gate
+  // is switched off server-side.
+  useEffect(() => { prewarmRecaptcha(); }, []);
+
   return (
     <>
       <div className="auth-page">
