@@ -514,7 +514,7 @@ type ScheduledInput = { payeeId?: string; payeeName: string; amount: number; cat
 type DisputeInput = { transactionId: string; reason: string; detail?: string };
 
 function useAccountState() {
-  const { user } = useAuth();
+  const { user, previewAccount } = useAuth();
   const toast = useToast();
   const userId = user?.id;
   const name = user?.name ?? "";
@@ -533,6 +533,16 @@ function useAccountState() {
       return;
     }
     let cancelled = false;
+    const suppliedPreview = previewAccount?.userId === userId ? previewAccount.account : null;
+    if (suppliedPreview) {
+      // The preview endpoint supplies this server-built snapshot alongside its
+      // session. Render it immediately rather than requiring a second auth
+      // request before the role workspace is visible.
+      ref.current = normalize(suppliedPreview, { name, business, email, accountType });
+      setAccount(ref.current);
+      setAccountError(null);
+      return () => { cancelled = true; };
+    }
     (async () => {
       // The backend is the system of record — load the server snapshot.
       try {
@@ -546,9 +556,9 @@ function useAccountState() {
         setAccountError(err instanceof Error ? err.message : "Could not load your account.");
       }
     })();
-    // Reload only when the signed-in user changes; profile edits sync below.
+    // Profile edits sync below; a preview snapshot only applies to its owner.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  }, [userId, previewAccount]);
 
   const commit = useCallback(
     (fn: (a: Account) => Account) => {

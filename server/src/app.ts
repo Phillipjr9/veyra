@@ -199,8 +199,13 @@ export function createApp(dbPath?: string) {
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, user.id, now(), now() + TOKEN_TTL_MS);
     const token = signToken({ sub: user.id, jti: tokenId, role: user.role });
+    const account = buildMemberState(db, user.id);
+    if (!account) return void res.status(500).json({ error: "Preview account state was not created." });
     setSessionCookie(res, token);
-    res.json({ token, user: fullUser(user.id) });
+    // The server snapshot lets an embedded preview render immediately even if
+    // its browser delays a follow-up authenticated fetch. It is created by the
+    // same guarded preview endpoint and is never exposed in production.
+    res.json({ token, user: fullUser(user.id), account });
   }));
 
   app.post("/api/auth/login", wrap((req, res) => {

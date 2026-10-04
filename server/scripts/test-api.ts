@@ -472,7 +472,8 @@ try {
   process.env.PREVIEW_ACCOUNTS = "true";
   const previewBusiness = await api("POST", "/api/auth/preview-access", undefined, { persona: "business" });
   const previewAdmin = await api("POST", "/api/auth/preview-access", undefined, { persona: "superadmin" });
-  expect("preview role shortcuts create a business workspace", previewBusiness.status === 200 && previewBusiness.json.user.business === "Northstar Studio" && previewBusiness.json.user.role === "user");
+  expect("preview role shortcuts create a business workspace", previewBusiness.status === 200 && previewBusiness.json.user.business === "Northstar Studio" && previewBusiness.json.user.role === "user" &&
+    Array.isArray(previewBusiness.json.account?.transactions) && previewBusiness.json.account.invoices.length === 3);
   const previewCookie = previewBusiness.headers.get("set-cookie")?.split(";")[0] ?? "";
   const cookieState = await fetch(base + "/api/me/state", { headers: { Cookie: previewCookie } });
   const staleBearerCookieState = await fetch(base + "/api/me/state", { headers: { Cookie: previewCookie, Authorization: "Bearer forged.token.here" } });
