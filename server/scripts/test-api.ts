@@ -785,7 +785,18 @@ try {
   const forgotUnknown = await api("POST", "/api/auth/forgot-password", undefined, { email: "nobody@nowhere.example" });
   expect("forgot-password never reveals account existence", forgotUnknown.status === 200 && forgotUnknown.json.ok === true &&
     !forgotUnknown.json.token && !forgotUnknown.json.tempPassword);
-  await api("POST", "/api/auth/forgot-password", undefined, { email: "june@okafor.design" });
+  const devReset = await api("POST", "/api/auth/forgot-password", undefined, { email: "june@okafor.design" });
+  // Development hands the code back so the reset screen works without a mail
+  // provider; production must never put a reset token in a response body.
+  expect("development returns the reset code so the flow is usable without mail",
+    typeof devReset.json.devCode === "string" && devReset.json.devCode.length > 20);
+  const restoreEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  const prodReset = await api("POST", "/api/auth/forgot-password", undefined, { email: "june@okafor.design" });
+  if (restoreEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = restoreEnv;
+  expect("production never returns a reset code in the response",
+    prodReset.status === 200 && prodReset.json.devCode === undefined && prodReset.json.token === undefined &&
+    !("devCode" in prodReset.json));
   const badReset = await api("POST", "/api/auth/reset-password", undefined, { token: "forged-token", password: "new password 123" });
   expect("forged reset token rejected (400)", badReset.status === 400);
   // Mint a token through the same code path (sha256-hashed, 30-min expiry) for

@@ -43,7 +43,13 @@ type AuthValue = {
   updateUser: (patch: Partial<Pick<User, "name" | "phone" | "business" | "accountType" | "email" | "plan" | "role" | "avatarUrl">>) => void;
   changePassword: (current: string, next: string) => Promise<void>;
   /** Step 1 of password recovery — always resolves with a generic response. */
-  forgotPassword: (email: string) => Promise<void>;
+  /**
+   * Step 1 — requests a reset. Resolves with a `devCode` when the server is
+   * running outside production and no mail provider is configured (see
+   * TODO(send-email) in server/src/app.ts): without it the reset screen would
+   * ask for a code that only exists in the server log.
+   */
+  forgotPassword: (email: string) => Promise<{ devCode?: string }>;
   /** Step 2 — completes the reset with the token from the email. */
   resetPassword: (token: string, password: string) => Promise<void>;
 };
@@ -143,7 +149,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const forgotPassword = useCallback(async (email: string) => {
-    await apiPost("/api/auth/forgot-password", { email: email.trim() });
+    const res = await apiPost<{ devCode?: string }>("/api/auth/forgot-password", { email: email.trim() });
+    return res && typeof res.devCode === "string" ? { devCode: res.devCode } : {};
   }, []);
 
   const resetPassword = useCallback(async (token: string, password: string) => {

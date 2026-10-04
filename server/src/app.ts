@@ -386,6 +386,8 @@ export function createApp(dbPath?: string) {
     const row = typeof email === "string" && email
       ? (db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string } | undefined)
       : undefined;
+    /** Development only — see the note on the TODO below. */
+    let devCode = "";
     if (row) {
       const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
       const tokenHash = createHash("sha256").update(token).digest("hex");
@@ -393,11 +395,20 @@ export function createApp(dbPath?: string) {
         "INSERT INTO password_resets (token_hash, user_id, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)",
       ).run(tokenHash, row.id, Date.now() + 30 * 60_000, now());
       // TODO(send-email): deliver the token to `email` via the transactional
-      // email provider. Until a provider is configured it is only logged in
-      // development mode so the flow stays testable.
-      if (process.env.NODE_ENV !== "production") console.log(`[dev] password reset token for ${email}: ${token}`);
+      // email provider. Until a provider is configured, development hands the
+      // code back in the response as well as logging it, so the reset screen —
+      // and anyone trying the demo — is not left waiting for mail that never
+      // arrives. Production never puts a reset token in a response body.
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[dev] password reset token for ${email}: ${token}`);
+        devCode = token;
+      }
     }
-    res.json({ ok: true, message: "If an account exists for that email, reset instructions have been sent." });
+    res.json({
+      ok: true,
+      message: "If an account exists for that email, reset instructions have been sent.",
+      ...(devCode ? { devCode } : {}),
+    });
   }));
 
   app.post("/api/auth/reset-password", wrap((req, res) => {

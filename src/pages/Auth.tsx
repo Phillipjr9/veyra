@@ -669,6 +669,9 @@ export function ForgotPasswordPage() {
   const { forgotPassword, resetPassword } = useAuth();
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
+  // Only set outside production, where there is no mail provider yet — the code
+  // is shown on screen instead of being "sent" somewhere it would never arrive.
+  const [demoCode, setDemoCode] = useState("");
   const [token, setToken] = useState("");
   const [password, setPassword] = useState("");
   const [done, setDone] = useState(false);
@@ -679,7 +682,8 @@ export function ForgotPasswordPage() {
     e.preventDefault();
     setBusy(true); setError("");
     try {
-      await forgotPassword(email);
+      const { devCode } = await forgotPassword(email);
+      if (devCode) { setDemoCode(devCode); setToken(devCode); }
       setSent(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -710,10 +714,19 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <AuthShell title="Reset your password" sub={sent ? "Enter the code from your reset email and choose a new password." : "We'll email you a secure reset code."}
+    <AuthShell title="Reset your password"
+      sub={sent
+        ? (demoCode ? "Your code is filled in below — choose a new password." : "Enter the code from your reset email and choose a new password.")
+        : "We'll email you a secure reset code."}
       foot={<>Remembered it? <Link to="/login">Back to sign in</Link></>}>
       {sent ? (
         <form className="auth-form" onSubmit={complete}>
+          {demoCode && (
+            <p className="auth-note" data-testid="demo-reset-code">
+              This demo has no mail service, so the code is shown here rather than emailed. It is already filled in
+              for you.
+            </p>
+          )}
           <label htmlFor="reset-token">Reset code</label>
           <input id="reset-token" type="text" required autoFocus placeholder="Paste the code from your email" value={token} onChange={e => setToken(e.target.value.trim())} />
           <label htmlFor="new-password">New password</label>
