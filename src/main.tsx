@@ -6,6 +6,7 @@ import "./styles/plan.css";
 import "./styles/flow.css";
 import "./styles/scout.css";
 import "./styles/admin.css";
+import "./styles/admin-casework.css";
 import "./styles/statements.css";
 import App from "./App";
 

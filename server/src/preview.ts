@@ -55,6 +55,7 @@ export function ensurePreviewProfiles(db: DatabaseSync): void {
       if (db.prepare("SELECT 1 FROM users WHERE id = ?").get(identity.id)) continue;
       createIdentity(db, identity);
     }
+    seedOperationsDesk(db);
   });
 }
 
@@ -96,6 +97,37 @@ function createIdentity(db: DatabaseSync, identity: PreviewIdentity): void {
   seedTransactions(db, identity, createdAt);
   if (identity.accountType === "business") seedBusinessWorkspace(db, identity, createdAt);
   else seedPersonalWorkspace(db, identity, createdAt);
+}
+
+/** Preview-only operational records give the Super Admin workspace meaningful,
+ * real API-backed casework without seeding anything in a production runtime. */
+function seedOperationsDesk(db: DatabaseSync): void {
+  const exists = db.prepare("SELECT 1 FROM operation_cases WHERE id = 'preview_ops_cloud_settlement'").get();
+  if (exists) return;
+  const stamp = now();
+  // A genuine preview-ledger condition makes the associated live signal useful.
+  db.prepare("UPDATE transactions SET status = 'pending' WHERE id = 'preview_business_txn_2'").run();
+  db.prepare(`INSERT INTO operation_cases
+    (id, title, kind, priority, status, summary, user_id, source_type, source_id, assigned_to, due_at, created_by, created_at, updated_at)
+    VALUES (?, ?, 'transaction', 'high', 'investigating', ?, ?, 'transaction', ?, ?, ?, ?, ?, ?)`)
+    .run(
+      "preview_ops_cloud_settlement",
+      "Review Northstar cloud settlement",
+      "A cloud-infrastructure card movement is pending settlement and needs a payment-operations review before its internal SLA.",
+      "preview_business",
+      "preview_business_txn_2",
+      "preview_superadmin",
+      stamp + 4 * 3_600_000,
+      "preview_superadmin",
+      stamp - 45 * 60_000,
+      stamp - 15 * 60_000,
+    );
+  db.prepare("INSERT INTO operation_case_events (case_id, at, actor_id, actor_name, action, detail) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("preview_ops_cloud_settlement", stamp - 45 * 60_000, "preview_superadmin", "Alex Morgan", "case.created", "Case opened from the pending ledger signal");
+  db.prepare("INSERT INTO operation_case_events (case_id, at, actor_id, actor_name, action, detail) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("preview_ops_cloud_settlement", stamp - 15 * 60_000, "preview_superadmin", "Alex Morgan", "case.assigned", "Assigned to Alex Morgan");
+  db.prepare("INSERT INTO operation_case_notes (case_id, author_id, author_name, body, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run("preview_ops_cloud_settlement", "preview_superadmin", "Alex Morgan", "Awaiting the internal settlement status check. No external processor action is represented in this preview.", stamp - 10 * 60_000);
 }
 
 function seedCard(db: DatabaseSync, identity: PreviewIdentity, createdAt: number): void {
