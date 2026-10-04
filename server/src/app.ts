@@ -11,13 +11,17 @@
  */
 import express, { type NextFunction, type Request, type Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
-import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid } from "./db.js";
-import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, TOKEN_TTL_MS } from "./security.js";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError } from "./db.js";
+import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
+import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
   PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS, type Permission, type StaffRole,
 } from "./rbac.js";
 import { logAdminAction } from "./audit.js";
+import { validateApplication, rowToApplication, memberIdentity, submissionFor, PROFILE_COLUMNS } from "./identity.js";
 import { seed } from "./seed.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 
@@ -40,6 +44,20 @@ const wrap = (fn: Handler) => (req: Request, res: Response, next: NextFunction) 
   Promise.resolve(fn(req, res)).catch(next);
 };
 
+/** A route failure with an explicit HTTP status (declines are 403, limits 400). */
+class RouteError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+/** Maps a thrown error to its response: RouteError keeps its status, anything else is a 400. */
+const fail = (res: Response, err: unknown, fallback: string) => {
+  if (err instanceof RouteError) return void res.status(err.status).json({ error: err.message });
+  if (err instanceof BadInputError) return void res.status(400).json({ error: err.message });
+  res.status(400).json({ error: err instanceof Error ? err.message : fallback });
+};
+
 const MAX_TRANSFER_CENTS = 250_000_00;      // $250k per transfer
 const MAX_DEPOSIT_CENTS = 100_000_00;       // $100k per deposit
 const MAX_ADJUSTMENT_CENTS = 10_000_000_00; // $10M per admin adjustment
@@ -56,7 +74,7 @@ export function createApp(dbPath?: string) {
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Veyra-Token",
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     });
     if (_req.method === "OPTIONS") return res.sendStatus(204);
@@ -87,19 +105,45 @@ export function createApp(dbPath?: string) {
     };
   }
 
-  function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  /**
+   * The bearer token is accepted from `Authorization: Bearer …` **or** from the
+   * `X-Veyra-Token` header.
+   *
+   * The second header is not decoration: preview hosts and other reverse
+   * proxies sometimes consume or rewrite `Authorization` for their own access
+   * control, so the app's token never reaches this process and every
+   * authenticated request fails with "Authentication required." — a sign-in
+   * loop that looks like a client bug from the outside. A custom header passes
+   * through untouched, so the client sends both and works either way.
+   */
+  function bearerToken(req: Request): { token: string | null; via: string | null } {
     const header = req.headers.authorization;
-    if (!header?.startsWith("Bearer ")) return void res.status(401).json({ error: "Authentication required." });
-    const payload = verifyToken(header.slice(7));
-    if (!payload) return void res.status(401).json({ error: "Invalid or expired token." });
+    if (header?.startsWith("Bearer ")) return { token: header.slice(7), via: "authorization" };
+    const custom = req.headers["x-veyra-token"];
+    if (typeof custom === "string" && custom.trim()) return { token: custom.trim(), via: "x-veyra-token" };
+    return { token: null, via: null };
+  }
+
+  function requireAuth(req: Request, res: Response, next: NextFunction): void {
+    const { token, via } = bearerToken(req);
+    // `code` lets the client react precisely (and explain itself) instead of
+    // treating every 401 as the same thing.
+    if (!token) return void res.status(401).json({ error: "Authentication required.", code: "no_token" });
+    const payload = verifyToken(token);
+    if (!payload) return void res.status(401).json({ error: "Invalid or expired token.", code: "bad_token" });
     const session = db.prepare("SELECT revoked, expires_at FROM sessions WHERE token_id = ?").get(payload.jti) as
       | { revoked: number; expires_at: number }
       | undefined;
     if (!session || session.revoked || session.expires_at < Date.now()) {
-      return void res.status(401).json({ error: "Session revoked — sign in again." });
+      return void res.status(401).json({ error: "Session revoked — sign in again.", code: "session_revoked" });
     }
     const user = loadUser(payload.sub);
-    if (!user) return void res.status(401).json({ error: "Account no longer exists." });
+    if (!user) return void res.status(401).json({ error: "Account no longer exists.", code: "no_account" });
+    if (process.env.NODE_ENV !== "production" && via === "x-veyra-token") {
+      // Worth knowing in dev: it means a proxy between the browser and this
+      // process is eating the Authorization header.
+      console.warn(`[auth] ${req.method} ${req.path}: Authorization was missing — authenticated via X-Veyra-Token`);
+    }
     req.user = user;
     next();
   }
@@ -114,12 +158,38 @@ export function createApp(dbPath?: string) {
     };
   }
 
+  /**
+   * A route reachable through any one of several permissions, for endpoints
+   * whose data is legitimately in more than one operator's remit — the
+   * transaction ledger export is both a report (`reports.view`) and the
+   * transactions console's export (`transactions.export`).
+   */
+  function requireAnyPerm(...permissions: Permission[]) {
+    return (req: Request, res: Response, next: NextFunction): void => {
+      if (!isStaffRole(req.user?.role ?? "")) return void res.status(403).json({ error: "Admin access required." });
+      if (!permissions.some(permission => can(db, req.user!.role, permission))) {
+        return void res.status(403).json({ error: `Access denied — your role does not permit you to ${permissions.join(" or ")}.` });
+      }
+      next();
+    };
+  }
+
   const audit = (req: Request, action: string, category: Parameters<typeof logAdminAction>[1]["category"], target: string, summary: string, before?: string, after?: string) =>
     logAdminAction(db, { adminId: req.user!.id, adminName: req.user!.name, action, category, target, summary, before, after });
 
   const notify = (userId: string, type: string, title: string, detail: string) =>
     db.prepare("INSERT INTO notifications (id, user_id, type, title, detail, read, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)")
       .run(rid("n"), userId, type, title, detail, now());
+
+  /**
+   * Member-management routes operate on member accounts only. Staff and Super
+   * Admin accounts are not member surface: an operator with customer
+   * permissions must not be able to credit, debit or restrict a colleague
+   * (including the Super Admin) through them. Unknown and non-member ids both
+   * answer 404 so the route can't be used to enumerate staff.
+   */
+  const memberRow = (id: string) =>
+    db.prepare("SELECT * FROM users WHERE id = ? AND role = 'user'").get(id) as Record<string, unknown> | undefined;
 
   /* ============================== health ============================== */
 
@@ -132,18 +202,30 @@ export function createApp(dbPath?: string) {
 
   app.post("/api/auth/login", wrap((req, res) => {
     const ip = req.ip ?? "unknown";
-    if (!rateLimit(`login:${ip}`)) return void res.status(429).json({ error: "Too many attempts — try again in a minute." });
     const { email, password } = req.body ?? {};
     if (typeof email !== "string" || typeof password !== "string") {
       return void res.status(400).json({ error: "Email and password are required." });
+    }
+    // Only failed credentials spend the budget, so signing in successfully —
+    // repeatedly, from a shared address, which is how a preview proxy looks to
+    // the server — can never lock anyone out. Two buckets: one per account
+    // (stops guessing a password) and a looser one per address (stops spraying
+    // many accounts).
+    const accountKey = `login:acct:${email.trim().toLowerCase()}`;
+    const ipKey = `login:ip:${ip}`;
+    if (failureBudgetExceeded(accountKey, 6) || failureBudgetExceeded(ipKey, 30)) {
+      return void res.status(429).json({ error: "Too many failed attempts — wait a minute, then try again." });
     }
     const row = db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").get(email) as
       | (AuthedUser & { password_hash: string; account_type: string })
       | undefined;
     // Constant-ish response regardless of which factor failed.
     if (!row || !verifyPassword(password, row.password_hash)) {
+      recordFailure(accountKey);
+      recordFailure(ipKey);
       return void res.status(401).json({ error: "Email or password doesn't match our records." });
     }
+    clearFailures(accountKey);
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, row.id, now(), now() + TOKEN_TTL_MS);
@@ -152,7 +234,7 @@ export function createApp(dbPath?: string) {
   }));
 
   app.post("/api/auth/register", wrap((req, res) => {
-    const { name, email, password, accountType, business, phone, plan } = req.body ?? {};
+    const { name, email, password, accountType, business, phone, plan, profile } = req.body ?? {};
     if (typeof name !== "string" || !name.trim()) return void res.status(400).json({ error: "Name is required." });
     if (typeof email !== "string" || !/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "A valid email is required." });
     if (typeof password !== "string" || password.length < 8) return void res.status(400).json({ error: "Use at least 8 characters for your password." });
@@ -160,23 +242,46 @@ export function createApp(dbPath?: string) {
       return void res.status(409).json({ error: "An account with that email already exists." });
     }
     const type = accountType === "personal" ? "personal" : "business";
-    if (type === "business" && typeof business !== "string" && !business) {
+    // A business account must name the business (empty/whitespace/non-string
+    // values are rejected, not silently stored as "").
+    if (type === "business" && (typeof business !== "string" || !business.trim())) {
       return void res.status(400).json({ error: "Business name is required for a business account." });
     }
+    // Opening an account requires a complete application: legal identity, tax
+    // ID, address and government ID (plus the business and its beneficial
+    // owner for business accounts). The account is never created without it.
+    const application = validateApplication(type, {
+      ...(profile && typeof profile === "object" ? profile : {}),
+      email: (typeof profile?.email === "string" && profile.email.trim()) ? profile.email : email,
+      phone: (typeof profile?.phone === "string" && profile.phone.trim()) ? profile.phone : phone,
+    });
+    if (!application.ok) return void res.status(422).json({ error: application.error, field: application.field });
+    const values = application.value;
     const id = rid("u");
     const accountNumber = Array.from({ length: 12 }, () => Math.floor(Math.random() * 10)).join("");
     inTransaction(db, () => {
       db.prepare(
         `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
          VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?, 'active', ?)`,
-      ).run(id, name.trim(), email, typeof phone === "string" ? phone.trim() : "", typeof business === "string" ? business : "", type,
+      ).run(id, name.trim(), email, values.phone, typeof business === "string" ? business : "", type,
         plan === "Starter" ? "Starter" : "Pro", hashPassword(password), now());
+      // The application itself. One row, one shape, normalised by identity.ts.
+      const columns = PROFILE_COLUMNS.map(([, column]) => column);
+      db.prepare(
+        `INSERT INTO identity_profiles (user_id, ${columns.join(", ")}, submitted_at)
+         VALUES (?, ${columns.map(() => "?").join(", ")}, ?)`,
+      ).run(id, ...PROFILE_COLUMNS.map(([key]) => values[key]), now());
       // Production start: a real, empty account — $0 balance, no cards, no history.
       db.prepare(
         `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
          VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
       ).run(id, accountNumber, now(), now());
-      db.prepare("INSERT INTO kyc_records (user_id, status, completeness, updated_at) VALUES (?, 'not_started', 0, ?)").run(id, now());
+      // The application is complete and goes straight into compliance's queue
+      // for review — nothing to chase, nothing missing.
+      db.prepare(
+        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at)
+         VALUES (?, 'in_review', 100, ?, ?, ?, ?)`,
+      ).run(id, values.idType, values.country, JSON.stringify(submissionFor(type, values, now())), now());
       db.prepare("INSERT INTO preferences (user_id, two_factor, login_alerts, scout_auto, weekly_digest) VALUES (?, 1, 1, 1, 0)").run(id);
       db.prepare(
         `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status) VALUES (?, ?, ?, ?, 'Owner', 0, 0, 'active')`,
@@ -188,6 +293,8 @@ export function createApp(dbPath?: string) {
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
+    notify(id, "security", "Application received",
+      `Thanks — we have your details on file and they're with our compliance team now. Most reviews finish within one business day, and we'll email you the moment yours is done.`);
     res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
   }));
 
@@ -256,6 +363,23 @@ export function createApp(dbPath?: string) {
       db.prepare("UPDATE sessions SET revoked = 1 WHERE user_id = ?").run(row.user_id);
     });
     res.json({ ok: true });
+  }));
+
+  /**
+   * The accounts the login page may offer with one click.
+   *
+   * Public and unauthenticated on purpose (it is what a signed-out visitor
+   * needs), but it only ever answers on a server that holds demo accounts —
+   * a production build returns an empty list, so no credentials are advertised
+   * where members sign up for real. See server/src/demo.ts.
+   */
+  app.get("/api/demo/accounts", wrap((_req, res) => {
+    if (!demoLoginsEnabled()) return void res.json({ accounts: [] });
+    const known = new Set(
+      (db.prepare("SELECT email FROM users").all() as Array<{ email: string }>).map(r => r.email.toLowerCase()),
+    );
+    const accounts = demoLoginOptions().filter(a => known.has(a.email.toLowerCase()));
+    res.json({ accounts });
   }));
 
   /* ============================== member routes ============================== */
@@ -348,6 +472,34 @@ export function createApp(dbPath?: string) {
           | undefined;
         if (!account) throw new Error("No account found.");
         if (account.balance_cents < cents) throw new Error("Insufficient funds for this transfer.");
+        // Card spending honours the card's own controls. Freeze, limits and
+        // locks are security controls the member sets in the UI — the server is
+        // the system of record, so it enforces them instead of trusting that
+        // nothing will spend on a frozen card. (contactless/atm/magstripe are
+        // terminal-side controls with no meaning for a ledger transfer.)
+        if (cardId) {
+          const card = db.prepare("SELECT * FROM cards WHERE id = ? AND user_id = ?").get(cardId, req.user!.id) as Record<string, unknown> | undefined;
+          if (!card) throw new RouteError(404, "Card not found.");
+          if (card.frozen === 1) throw new RouteError(403, "This card is frozen. Unfreeze it before spending.");
+          const controls = JSON.parse(String(card.controls_json ?? "{}")) as { online?: boolean };
+          if (controls.online === false) throw new RouteError(403, "Online payments are turned off for this card.");
+          const limit = card.limit_cents as number;
+          if ((card.spent_cents as number) + cents > limit) {
+            throw new RouteError(400, `This payment exceeds the card's ${centsToDecimal(limit)} monthly limit.`);
+          }
+          const perTxn = card.single_txn_limit_cents as number;
+          if (cents > perTxn) {
+            throw new RouteError(400, `This payment exceeds the card's ${centsToDecimal(perTxn)} per-transaction limit.`);
+          }
+          const merchantLock = card.merchant_lock ? String(card.merchant_lock) : null;
+          if (merchantLock && merchantLock.toLowerCase() !== counterparty.toLowerCase()) {
+            throw new RouteError(400, `This card is locked to ${merchantLock}.`);
+          }
+          const categoryLock = card.category_lock ? String(card.category_lock) : null;
+          if (categoryLock && categoryLock !== category) {
+            throw new RouteError(400, `This card is locked to the ${categoryLock} category.`);
+          }
+        }
         const before = account.balance_cents;
         const after = before - cents + scout; // Scout savings are credited immediately
         if (after < 0) throw new Error("Insufficient funds for this transfer.");
@@ -369,7 +521,7 @@ export function createApp(dbPath?: string) {
         balance: money(result.after),
       });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Transfer failed." });
+      fail(res, err, "Transfer failed.");
     }
   }));
 
@@ -386,6 +538,20 @@ export function createApp(dbPath?: string) {
   app.get("/api/me/kyc", requireAuth, wrap((req, res) => {
     const row = db.prepare("SELECT status, completeness, document_type, country, requested_by, requested_at, request_reason, submission_json, updated_at FROM kyc_records WHERE user_id = ?").get(req.user!.id);
     res.json({ kyc: row ?? { status: "not_started", completeness: 0 } });
+  }));
+
+  /**
+   * The member's own application, read back to them. Tax IDs are masked here
+   * (their full value exists in exactly two places: the database and the staff
+   * console) and the shape matches what they filled in at sign-up.
+   */
+  app.get("/api/me/profile", requireAuth, wrap((req, res) => {
+    const row = db.prepare("SELECT * FROM identity_profiles WHERE user_id = ?").get(req.user!.id) as Record<string, unknown> | undefined;
+    if (!row) return void res.json({ profile: null, submittedAt: null });
+    res.json({
+      profile: memberIdentity(req.user!.accountType, rowToApplication(row)),
+      submittedAt: row.submitted_at ?? null,
+    });
   }));
 
   app.post("/api/me/kyc/submit", requireAuth, wrap((req, res) => {
@@ -418,6 +584,12 @@ export function createApp(dbPath?: string) {
       : undefined;
     const cents = txn ? Math.abs(txn.amount_cents as number) : dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "A disputed transaction or amount is required." });
+    // One open case per transaction — the app hides the action, the server is
+    // the one that guarantees it (retries and second tabs included).
+    const alreadyOpen = txnId
+      ? db.prepare("SELECT id FROM disputes WHERE user_id = ? AND transaction_id = ? AND status != 'denied'").get(req.user!.id, txnId)
+      : undefined;
+    if (alreadyOpen) return void res.status(409).json({ error: "A dispute for this transaction is already open." });
     const id = rid("dsp");
     db.prepare(
       `INSERT INTO disputes (id, user_id, transaction_id, merchant, amount_cents, reason, detail, status, opened_at, updated_at)
@@ -665,8 +837,16 @@ export function createApp(dbPath?: string) {
   app.post("/api/me/pockets/:id/move", requireAuth, wrap((req, res) => {
     const id = String(req.params.id);
     const cents = dollarsToCents(req.body?.amount ?? 0);
-    const direction = req.body?.direction === "to_checking" ? "to_checking" : "to_pocket";
+    const direction = req.body?.direction;
+    if (direction !== "to_pocket" && direction !== "to_checking") {
+      return void res.status(400).json({ error: "direction must be 'to_pocket' or 'to_checking'." });
+    }
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
+    // A pocket that isn't the caller's is a 404 — never a 400 that hides an
+    // ownership check (and never a write).
+    if (!db.prepare("SELECT 1 FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Pocket not found." });
+    }
     try {
       inTransaction(db, () => {
         const pocket = db.prepare("SELECT * FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
@@ -698,6 +878,9 @@ export function createApp(dbPath?: string) {
 
   app.delete("/api/me/pockets/:id", requireAuth, wrap((req, res) => {
     const id = String(req.params.id);
+    if (!db.prepare("SELECT 1 FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Pocket not found." });
+    }
     try {
       inTransaction(db, () => {
         const pocket = db.prepare("SELECT * FROM savings_pockets WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
@@ -744,7 +927,10 @@ export function createApp(dbPath?: string) {
     if (!payeeName) return void res.status(400).json({ error: "A payee is required." });
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (!Number.isFinite(nextDate) || nextDate <= 0) return void res.status(400).json({ error: "A next payment date is required." });
-    const frequency = ["once", "weekly", "monthly"].includes(String(req.body?.frequency)) ? String(req.body?.frequency) : "monthly";
+    const frequency = req.body?.frequency ?? "monthly";
+    if (!["once", "weekly", "monthly"].includes(String(frequency))) {
+      return void res.status(400).json({ error: "frequency must be once, weekly or monthly." });
+    }
     const id = rid("bill");
     db.prepare(
       `INSERT INTO scheduled_payments (id, user_id, payee_id, payee_name, amount_cents, category, frequency, next_date, status, autopay, memo)
@@ -759,7 +945,13 @@ export function createApp(dbPath?: string) {
     const payment = db.prepare("SELECT status FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { status: string } | undefined;
     if (!payment) return void res.status(404).json({ error: "Payment not found." });
     if (payment.status === "completed") return void res.status(400).json({ error: "Completed payments cannot be changed." });
-    const next = payment.status === "paused" ? "active" : "paused";
+    // Pause/resume. An explicit status wins (the app sends the state its
+    // optimistic update already applied); no body keeps the toggle behaviour.
+    const requested = req.body?.status;
+    if (requested !== undefined && requested !== "active" && requested !== "paused") {
+      return void res.status(400).json({ error: "status must be 'active' or 'paused'." });
+    }
+    const next = requested ?? (payment.status === "paused" ? "active" : "paused");
     db.prepare("UPDATE scheduled_payments SET status = ? WHERE id = ?").run(next, id);
     res.json({ status: next });
   }));
@@ -772,8 +964,11 @@ export function createApp(dbPath?: string) {
 
   app.post("/api/me/scheduled/:id/pay", requireAuth, wrap((req, res) => {
     const id = String(req.params.id);
+    if (!db.prepare("SELECT 1 FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id)) {
+      return void res.status(404).json({ error: "Payment not found." });
+    }
     try {
-      inTransaction(db, () => {
+      const txnId = inTransaction(db, () => {
         const payment = db.prepare("SELECT * FROM scheduled_payments WHERE id = ? AND user_id = ?").get(id, req.user!.id) as Record<string, unknown> | undefined;
         if (!payment) throw new Error("Payment not found.");
         if (payment.status === "completed") throw new Error("This payment is already completed.");
@@ -789,15 +984,19 @@ export function createApp(dbPath?: string) {
         db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents - cents, now(), account.id);
         db.prepare("UPDATE scheduled_payments SET next_date = ?, status = ? WHERE id = ?")
           .run(nextDate, payment.frequency === "once" ? "completed" : String(payment.status), id);
+        const txn = rid("txn");
         db.prepare(
           `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
            VALUES (?, ?, ?, ?, ?, 'ACH', ?, 'cleared', ?, ?, ?)`,
-        ).run(rid("txn"), account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
+        ).run(txn, account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
           makeReference(), String(payment.memo ?? "Scheduled payment"), now());
         notify(req.user!.id, "transfer", `${centsToDecimal(cents)} paid to ${String(payment.payee_name)}`,
           payment.frequency === "once" ? "One-time payment completed." : "Next payment scheduled.");
+        return txn;
       });
-      res.json({ ok: true });
+      // The ledger row's id, so the client can act on the payment the server
+      // just wrote (dispute it) before the refreshed snapshot lands.
+      res.json({ ok: true, transaction: { id: txnId } });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Payment failed." });
     }
@@ -930,15 +1129,17 @@ export function createApp(dbPath?: string) {
     const q = String(req.query.q ?? "").toLowerCase();
     const rows = db.prepare(
       `SELECT u.id, u.name, u.email, u.phone, u.business, u.account_type, u.plan, u.status,
-              a.balance_cents, a.pending_cents, k.status AS kyc_status
+              a.balance_cents, a.pending_cents, k.status AS kyc_status,
+              p.dob, p.ssn, p.city, p.state, p.id_type, p.submitted_at
        FROM users u
        LEFT JOIN accounts a ON a.user_id = u.id
        LEFT JOIN kyc_records k ON k.user_id = u.id
+       LEFT JOIN identity_profiles p ON p.user_id = u.id
        WHERE u.role = 'user'
        ORDER BY u.created_at DESC`,
     ).all() as Array<Record<string, unknown>>;
     const filtered = q
-      ? rows.filter(r => `${r.name} ${r.email} ${r.business}`.toLowerCase().includes(q))
+      ? rows.filter(r => `${r.name} ${r.email} ${r.business} ${r.ssn ?? ""}`.toLowerCase().includes(q))
       : rows;
     res.json({
       members: filtered.map(r => ({
@@ -947,16 +1148,22 @@ export function createApp(dbPath?: string) {
         balance: money((r.balance_cents as number) ?? 0),
         pending: money((r.pending_cents as number) ?? 0),
         kycStatus: r.kyc_status ?? "not_started",
+        // Enough for the directory table; the full application is one request
+        // away at /api/admin/members/:id.
+        dob: r.dob ?? null, ssn: r.ssn ?? null,
+        city: r.city ?? null, state: r.state ?? null, idType: r.id_type ?? null,
+        profileSubmittedAt: r.submitted_at ?? null,
       })),
     });
   }));
 
   app.get("/api/admin/members/:id", requireAuth, requirePerm("customers.view"), wrap((req, res) => {
-    const user = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const user = memberRow(String(req.params.id));
     if (!user) return void res.status(404).json({ error: "Member not found." });
     const account = db.prepare("SELECT * FROM accounts WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
     const txns = db.prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").all(String(req.params.id));
     const kyc = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(String(req.params.id));
+    const identityRow = db.prepare("SELECT * FROM identity_profiles WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
     res.json({
       member: {
         id: user.id, name: user.name, email: user.email, phone: user.phone, business: user.business,
@@ -964,6 +1171,11 @@ export function createApp(dbPath?: string) {
         balance: money((account?.balance_cents as number) ?? 0),
         accountNumber: account?.account_number, routingNumber: account?.routing_number,
       },
+      // The full application, unmasked: staff reviewing an account see the
+      // Social Security and EIN numbers exactly as the member entered them.
+      identity: identityRow
+        ? { ...rowToApplication(identityRow), submittedAt: identityRow.submitted_at ?? null }
+        : null,
       transactions: txns.map(txnOut),
       kyc,
     });
@@ -971,10 +1183,14 @@ export function createApp(dbPath?: string) {
 
   /** Cross-account treasury adjustment (deposit / withdrawal). */
   app.post("/api/admin/members/:id/adjust", requireAuth, requirePerm("customers.adjust_balance"), wrap((req, res) => {
-    const target = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const target = memberRow(String(req.params.id));
     if (!target) return void res.status(404).json({ error: "Member not found." });
     const cents = dollarsToCents(req.body?.amount ?? 0);
-    const direction = req.body?.direction === "debit" ? "debit" : "credit";
+    // Money direction is never guessed: a typo must not silently credit.
+    const direction = req.body?.direction;
+    if (direction !== "credit" && direction !== "debit") {
+      return void res.status(400).json({ error: "direction must be 'credit' or 'debit'." });
+    }
     const requestedDescription = String(req.body?.description ?? "").trim();
     const memo = String(req.body?.memo ?? "").trim();
     const fallbackDescription = direction === "credit" ? "Direct deposit" : "ACH withdrawal";
@@ -1030,9 +1246,13 @@ export function createApp(dbPath?: string) {
 
   /** Restrict / restore an account. Restriction blocks the member's transfers server-side. */
   app.post("/api/admin/members/:id/status", requireAuth, requirePerm("accounts.set_status"), wrap((req, res) => {
-    const target = db.prepare("SELECT * FROM users WHERE id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const target = memberRow(String(req.params.id));
     if (!target) return void res.status(404).json({ error: "Member not found." });
-    const status = req.body?.status === "restricted" ? "restricted" : "active";
+    // Never guess a security control: an explicit, known status is required.
+    const status = req.body?.status;
+    if (status !== "active" && status !== "restricted") {
+      return void res.status(400).json({ error: "status must be 'active' or 'restricted'." });
+    }
     const reason = String(req.body?.reason ?? "").trim();
     if (status === "restricted" && !reason) return void res.status(400).json({ error: "A reason is required to restrict an account." });
     const before = target.status as string;
@@ -1260,8 +1480,12 @@ export function createApp(dbPath?: string) {
   app.post("/api/admin/broadcasts", requireAuth, requirePerm("notifications.broadcast"), wrap((req, res) => {
     const title = String(req.body?.title ?? "").trim();
     const detail = String(req.body?.detail ?? "").trim();
-    const audience = String(req.body?.audience ?? "all");
+    const audience = req.body?.audience ?? "all";
     if (!title || !detail) return void res.status(400).json({ error: "Title and message are required." });
+    // A mistyped audience must not silently broadcast platform-wide.
+    if (!["all", "business", "personal", "unverified"].includes(String(audience))) {
+      return void res.status(400).json({ error: "audience must be all, business, personal or unverified." });
+    }
     const targets = db.prepare("SELECT id, account_type FROM users WHERE role = 'user'").all() as Array<{ id: string; account_type: string }>;
     const audienceFilter = (u: { id: string; account_type: string }) => {
       if (audience === "business") return u.account_type === "business";
@@ -1284,27 +1508,86 @@ export function createApp(dbPath?: string) {
     res.json({ delivered });
   }));
 
-  app.get("/api/admin/reports/:kind.csv", requireAuth, requirePerm("reports.view"), wrap((req, res) => {
+  // The ledger export serves the Reports tab and the Transactions console, so
+  // either of their permissions opens it (`transactions.export` gated only the
+  // button before this, and the button's holder was refused by the route).
+  app.get("/api/admin/reports/:kind.csv", requireAuth, requireAnyPerm("reports.view", "transactions.export"), wrap((req, res) => {
     const kind = String(req.params.kind);
+    // `transactions.export` is the ledger console's export permission: it opens
+    // the ledger file only, not the customer directory, balances or KYC status.
+    if (kind !== "transactions" && !can(db, req.user!.role, "reports.view")) {
+      return void res.status(403).json({ error: "Access denied — exporting reports requires the reports.view permission." });
+    }
     const stamp = new Date().toISOString().slice(0, 10);
     let rows: Array<Array<string | number>>;
     if (kind === "customers") {
-      rows = [["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Status", "Role"],
-        ...db.prepare("SELECT id, name, email, phone, business, account_type, plan, status, role FROM users ORDER BY created_at").all()
-          .map((r: any) => [r.id, r.name, r.email, r.phone, r.business, r.account_type, r.plan, r.status, r.role])];
+      // Every column the directory shows, including the identity the member
+      // applied with: this is the register compliance works from.
+      rows = [["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Status", "Role",
+        "Date of birth", "SSN", "Legal name (business)", "EIN", "Address", "City", "State", "ZIP", "Country",
+        "ID document", "ID number", "ID expiry", "Applied at"],
+        ...db.prepare(`SELECT u.id, u.name, u.email, u.phone, u.business, u.account_type, u.plan, u.status, u.role,
+                              p.dob, p.ssn, p.legal_name, p.ein, p.address_line1, p.city, p.state, p.postal_code,
+                              p.country, p.id_type, p.id_number, p.id_expiry, p.submitted_at
+                       FROM users u LEFT JOIN identity_profiles p ON p.user_id = u.id
+                       ORDER BY u.created_at`).all()
+          .map((r: any) => [r.id, r.name, r.email, r.phone, r.business, r.account_type, r.plan, r.status, r.role,
+            r.dob ?? "", r.ssn ?? "", r.legal_name ?? "", r.ein ?? "", r.address_line1 ?? "", r.city ?? "",
+            r.state ?? "", r.postal_code ?? "", r.country ?? "", r.id_type ?? "", r.id_number ?? "", r.id_expiry ?? "",
+            r.submitted_at ? new Date(r.submitted_at).toISOString() : ""])];
     } else if (kind === "accounts") {
-      rows = [["User ID", "Member", "Account number", "Balance", "Pending", "Rewards"],
-        ...db.prepare(`SELECT a.user_id, u.name, a.account_number, a.balance_cents, a.pending_cents, a.rewards_cents
-                       FROM accounts a JOIN users u ON u.id = a.user_id ORDER BY a.balance_cents DESC`).all()
-          .map((r: any) => [r.user_id, r.name, r.account_number, centsToDecimal(r.balance_cents), centsToDecimal(r.pending_cents), centsToDecimal(r.rewards_cents)])];
+      // Columns mirror the Accounts console: the same counts (cards, frozen
+      // cards, transactions incl. how many are pending), KYC standing, status
+      // and last activity, computed from the same source of truth.
+      // The accounts export carries the account application too — a compliance
+      // officer pulling the register needs the identity behind each account in
+      // the same file.
+      rows = [["User ID", "Member", "Email", "Business", "Type", "Date of birth", "SSN", "Legal name (business)", "EIN",
+        "Address", "City", "State", "ZIP", "Country", "ID document", "ID number", "ID expiry",
+        "Account number", "Balance", "Pending", "Rewards", "Cards", "Frozen cards", "Transactions", "Pending transactions", "KYC", "Status", "Last activity"],
+        ...db.prepare(`SELECT a.user_id, u.name, u.email, u.business, u.account_type, u.status, a.account_number,
+                              a.balance_cents, a.pending_cents, a.rewards_cents,
+                              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
+                              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.frozen = 1) AS frozen_count,
+                              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
+                              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id AND t.status = 'pending') AS pending_count,
+                              (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status,
+                              (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity,
+                              p.dob, p.ssn, p.legal_name, p.ein, p.address_line1, p.city, p.state, p.postal_code,
+                              p.country, p.id_type, p.id_number, p.id_expiry
+                       FROM accounts a JOIN users u ON u.id = a.user_id
+                       LEFT JOIN identity_profiles p ON p.user_id = u.id
+                       ORDER BY a.balance_cents DESC`).all()
+          .map((r: any) => [r.user_id, r.name, r.email, r.business ?? "", r.account_type,
+            r.dob ?? "", r.ssn ?? "", r.legal_name ?? "", r.ein ?? "",
+            r.address_line1 ?? "", r.city ?? "", r.state ?? "", r.postal_code ?? "", r.country ?? "",
+            r.id_type ?? "", r.id_number ?? "", r.id_expiry ?? "", r.account_number,
+            centsToDecimal(r.balance_cents), centsToDecimal(r.pending_cents), centsToDecimal(r.rewards_cents),
+            r.card_count, r.frozen_count, r.txn_count, r.pending_count, r.kyc_status ?? "not_started", r.status,
+            r.last_activity ? new Date(r.last_activity).toISOString() : "Never"])];
     } else if (kind === "transactions") {
       rows = [["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"],
         ...db.prepare(`SELECT t.*, u.name AS member FROM transactions t JOIN users u ON u.id = t.user_id ORDER BY t.created_at DESC`).all()
           .map((r: any) => [new Date(r.created_at).toISOString(), r.member, r.merchant, r.category, r.method, centsToDecimal(r.amount_cents), r.status, r.reference])];
     } else if (kind === "kyc") {
-      rows = [["User ID", "Member", "Status", "Completeness", "Updated"],
-        ...db.prepare(`SELECT k.user_id, u.name, k.status, k.completeness, k.updated_at FROM kyc_records k JOIN users u ON u.id = k.user_id`).all()
-          .map((r: any) => [r.user_id, r.name, r.status, `${r.completeness}%`, new Date(r.updated_at).toISOString()])];
+      // Status columns plus the columns the review queue shows for a submitted
+      // case (submitted date, legal name, document, file count, source of
+      // funds) — one file covers both KYC views in the console.
+      rows = [["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Submitted", "Legal name", "Document", "Files", "Source of funds", "Requested at", "Updated"],
+        ...db.prepare(`SELECT k.user_id, u.name, u.email, u.account_type, k.status, k.completeness,
+                              k.document_type, k.submission_json, k.requested_at, k.updated_at
+                       FROM kyc_records k JOIN users u ON u.id = k.user_id`).all()
+          .map((r: any) => {
+            let submission: { submittedAt?: number; legalName?: string; documentType?: string; documents?: unknown[]; source?: string } = {};
+            try { submission = r.submission_json ? JSON.parse(String(r.submission_json)) : {}; } catch { /* unreadable submission — export the status columns only */ }
+            return [r.user_id, r.name, r.email, r.account_type, r.status, `${r.completeness}%`,
+              submission.submittedAt ? new Date(submission.submittedAt).toISOString() : "—",
+              submission.legalName || "—",
+              submission.documentType || r.document_type || "—",
+              Array.isArray(submission.documents) ? submission.documents.length : 0,
+              submission.source || "—",
+              r.requested_at ? new Date(r.requested_at).toISOString() : "—", new Date(r.updated_at).toISOString()];
+          })];
     } else {
       return void res.status(404).json({ error: "Unknown report. Use customers|accounts|transactions|kyc." });
     }
@@ -1364,8 +1647,10 @@ export function createApp(dbPath?: string) {
              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id AND t.status = 'pending') AS pending_txn_count,
              (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity,
-             (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status
+             (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status,
+             p.dob, p.ssn, p.city, p.state, p.id_type, p.legal_name, p.owner_name, p.submitted_at
       FROM users u LEFT JOIN accounts a ON a.user_id = u.id
+      LEFT JOIN identity_profiles p ON p.user_id = u.id
       WHERE u.role = 'user' OR u.role IS NULL
       ORDER BY u.created_at
     `).all() as Array<Record<string, unknown>>).map(a => ({
@@ -1382,6 +1667,16 @@ export function createApp(dbPath?: string) {
       kycStatus: (a.kyc_status as string) ?? "not_started",
       accountStatus: a.status === "restricted" ? "restricted" : "active",
       lastActivity: (a.last_activity as number) ?? 0,
+      // The application, visible to staff in the console: date of birth, tax
+      // ID, address and the ID document each member applied with.
+      dob: (a.dob as string) ?? null,
+      ssn: (a.ssn as string) ?? null,
+      city: (a.city as string) ?? null,
+      state: (a.state as string) ?? null,
+      idType: (a.id_type as string) ?? null,
+      legalName: (a.legal_name as string) ?? null,
+      ownerName: (a.owner_name as string) ?? null,
+      applicationAt: (a.submitted_at as number) ?? null,
     }));
 
     const transactions = (db.prepare(`
@@ -1448,10 +1743,38 @@ export function createApp(dbPath?: string) {
 
   /* ============================== errors ============================== */
 
+  /**
+   * Serve the built app from the same origin as the API when `dist/` exists
+   * (`npm run build`). One process, one port, no proxy: the preview — and any
+   * deployment of the built bundle — gets the app and `/api` together, which
+   * removes the whole class of "the frontend is up but its API isn't" failures.
+   * Registered before the JSON 404 so a page request is never answered with
+   * `{"error":"Not found."}`, and never for /api so routes above always win.
+   */
+  const distIndex = resolve("dist/index.html");
+  if (existsSync(distIndex)) {
+    app.use(express.static(resolve("dist"), { index: false }));
+    app.use((req, res, next) => {
+      if (req.method !== "GET" || req.path.startsWith("/api")) return next();
+      res.sendFile(distIndex);
+    });
+  }
+
   app.use((_req, res) => res.status(404).json({ error: "Not found." }));
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: Error & { status?: number; statusCode?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+    // Malformed caller input is a 400, not a server fault. Everything else is
+    // an internal error, logged server-side and never leaked as a stack trace.
+    if (err instanceof BadInputError) return void res.status(400).json({ error: err.message });
+    // body-parser tags its own client errors: malformed JSON (400) and bodies
+    // over the 256 kb limit (413). Passing them through would mask a caller
+    // mistake as a 500.
+    const status = Number(err.status ?? err.statusCode);
+    if (Number.isInteger(status) && status >= 400 && status < 500) {
+      const message = status === 413 ? "Request body is too large." : "Malformed request body.";
+      return void res.status(status).json({ error: message });
+    }
     console.error("[api]", err.message);
-    res.status(500).json({ error: "Internal server error." }); // never leak stack traces
+    res.status(500).json({ error: "Internal server error." });
   });
 
   return { app, db };

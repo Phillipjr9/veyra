@@ -19,6 +19,7 @@ import {
   ScoutAIPage, TeamPage, PerksPage, StatementsPage,
   AccountsPage, BillsPage, DisputesPage, SecurityCenterPage, KYCPage
 } from "./pages/Dashboard";
+import { ClassicApp } from "./pages/dashboards/ClassicDashboard";
 import { SuperAdminPage } from "./pages/SuperAdmin";
 import { SupportCenterPage } from "./pages/SupportCenter";
 import { EmailTemplatesPage } from "./pages/EmailTemplates";
@@ -38,6 +39,18 @@ function RedirectIfAuthed({ children }: { children: React.ReactNode }) {
 function BusinessOnly({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   return user?.accountType === "business" ? <>{children}</> : <Navigate to="/app" replace />;
+}
+
+/**
+ * Which dashboard a member gets.
+ * Personal accounts keep the original member dashboard — its own chrome, home
+ * page and routing (`ClassicApp`). Business accounts get the treasury shell and
+ * staff get the control room, both of which bring their own layouts.
+ */
+function MemberSurface() {
+  const { user } = useAuth();
+  const staff = Boolean(user?.role && user.role !== "user");
+  return !staff && user?.accountType !== "business" ? <ClassicApp /> : <DashboardLayout />;
 }
 
 function Shell() {
@@ -84,7 +97,7 @@ function Shell() {
             <RequireAuth>
               <AccountProvider>
                 <MoneyFlowProvider>
-                  <DashboardLayout />
+                  <MemberSurface />
                 </MoneyFlowProvider>
               </AccountProvider>
             </RequireAuth>
@@ -107,10 +120,12 @@ function Shell() {
           <Route path="kyc" element={<KYCPage />} />
           <Route path="security" element={<SecurityCenterPage />} />
           <Route path="support-desk" element={<SupportCenterPage />} />
-          <Route path="superadmin" element={<SuperAdminPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/app" replace />} />
         </Route>
+
+        {/* Staff console: its own shell (dark control room), not the member dashboard chrome. */}
+        <Route path="/app/superadmin" element={<RequireAuth><SuperAdminPage /></RequireAuth>} />
 
         <Route path="*" element={<SiteLayout><NotFoundPage /></SiteLayout>} />
       </Routes>

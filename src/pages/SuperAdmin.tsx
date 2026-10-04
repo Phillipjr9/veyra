@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import {
-  Activity, AlertOctagon, AlertTriangle, BadgeCheck, Bell, Check, Download, FileText,
+  Activity, AlertTriangle, BadgeCheck, Bell, Check, Download, FileText,
   Landmark, Lock, LogOut, Mail, Megaphone, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
-  TrendingUp, UserCheck, UserRound, Users, Wallet,
+  TrendingUp, UserCheck, UserRound, Users, Wallet, X,
 } from "lucide-react";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart,
+  Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
-import { apiGet, apiPost, apiPut } from "../lib/api";
+import { apiGet, apiGetText, apiPost, apiPut } from "../lib/api";
 import {
   money, longDate, downloadFile,
   type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
@@ -21,8 +21,28 @@ import {
   PERMISSIONS, PERMISSION_LABELS, type Permission, type Role, type StaffRole,
 } from "../lib/permissions";
 import { useToast } from "../components/Toast";
+import { AdminShell } from "./dashboards/AdminShell";
 
 type AdminUser = User & { role?: UserRole };
+
+/**
+ * One member's account application, exactly as they submitted it at sign-up.
+ * Staff with customers.view see every field, including the full SSN/EIN —
+ * that is the point: compliance has to review the identity behind an account.
+ */
+type MemberIdentity = {
+  firstName: string; middleName: string; lastName: string;
+  dob: string; ssn: string; citizenship: string; phone: string; email: string;
+  addressLine1: string; addressLine2: string; city: string; state: string; postalCode: string; country: string;
+  idType: string; idNumber: string; idIssuer: string; idExpiry: string;
+  occupation: string; employer: string; incomeRange: string; sourceOfFunds: string;
+  legalName?: string; dba?: string; ein?: string; businessType?: string; formationState?: string;
+  formationDate?: string; industry?: string; website?: string; monthlyVolume?: string;
+  bizAddressLine1?: string; bizAddressLine2?: string; bizCity?: string; bizState?: string;
+  bizPostalCode?: string; bizCountry?: string;
+  ownerName?: string; ownerTitle?: string; ownerDob?: string; ownerSsn?: string; ownerOwnership?: number;
+  submittedAt?: number | null;
+};
 type TabId =
   | "dashboard" | "customers" | "accounts" | "transactions" | "kyc" | "risk"
   | "staff" | "roles" | "reports" | "notifications" | "audit" | "settings" | "profile";
@@ -52,9 +72,6 @@ const ago = (ts: number) => {
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 };
-
-const csv = (rows: Array<Array<string | number>>) =>
-  rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
 
 /** Audit entry as served by GET /api/admin/state (append-only, server-side). */
 type AuditEntry = {
@@ -135,6 +152,11 @@ export function SuperAdminPage() {
   const [kycReqs, setKycReqs] = useState<KycRequirement[]>(["identity", "address"]);
   const [kycReason, setKycReason] = useState("");
   const [kycReview, setKycReview] = useState<KycQueueItem | null>(null);
+  // The member whose full account application is open (loaded on demand from
+  // /api/admin/members/:id so the console never loads every application at once).
+  const [identityUser, setIdentityUser] = useState<AdminUser | null>(null);
+  const [identityData, setIdentityData] = useState<MemberIdentity | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
   const [kycDecisionNote, setKycDecisionNote] = useState("");
   // Account status
   const [statusConfirm, setStatusConfirm] = useState<{ target: PlatformAccount; status: "active" | "restricted" } | null>(null);
@@ -296,6 +318,15 @@ export function SuperAdminPage() {
         .catch((err: Error) => toast({ tone: "error", title: "Decision failed", description: err.message }));
   };
 
+  const openIdentity = (u: AdminUser) => {
+    setIdentityUser(u);
+    setIdentityData(null);
+    setIdentityError(null);
+    apiGet<{ identity: MemberIdentity | null }>(`/api/admin/members/${u.id}`)
+      .then(r => setIdentityData(r.identity))
+      .catch((err: Error) => setIdentityError(err.message));
+  };
+
   const handleStatusConfirm = () => {
     if (!statusConfirm) return;
     if (!guard("accounts.set_status", "change account status")) return;
@@ -370,23 +401,35 @@ export function SuperAdminPage() {
         .catch((err: Error) => toast({ tone: "error", title: "Broadcast failed", description: err.message }));
   };
 
-  const handleExport = (kind: "customers" | "accounts" | "transactions" | "kyc" | "audit") => {
-    if (!guard("transactions.export", "export data")) return;
+  /**
+   * Every export is generated server-side from the database in full (the
+   * console snapshot only carries a window of the ledger). Each download needs
+   * the permission its route enforces, so the guard below mirrors the API.
+   */
+  const EXPORTS = {
+    customers: { permissions: ["reports.view"], path: "/api/admin/reports/customers.csv", file: "veyra-customers" },
+    accounts: { permissions: ["reports.view"], path: "/api/admin/reports/accounts.csv", file: "veyra-accounts" },
+    // The ledger export serves the Reports tab and the Transactions console,
+    // and the route accepts either permission (transactions.export opens only
+    // this file — the directory, balances and KYC exports stay reports.view).
+    transactions: { permissions: ["reports.view", "transactions.export"], path: "/api/admin/reports/transactions.csv", file: "veyra-ledger" },
+    kyc: { permissions: ["reports.view"], path: "/api/admin/reports/kyc.csv", file: "veyra-kyc" },
+    audit: { permissions: ["audit.view"], path: "/api/admin/audit/export.csv", file: "veyra-audit" },
+  } as const satisfies Record<string, { permissions: readonly Permission[]; path: string; file: string }>;
+
+  const handleExport = async (kind: keyof typeof EXPORTS) => {
+    const spec = EXPORTS[kind];
+    if (!spec.permissions.some(allow)) {
+      toast({ tone: "error", title: "Permission denied", description: `Exporting this data requires the ${spec.permissions.join(" or ")} permission.` });
+      return;
+    }
     const date = new Date().toISOString().slice(0, 10);
-    if (kind === "customers") {
-      downloadFile(`veyra-customers-${date}.csv`, csv([["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Role"], ...users.map(u => [u.id, u.name, u.email, u.phone || "", u.business || "", u.accountType, u.plan, u.role ?? "user"])]), "text/csv");
-    } else if (kind === "accounts") {
-      downloadFile(`veyra-accounts-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "Balance", "Pending", "Cards", "Frozen cards", "KYC", "Status", "Last activity"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.balance.toFixed(2), a.pendingBalance.toFixed(2), a.cards, a.frozenCards, a.kycStatus, a.accountStatus, a.lastActivity ? longDate(a.lastActivity) : "Never"])]), "text/csv");
-    } else if (kind === "transactions") {
-      downloadFile(`veyra-ledger-${date}.csv`, csv([["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"], ...allTxns.map(t => [longDate(t.date), t.memberName, t.merchant, t.category, t.method ?? "", t.amount.toFixed(2), t.status ?? "cleared", t.reference ?? ""])]), "text/csv");
-    } else if (kind === "kyc") {
-      downloadFile(`veyra-kyc-${date}.csv`, csv([["User ID", "Member", "Email", "Type", "KYC status", "Completeness", "Requested at"], ...accounts.map(a => [a.userId, a.name, a.email, a.accountType, a.kycStatus, `${a.kycStatus === "not_started" ? 0 : a.kycStatus === "approved" ? 100 : 72}%`, a.lastActivity ? longDate(a.lastActivity) : "—"])]), "text/csv");
-    } else {
-      // Audit trail (append-only, DB-enforced) exported straight from the API.
-      fetch("/api/admin/audit/export.csv")
-        .then(r => r.text())
-        .then(text => downloadFile(`veyra-audit-${date}.csv`, text, "text/csv"))
-        .catch(() => toast({ tone: "error", title: "Export failed", description: "The audit export couldn't be downloaded." }));
+    try {
+      const csvText = await apiGetText(spec.path);
+      downloadFile(`${spec.file}-${date}.csv`, csvText, "text/csv");
+    } catch (err) {
+      toast({ tone: "error", title: "Export failed", description: err instanceof Error ? err.message : "The export couldn't be downloaded." });
+      return;
     }
     toast({ tone: "success", title: "Export ready", description: `${kind[0].toUpperCase() + kind.slice(1)} CSV downloaded.` });
   };
@@ -414,11 +457,12 @@ export function SuperAdminPage() {
         .catch((err: Error) => toast({ tone: "error", title: "Action failed", description: err.message }));
   };
 
-  const filteredMembers = members.filter(u =>
-    u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.business.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredMembers = members.filter(u => {
+    const q = searchTerm.toLowerCase();
+    const app = accountBy(u.id);
+    return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) ||
+      u.business.toLowerCase().includes(q) || (app?.dob ?? "").includes(q) || (app?.ssn ?? "").includes(q);
+  });
   const filteredTxns = allTxns.filter(t =>
     txnFilter === "all" ? true
     : txnFilter === "in" ? t.amount > 0
@@ -455,43 +499,17 @@ export function SuperAdminPage() {
   ];
 
   return (
-    <div className="app-page superadmin-page">
-      {/* Console header */}
-      <header className="app-head admin-head">
-        <div>
-          <span className="admin-master-badge">
-            <AlertOctagon size={13} /> SUPER ADMIN CONTROL CENTER
-          </span>
-          <h1>Platform oversight</h1>
-          <div className="admin-head-controls">
-            <span className="admin-role-chip">{ROLE_LABELS[role]}</span>
-            <span className="admin-identity">{user?.name} · {user?.email}</span>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flex: "none" }}>
-          <button type="button" className="ghost-btn sm" onClick={() => { logout(); navigate("/"); }}>
-            <LogOut size={14} /> Sign out
-          </button>
-        </div>
-      </header>
-
-      {/* Module navigation */}
-      <div className="admin-tabs-nav" role="tablist" aria-label="Admin modules">
-        {visibleModules.map(m => (
-          <button
-            key={m.id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === m.id}
-            className={`admin-tab-btn ${activeTab === m.id ? "on" : ""}`}
-            onClick={() => { setActiveTab(m.id); setMatrixDraft(null); }}
-          >
-            {m.icon}
-            <span>{m.label}</span>
-            {moduleCount(m.id) !== undefined && <span className="admin-tab-count">{moduleCount(m.id)}</span>}
-          </button>
-        ))}
-      </div>
+    <AdminShell
+      user={{ name: user?.name ?? "", email: user?.email ?? "", avatarUrl: user?.avatarUrl }}
+      roleLabel={ROLE_LABELS[role]}
+      modules={visibleModules.map(({ id, label, icon }) => ({ id, label, icon, count: moduleCount(id) }))}
+      activeTab={activeTab}
+      onSelect={id => { setActiveTab(id as TabId); setMatrixDraft(null); }}
+      onSignOut={() => { logout(); navigate("/"); }}
+      health={apiHealth}
+      uptimeSec={apiUptime}
+    >
+      <div className="superadmin-page">
 
       {/* Backend down / unauthorized — the console is API-only */}
       {adminLoadError && (
@@ -551,7 +569,7 @@ export function SuperAdminPage() {
                     <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
                     <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
                     <Tooltip
-                      formatter={(value: number | string, name: string) => [money(Number(value), false), name === "inflow" ? "Inflow" : "Outflow"]}
+                      formatter={(value, name) => [money(Number(value), false), name === "inflow" ? "Inflow" : "Outflow"]}
                       contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)", boxShadow: "0 18px 38px rgba(24,23,29,.12)" }}
                     />
                     <Area type="monotone" dataKey="outflow" stackId="1" stroke="#c2b4ff" strokeWidth={2.2} fill="rgba(117,88,220,0.14)" />
@@ -576,7 +594,7 @@ export function SuperAdminPage() {
                         {channelMix.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                       </Pie>
                       <Tooltip
-                        formatter={(value: number | string) => [`${value}%`, "Share"]}
+                        formatter={(value) => [`${Number(value)}%`, "Share"]}
                         contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)" }}
                       />
                     </PieChart>
@@ -683,6 +701,7 @@ export function SuperAdminPage() {
                 <thead>
                   <tr>
                     <th>Member</th><th>Type</th><th>Contact</th><th>Business</th>
+                    <th>Date of birth</th><th>SSN</th><th>Address</th><th>ID document</th>
                     <th>Balance</th><th>KYC</th><th className="ta-r">Actions</th>
                   </tr>
                 </thead>
@@ -695,10 +714,15 @@ export function SuperAdminPage() {
                         <td><span className={`chip ${u.accountType === "personal" ? "chip-green" : "chip-violet"}`}>{u.accountType.toUpperCase()}</span></td>
                         <td><small>{u.email}<br />{u.phone || "—"}</small></td>
                         <td><small>{u.business || "Personal account"}</small></td>
+                        <td className="id-cell"><small>{acct?.dob ?? "—"}</small></td>
+                        <td className="id-cell"><small><code>{acct?.ssn ?? "—"}</code></small></td>
+                        <td className="id-cell"><small>{acct?.city ? `${acct.city}, ${acct.state ?? ""}` : "—"}</small></td>
+                        <td className="id-cell"><small>{acct?.idType ?? "—"}</small></td>
                         <td><strong>{acct ? money(acct.balance) : "—"}</strong></td>
                         <td>{kycChip(acct?.kycStatus ?? "not_started")}</td>
                         <td className="ta-r">
                           <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+                            <button type="button" className="ghost-btn sm" onClick={() => openIdentity(u)}><FileText size={13} /> Application</button>
                             {allow("customers.adjust_balance") && (
                               <button type="button" className="solid-btn sm" onClick={() => { setTargetUser(u); setAdjustType("credit"); setAdjustModal(true); }}>Deposit / Withdraw</button>
                             )}
@@ -831,7 +855,7 @@ export function SuperAdminPage() {
               <div className="admin-table-wrap">
                 <table className="admin-table">
                   <thead>
-                    <tr><th>Member</th><th>Account</th><th>Submitted</th><th>Legal name</th><th>Document</th><th>Files</th><th>Source of funds</th><th className="ta-r">Decision</th></tr>
+                    <tr><th>Member</th><th>Account</th><th>Submitted</th><th>Legal name</th><th>Date of birth</th><th>SSN</th><th>Document</th><th>Files</th><th>Source of funds</th><th className="ta-r">Decision</th></tr>
                   </thead>
                   <tbody>
                     {kycQueue.map(q => (
@@ -840,6 +864,8 @@ export function SuperAdminPage() {
                         <td><span className={`chip ${q.accountType === "personal" ? "chip-green" : "chip-violet"}`}>{q.accountType.toUpperCase()}</span></td>
                         <td><small>{q.kyc.submission ? longDate(q.kyc.submission.submittedAt) : "—"}</small></td>
                         <td>{q.kyc.submission?.legalName ?? "—"}</td>
+                        <td><small>{q.kyc.submission?.dob ?? "—"}</small></td>
+                        <td><small><code>{q.kyc.submission?.taxId ?? "—"}</code></small></td>
                         <td><small>{q.kyc.submission?.documentType ?? q.kyc.documentType}</small></td>
                         <td><small>{q.kyc.submission?.documents.filter(d => d.name).length ?? 0} uploaded</small></td>
                         <td><small>{q.kyc.submission?.source ?? "—"}</small></td>
@@ -1318,6 +1344,82 @@ export function SuperAdminPage() {
       )}
 
       {/* KYC review & decision */}
+      {identityUser && (
+        <div className="modal-scrim" onClick={() => setIdentityUser(null)}>
+          <div className="modal is-wide" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{identityUser.name} · account application</h3>
+              <button type="button" className="icon-btn" aria-label="Close" onClick={() => setIdentityUser(null)}><X size={16} /></button>
+            </div>
+            {identityError && <p className="form-error">Could not load the application: {identityError}</p>}
+            {!identityData && !identityError && <p className="panel-sub">Loading application…</p>}
+            {identityData && (() => {
+              const d = identityData;
+              const full = (parts: Array<string | undefined>) => parts.filter(Boolean).join(" ") || "—";
+              const rows: Array<[string, string]> = [
+                ["Legal name", full([d.firstName, d.middleName, d.lastName])],
+                ["Date of birth", d.dob || "—"],
+                ["SSN", d.ssn || "—"],
+                ["Citizenship", d.citizenship || "—"],
+                ["Phone", d.phone || "—"],
+                ["Email", d.email || "—"],
+                ["Home address", [d.addressLine1, d.addressLine2].filter(Boolean).join(", ") || "—"],
+                ["City / state / ZIP", [d.city, d.state, d.postalCode].filter(Boolean).join(", ") || "—"],
+                ["Country", d.country || "—"],
+                ["ID document", d.idType || "—"],
+                ["ID number", d.idNumber || "—"],
+                ["ID issued by", d.idIssuer || "—"],
+                ["ID expires", d.idExpiry || "—"],
+                ["Occupation", d.occupation || "—"],
+                ["Employer", d.employer || "—"],
+                ["Annual income", d.incomeRange || "—"],
+                ["Source of funds", d.sourceOfFunds || "—"],
+              ];
+              const bizRows: Array<[string, string]> = [
+                ["Registered legal name", d.legalName || "—"],
+                ["Trading name (DBA)", d.dba || "—"],
+                ["EIN", d.ein || "—"],
+                ["Business structure", d.businessType || "—"],
+                ["State of formation", d.formationState || "—"],
+                ["Date formed", d.formationDate || "—"],
+                ["Industry", d.industry || "—"],
+                ["Website", d.website || "—"],
+                ["Expected monthly deposits", d.monthlyVolume || "—"],
+                ["Business address", [d.bizAddressLine1, d.bizAddressLine2].filter(Boolean).join(", ") || "—"],
+                ["Business city / state / ZIP", [d.bizCity, d.bizState, d.bizPostalCode].filter(Boolean).join(", ") || "—"],
+                ["Business country", d.bizCountry || "—"],
+                ["Beneficial owner", d.ownerName || "—"],
+                ["Owner's title", d.ownerTitle || "—"],
+                ["Owner's date of birth", d.ownerDob || "—"],
+                ["Owner's SSN", d.ownerSsn || "—"],
+                ["Owner's ownership", d.ownerOwnership ? `${d.ownerOwnership}%` : "—"],
+              ];
+              const section = (title: string, list: Array<[string, string]>) => (
+                <>
+                  <div className="app-section"><span>{title}</span></div>
+                  <div className="kyc-review-rows">
+                    {list.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+                  </div>
+                </>
+              );
+              return (
+                <div className="dash-form">
+                  <p className="panel-sub">
+                    Submitted {d.submittedAt ? longDate(d.submittedAt) : "—"} · these are the details {identityUser.name} provided when the account was opened.
+                  </p>
+                  {section("Applicant", rows)}
+                  {d.legalName ? section("Business", bizRows) : null}
+                  {d.ein && !d.legalName ? section("Business", bizRows) : null}
+                </div>
+              );
+            })()}
+            <div className="modal-actions">
+              <button type="button" className="ghost-btn" onClick={() => setIdentityUser(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {kycReview && (
         <div className="modal-scrim" onClick={() => setKycReview(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -1325,15 +1427,39 @@ export function SuperAdminPage() {
             <div className="dash-form">
               {(() => {
                 const s = kycReview.kyc.submission;
+                const app = (s?.application ?? {}) as Record<string, string | number | undefined>;
+                const val = (k: string) => { const v = app[k]; return v === undefined || v === "" ? "—" : String(v); };
                 const rows: Array<[string, string]> = s ? [
                   ["Legal name", s.legalName],
                   ["Date of birth", s.dob || "—"],
+                  ["SSN", s.taxId || "—"],
+                  ["Citizenship", val("citizenship")],
+                  ["Phone", val("phone")],
+                  ["Email", val("email")],
+                  ["Home address", [val("addressLine1"), val("addressLine2")].filter(v => v !== "—").join(", ") || "—"],
+                  ["City / state / ZIP", [val("city"), val("state"), val("postalCode")].filter(v => v !== "—").join(", ") || "—"],
                   ["Country", s.country],
-                  ["Document type", s.documentType],
-                  ["Tax ID (last 4)", s.taxId ? `•••• ${s.taxId}` : "—"],
+                  ["ID document", `${s.documentType}${app.idNumber ? ` · ${app.idNumber}` : ""}`],
+                  ["ID issued by", val("idIssuer")],
+                  ["ID expires", val("idExpiry")],
+                  ["Occupation", val("occupation")],
+                  ["Employer", val("employer")],
+                  ["Annual income", val("incomeRange")],
                   ["Source of funds", s.source],
                   ...(s.registration ? [["Registration", s.registration] as [string, string]] : []),
                   ...(s.industry ? [["Industry", s.industry] as [string, string]] : []),
+                  ...(app.legalName ? [
+                    ["Registered legal name", val("legalName")] as [string, string],
+                    ["EIN", val("ein")] as [string, string],
+                    ["Business structure", val("businessType")] as [string, string],
+                    ["State of formation", val("formationState")] as [string, string],
+                    ["Date formed", val("formationDate")] as [string, string],
+                    ["Expected monthly deposits", val("monthlyVolume")] as [string, string],
+                    ["Business address", [val("bizAddressLine1"), val("bizCity"), val("bizState"), val("bizPostalCode")].filter(v => v !== "—").join(", ") || "—"] as [string, string],
+                    ["Beneficial owner", `${val("ownerName")} · ${val("ownerTitle")}`] as [string, string],
+                    ["Owner's SSN", val("ownerSsn")] as [string, string],
+                    ["Owner's ownership", app.ownerOwnership ? `${app.ownerOwnership}%` : "—"] as [string, string],
+                  ] : []),
                   ["Submitted", longDate(s.submittedAt)],
                 ] : [["Status", "No submission details on file."]];
                 return (
@@ -1473,6 +1599,7 @@ export function SuperAdminPage() {
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </AdminShell>
   );
 }

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { apiGet, apiPost, apiPatch, probeApi, getToken, setToken, clearToken, ApiError } from "./api";
+import { apiGet, apiPost, apiPatch, probeApi, getToken, setToken, clearToken, onUnauthorized, ApiError } from "./api";
 
 export type UserRole = "user" | "support" | "compliance" | "admin" | "superadmin";
 
@@ -21,8 +21,24 @@ type AuthValue = {
   ready: boolean;
   /** True when the API could not be reached on the last probe. */
   offline: boolean;
+  /**
+   * Set when the server rejected the stored session (revoked, expired, or the
+   * token never made it out of a storage-blocked browser) or when a request
+   * came back 401 mid-session. The login page shows it, so an interrupted
+   * session explains itself instead of dumping the user on a bare form.
+   */
+  sessionNotice: string;
+  /** The server's own wording for the rejection — shown small, for diagnosis. */
+  sessionDetail: string;
+  dismissSessionNotice: () => void;
+  /** Forgets this browser's session entirely (every token store) and returns to the form. */
+  resetSession: () => void;
   login: (email: string, password: string) => Promise<User>;
-  signup: (input: { name: string; phone?: string; business?: string; accountType: User["accountType"]; email: string; password: string; plan?: User["plan"] }) => Promise<void>;
+  /** `profile` carries the full account application (see server/src/identity.ts). */
+  signup: (input: {
+    name: string; phone?: string; business?: string; accountType: User["accountType"];
+    email: string; password: string; plan?: User["plan"]; profile?: Record<string, unknown>;
+  }) => Promise<void>;
   logout: () => void;
   updateUser: (patch: Partial<Pick<User, "name" | "phone" | "business" | "accountType" | "email" | "plan" | "role" | "avatarUrl">>) => void;
   changePassword: (current: string, next: string) => Promise<void>;
@@ -38,6 +54,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
   const [offline, setOffline] = useState(false);
+  const [sessionNotice, setSessionNotice] = useState("");
+  const [sessionDetail, setSessionDetail] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -46,32 +64,63 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (online && getToken()) {
         // Restore the session from the server via the stored bearer token.
         try {
-          const { user: me } = await apiGet<{ user: User }>("/api/auth/me");
+          // Quiet: a refusal here means a stale token, not a session ending now.
+          const { user: me } = await apiGet<{ user: User }>("/api/auth/me", { handleUnauthorized: false });
           setUser(me);
-        } catch {
-          clearToken(); // revoked or expired — sign in again
+        } catch (err) {
+          // A token left over from a previous visit was refused (it expired, was
+          // revoked, or the account is gone — a restarted server with a rebuilt
+          // database does this). That is the normal start of a new visit, not a
+          // failure worth a banner: drop it quietly and show a clean sign-in.
+          // Only losing a session you were actively using gets the notice below.
+          clearToken();
+          if (err instanceof ApiError && err.status === 401) {
+            console.info(`[veyra] discarded a stored session: ${err.message}`);
+          }
         }
       }
       setReady(true);
     })();
   }, []);
 
+  useEffect(() => onUnauthorized(reason => {
+    setUser(null);
+    setSessionNotice("Your session ended — sign in again to pick up where you left off.");
+    setSessionDetail(reason);
+  }), []);
+
+  const dismissSessionNotice = useCallback(() => { setSessionNotice(""); setSessionDetail(""); }, []);
+
+  /** Clears every place a token could hide and drops back to the form. */
+  const resetSession = useCallback(() => {
+    clearToken();
+    setUser(null);
+    dismissSessionNotice();
+  }, [dismissSessionNotice]);
+
   const login = useCallback(async (email: string, password: string): Promise<User> => {
+    // A leftover token must not ride along with a sign-in attempt: if the server
+    // rejected the request, the automatic 401 handling would clear the session
+    // and claim it "ended" — confusing when the real cause is a typed password.
+    clearToken();
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
     setToken(token);
     setUser(me);
+    setSessionNotice("");
+    setSessionDetail("");
     return me;
   }, []);
 
-  const signup = useCallback<AuthValue["signup"]>(async ({ name, phone = "", business = "", accountType, email, password, plan = "Pro" }) => {
+  const signup = useCallback<AuthValue["signup"]>(async ({ name, phone = "", business = "", accountType, email, password, plan = "Pro", profile }) => {
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
       name: name.trim(), phone: phone.trim(), business: accountType === "business" ? business.trim() : "",
-      accountType, email: email.trim(), password, plan,
+      accountType, email: email.trim(), password, plan, profile,
     });
     setToken(token);
     setUser(me);
+    setSessionNotice("");
   }, []);
 
   const logout = useCallback(() => {
@@ -79,6 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     apiPost("/api/auth/logout").catch(() => undefined);
     clearToken();
     setUser(null);
+    setSessionNotice("");
   }, []);
 
   const updateUser = useCallback<AuthValue["updateUser"]>(patch => {
@@ -101,8 +151,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

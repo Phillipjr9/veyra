@@ -1,39 +1,43 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Link, Navigate, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
+import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
-  AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
-  Download, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X,
+  AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
+  Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap,
 } from "lucide-react";
-import { AnimatedMoney, AnimatedNumber, VirtualCard, ease } from "../components/common";
-import { Footer } from "../components/Chrome";
-import { useToast } from "../components/Toast";
-import { ScoutQuickDrawer } from "../components/ScoutAIAssistant";
-import { CommandPalette } from "../components/CommandPalette";
-import { MobileCheckDepositModal } from "../components/MobileCheckDeposit";
-import { ZelleHubModal } from "../components/ZelleHubModal";
-import { Confetti, ETA, useMoneyFlow, ZelleLogo, type SendMethod } from "../components/MoneyFlow";
-import { InvoiceDetailModal } from "../components/InvoiceDetailModal";
-import { NotificationsMenu, NOTE_ROUTES } from "./dashboards/parts";
-import { PersonalChrome, PersonalOverview } from "./dashboards/PersonalDashboard";
-import { BusinessChrome, BusinessOverview } from "./dashboards/BusinessDashboard";
+import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
+import { Footer } from "../../components/Chrome";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { Confetti, ETA, useMoneyFlow, ZelleLogo, type SendMethod } from "../../components/MoneyFlow";
+import { useToast } from "../../components/Toast";
+import { ScoutQuickDrawer, ScoutAIPage as ScoutWorkspace } from "../../components/ScoutAIAssistant";
+import { CommandPalette } from "../../components/CommandPalette";
+import { MobileCheckDepositModal } from "../../components/MobileCheckDeposit";
+import { ZelleHubModal } from "../../components/ZelleHubModal";
+import { InvoiceDetailModal } from "../../components/InvoiceDetailModal";
 import { Camera } from "lucide-react";
-import { useAuth } from "../lib/auth";
-import { lockScroll } from "../lib/scrollLock";
+import { useAuth } from "../../lib/auth";
+import { BackButton } from "../../components/BackButton";
+import { lockScroll } from "../../lib/scrollLock";
 import {
   categories, copyText, downloadFile, longDate, money, rewardRate, shortDate, useAcct,
-  type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
-} from "../lib/store";
+  type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type NotificationItem, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
+} from "../../lib/store";
 
 /* ============================================================
    Helpers
    ============================================================ */
 const DAY = 86_400_000;
-const isFresh = (t: Txn) => Date.now() - t.date < 12_000;
 const rise = (i = 0) => ({ initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0 }, transition: { delay: i * 0.06, duration: 0.5, ease } });
 const rangeStyle = (value: number, min: number, max: number) => ({ "--range": `${((value - min) / (max - min)) * 100}%` }) as CSSProperties;
+const isFresh = (t: Txn) => Date.now() - t.date < 12_000;
+const greeting = () => {
+  const h = new Date().getHours();
+  return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+};
+
 function timeAgo(ts: number) {
   const s = Math.floor((Date.now() - ts) / 1000);
   if (s < 60) return "Just now";
@@ -43,6 +47,25 @@ function timeAgo(ts: number) {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return d < 7 ? `${d}d ago` : shortDate(ts);
+}
+
+function weeklyFlow(txns: Txn[], weeks = 8) {
+  const WEEK = 7 * DAY;
+  const now = Date.now();
+  const buckets = Array.from({ length: weeks }, (_, i) => ({ label: shortDate(now - (weeks - i) * WEEK), inflow: 0, outflow: 0 }));
+  txns.forEach(t => {
+    const idx = weeks - 1 - Math.floor((now - t.date) / WEEK);
+    if (idx < 0 || idx >= weeks) return;
+    if (t.amount > 0) buckets[idx].inflow += t.amount;
+    else buckets[idx].outflow += Math.abs(t.amount);
+  });
+  return buckets;
+}
+
+function topCategories(txns: Txn[], limit = 5) {
+  const totals = new Map<string, number>();
+  txns.forEach(t => { if (t.amount < 0) totals.set(t.category, (totals.get(t.category) ?? 0) + Math.abs(t.amount)); });
+  return [...totals.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total).slice(0, limit);
 }
 
 function recentPayees(txns: Txn[], limit = 6) {
@@ -57,6 +80,18 @@ function recentPayees(txns: Txn[], limit = 6) {
 
 
 /** Returns a keyed flash direction whenever the value changes, used for highlight pulses. */
+function useValueFlash(value: number) {
+  const prev = useRef(value);
+  const [flash, setFlash] = useState<{ dir: "up" | "down"; key: number } | null>(null);
+  useEffect(() => {
+    const diff = value - prev.current;
+    prev.current = value;
+    if (Math.abs(diff) < 0.005) return;
+    setFlash({ dir: diff > 0 ? "up" : "down", key: performance.now() });
+  }, [value]);
+  return flash;
+}
+
 /* ============================================================
    Route guard
    ============================================================ */
@@ -144,6 +179,13 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
   },
 ];
 
+const NOTE_ROUTES: Record<NotificationItem["type"], string> = {
+  scout: "/app/scout", card: "/app/cards", transfer: "/app/transactions", security: "/app/security", invoice: "/app/invoices", info: "/app",
+};
+const NOTE_ICONS: Record<NotificationItem["type"], ReactNode> = {
+  scout: <Sparkles size={14} />, card: <CreditCard size={14} />, transfer: <Zap size={14} />, security: <ShieldCheck size={14} />, invoice: <ReceiptText size={14} />, info: <Bell size={14} />,
+};
+
 function PageHeader({ eyebrow, title, children }: { eyebrow: ReactNode; title: ReactNode; children?: ReactNode }) {
   return (
     <header className="app-head">
@@ -173,17 +215,16 @@ function Segmented<T extends string>({ id, value, onChange, options }: { id: str
 }
 
 function Modal({ open, onClose, title, subtitle, children }: { open: boolean; onClose: () => void; title: string; subtitle?: string; children: ReactNode }) {
-  // `onClose` is a fresh arrow function on every render of the page that owns
-  // the modal, so it must not be an effect dependency: re-running the effect
-  // released and re-took the scroll lock (and issued a real scroll) on every
-  // keystroke and toast — dozens of pin/unpin cycles per submit.
+  // Callers pass a fresh arrow every render, so onClose is kept in a ref: as a
+  // dependency it re-ran this effect on every keystroke, releasing and re-taking
+  // the scroll lock each time.
   const close = useRef(onClose);
   useEffect(() => { close.current = onClose; });
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close.current(); };
-    // Locks the page without moving it: releasing a plain overflow lock after a
-    // submit (which can resize the page) used to jump the member's view.
+    // Pins the page at its current offset instead of hiding overflow: releasing
+    // an overflow lock after a submit that resizes the page moved the view.
     const unlock = lockScroll();
     window.addEventListener("keydown", onKey);
     return () => { window.removeEventListener("keydown", onKey); unlock(); };
@@ -249,6 +290,52 @@ function Burst({ fire }: { fire: number }) {
         );
       })}
     </span>
+  );
+}
+
+function BalanceDelta({ value }: { value: number }) {
+  const prev = useRef(value);
+  const timers = useRef<number[]>([]);
+  const [items, setItems] = useState<Array<{ id: number; diff: number }>>([]);
+  useEffect(() => () => { timers.current.forEach(t => window.clearTimeout(t)); }, []);
+  useEffect(() => {
+    const diff = Math.round((value - prev.current) * 100) / 100;
+    prev.current = value;
+    if (Math.abs(diff) < 0.01) return;
+    const id = performance.now() + Math.random();
+    setItems(list => [...list.slice(-1), { id, diff }]);
+    timers.current.push(window.setTimeout(() => setItems(list => list.filter(i => i.id !== id)), 3400));
+  }, [value]);
+  return (
+    <span className="balance-delta-wrap" aria-hidden="true">
+      <AnimatePresence>
+        {items.map(i => (
+          <motion.span key={i.id} className={`balance-delta ${i.diff > 0 ? "up" : "down"}`}
+            initial={{ opacity: 0, y: 10, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -14 }} transition={{ duration: 0.4, ease }}>
+            {i.diff > 0 ? <ArrowDownLeft size={11} /> : <ArrowUpRight size={11} />}
+            {i.diff > 0 ? "+" : "−"}{money(Math.abs(i.diff))}
+          </motion.span>
+        ))}
+      </AnimatePresence>
+    </span>
+  );
+}
+
+function Sparkline({ data }: { data: number[] }) {
+  const max = Math.max(...data, 1);
+  const pts = data.map((d, i) => `${(i / Math.max(data.length - 1, 1)) * 100},${36 - (d / max) * 28}`).join(" ");
+  return (
+    <svg className="spark" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="currentColor" stopOpacity=".28" />
+          <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <motion.polygon points={`0,40 ${pts} 100,40`} fill="url(#spark-fill)" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6, duration: 0.8 }} />
+      <motion.polyline points={pts} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" strokeLinejoin="round"
+        initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.3, ease }} />
+    </svg>
   );
 }
 
@@ -393,6 +480,37 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
   );
 }
 
+function CashflowChart({ weeks }: { weeks: Array<{ label: string; inflow: number; outflow: number }> }) {
+  return (
+    <div className="recharts-cashflow-container" style={{ width: "100%", height: 220 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={weeks} margin={{ top: 12, right: 10, left: -16, bottom: 0 }}>
+          <defs>
+            <linearGradient id="barInflow" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#4aa870" stopOpacity={0.95} />
+              <stop offset="100%" stopColor="#35754f" stopOpacity={0.8} />
+            </linearGradient>
+            <linearGradient id="barOutflow" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#9d86ff" stopOpacity={0.95} />
+              <stop offset="100%" stopColor="#7558dc" stopOpacity={0.85} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(24, 23, 29, 0.07)" />
+          <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
+          <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${v >= 1000 ? Math.round(v / 1000) + "k" : v}`} />
+          <Tooltip
+            cursor={{ fill: "rgba(117, 88, 220, 0.05)", radius: 6 }}
+            formatter={(value, name) => [money(Number(value), false), name === "inflow" ? "Inflow (+)" : "Outflow (−)"]}
+            contentStyle={{ borderRadius: 12, border: "1px solid var(--line)", background: "rgba(255, 255, 255, 0.95)", backdropFilter: "blur(8px)", fontSize: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.1)" }}
+          />
+          <Bar dataKey="inflow" fill="url(#barInflow)" radius={[4, 4, 0, 0]} maxBarSize={16} />
+          <Bar dataKey="outflow" fill="url(#barOutflow)" radius={[4, 4, 0, 0]} maxBarSize={16} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 function WelcomeModal() {
   const [params, setParams] = useSearchParams();
   const { user } = useAuth();
@@ -525,6 +643,7 @@ export function DashboardLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const outlet = useOutlet();
+  const [navOpen, setNavOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [ringing, setRinging] = useState(false);
   const [scoutDrawerOpen, setScoutDrawerOpen] = useState(false);
@@ -547,7 +666,7 @@ export function DashboardLayout() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  useEffect(() => { setNotifOpen(false); }, [location.pathname]);
+  useEffect(() => { setNavOpen(false); setNotifOpen(false); }, [location.pathname]);
 
   useEffect(() => {
     if (unread > prevUnread.current) {
@@ -568,6 +687,12 @@ export function DashboardLayout() {
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
   }, [notifOpen]);
 
+  useEffect(() => {
+    if (!navOpen) return;
+    const unlock = lockScroll();
+    return unlock;
+  }, [navOpen]);
+
   if (user?.role && user.role !== "user" && !location.pathname.startsWith("/app/superadmin")) {
     return <Navigate to="/app/superadmin" replace />;
   }
@@ -576,62 +701,169 @@ export function DashboardLayout() {
       <div className="route-loading" style={{ flexDirection: "column", gap: 12, padding: 24, textAlign: "center" }}>
         <strong style={{ fontSize: 16 }}>We couldn't load your account</strong>
         <span style={{ color: "var(--muted)", fontSize: 13.5, maxWidth: 420, lineHeight: 1.6 }}>{accountError}</span>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
-          <button type="button" className="solid-btn sm" onClick={() => window.location.reload()}>Retry</button>
-          {/* Belt and braces: whatever went wrong with the session, the member
-              can always get back to a sign-in form from here. */}
-          <button type="button" className="ghost-btn sm" onClick={logout}>Sign in again</button>
-        </div>
+        <button type="button" className="solid-btn sm" onClick={() => window.location.reload()}>Retry</button>
       </div>
     );
   }
   if (!account || !user) return <div className="route-loading"><span className="spinner" /></div>;
-
-  const personal = user.accountType === "personal";
-  const nav = personal ? PERSONAL_NAV : BUSINESS_NAV;
-  const notificationMenu = (
-    <NotificationsMenu
-      items={account.notifications}
-      unread={unread}
-      open={notifOpen}
-      ringing={ringing}
-      containerRef={notifRef}
-      onToggle={() => setNotifOpen(o => !o)}
-      onMarkAll={markAllNotificationsRead}
-      onOpen={n => { markNotificationRead(n.id); setNotifOpen(false); navigate(NOTE_ROUTES[n.type] ?? "/app"); }}
-    />
-  );
-  const content = (
-    <>
-      <KycAlertBanner />
-      <motion.main key={location.pathname} className="app-content" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, ease }}>
-        {outlet}
-      </motion.main>
-      <Footer />
-    </>
-  );
+  const nav = user.accountType === "personal" ? PERSONAL_NAV : BUSINESS_NAV;
 
   return (
-    <div className={personal ? "app-root personal-root" : "app-root business-root"}>
-      {personal
-        ? <PersonalChrome
-            user={user}
-            nav={nav}
-            unread={unread}
-            notifications={notificationMenu}
-            onOpenPalette={() => setPaletteOpen(true)}
-            onSignOut={() => { logout(); navigate("/"); }}
-          >{content}</PersonalChrome>
-        : <BusinessChrome
-            user={user}
-            accountNumber={account.bankDetails.accountNumber}
-            nav={nav}
-            notifications={notificationMenu}
-            onOpenPalette={() => setPaletteOpen(true)}
-            onOpenDeposit={() => openDeposit()}
-            onSignOut={() => { logout(); navigate("/"); }}
-          >{content}</BusinessChrome>}
+    <div className="app-shell">
+      <aside className={`app-nav ${navOpen ? "open" : ""}`} aria-label="Dashboard navigation">
+        <div className="app-nav-top">
+          <Logo to="/app" />
+          <button type="button" className="app-nav-close" onClick={() => setNavOpen(false)} aria-label="Close menu"><X size={18} /></button>
+        </div>
+        <div className="app-biz-badge">
+          <span className="biz-icon">{user.role === "superadmin" ? <ShieldCheck size={16} /> : user.accountType === "personal" ? <UserRound size={16} /> : <Building2 size={16} />}</span>
+          <div className="biz-info">
+            <strong>{user.role === "superadmin" ? "Super Admin Control" : user.accountType === "personal" ? "Personal banking" : user.business || "My business"}</strong>
+            <small>{user.role === "superadmin" ? "Master Oversight" : user.accountType === "personal" ? (user.plan === "Pro" ? "Plus" : "Everyday") : user.plan} · Checking •••• {account.bankDetails.accountNumber.slice(-4)}</small>
+          </div>
+        </div>
 
+        {user.role && user.role !== "user" && (
+          <div className="admin-shortcut-box">
+            <Link to="/app/superadmin" className="admin-shortcut-link">
+              <ShieldCheck size={14} /> Master Super Admin Console →
+            </Link>
+          </div>
+        )}
+        <nav className="dash-nav">
+          {nav.map(group => (
+            <div className="dash-nav-group" key={group.title}>
+              <span className="dash-nav-title">{group.title}</span>
+              {group.items.map(item => (
+                <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => `dash-link ${isActive ? "on" : ""}`}>
+                  {({ isActive }) => (
+                    <>
+                      {isActive && <motion.span layoutId="dash-active" className="dash-active" transition={{ type: "spring", stiffness: 460, damping: 38 }} />}
+                      <span className="dash-link-icon">{item.icon}</span>
+                      <span className="dash-link-label">{item.label}</span>
+                      {item.badge && <span className="dash-pill-badge">{item.badge}</span>}
+                    </>
+                  )}
+                </NavLink>
+              ))}
+              {group.title === "Money" && (
+                <button type="button" className="dash-link dash-link-btn" onClick={() => setCheckDepositOpen(true)}>
+                  <span className="dash-link-icon"><Camera size={18} /></span>
+                  <span className="dash-link-label">Check deposit</span>
+                </button>
+              )}
+            </div>
+          ))}
+        </nav>
+        <div className="app-nav-foot">
+          <div className="acct-pill"><span className="dot-live" /> All systems operational</div>
+          <div className="app-user">
+            <span className="app-avatar avatar-with-image">
+              <img src={user.avatarUrl || "/images/avatar-3d-default.svg"} alt="" />
+            </span>
+            <div className="app-user-info"><strong>{user.name}</strong><small>{user.email}</small></div>
+          </div>
+          <div className="app-foot-actions">
+            <button type="button" className="logout" onClick={() => { logout(); navigate("/"); }}><LogOut size={14} /> Sign out</button>
+            <Link to="/" className="back-site">Website <ExternalLink size={12} /></Link>
+          </div>
+        </div>
+      </aside>
+
+      <AnimatePresence>
+        {navOpen && <motion.div className="app-scrim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setNavOpen(false)} />}
+      </AnimatePresence>
+
+      <div className="app-main">
+        <header className="app-topbar">
+          <div className="topbar-left">
+            <button type="button" className="app-burger icon-btn" onClick={() => setNavOpen(true)} aria-label="Open menu"><Menu size={18} /></button>
+            <BackButton />
+            <div className="topbar-balance">
+              <span>Available balance</span>
+              <div className="topbar-balance-value">
+                <AnimatedMoney value={account.balance} className="topbar-amount" cents />
+                <BalanceDelta value={account.balance} />
+              </div>
+            </div>
+          </div>
+          <div className="topbar-right">
+            <button
+              type="button"
+              className="topbar-search-trigger"
+              onClick={() => setPaletteOpen(true)}
+              aria-label="Search or quick jump (Command K)"
+            >
+              <Search size={14} />
+              <span>Quick jump…</span>
+              <kbd>⌘K</kbd>
+            </button>
+
+            <button
+              type="button"
+              className="topbar-btn scout-quick-btn"
+              onClick={() => setScoutDrawerOpen(true)}
+              aria-label="Open Scout Copilot"
+            >
+              <Sparkles size={14} />
+              <span>Ask Scout</span>
+            </button>
+
+            <div className="notif-wrap" ref={notifRef}>
+              <button type="button" className={`icon-btn ${ringing ? "is-ringing" : ""}`} onClick={() => setNotifOpen(o => !o)}
+                aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`} aria-expanded={notifOpen}>
+                <Bell size={17} />
+                <AnimatePresence>
+                  {unread > 0 && (
+                    <motion.span key="dot" className="notif-dot" initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={{ type: "spring", stiffness: 600, damping: 24 }}>
+                      {unread > 9 ? "9+" : unread}
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </button>
+              <AnimatePresence>
+                {notifOpen && (
+                  <motion.div className="notif-panel" initial={{ opacity: 0, y: -8, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -6, scale: 0.97 }} transition={{ duration: 0.2, ease }}>
+                    <div className="notif-head">
+                      <strong>Notifications</strong>
+                      {unread > 0 && <button type="button" className="text-btn" onClick={markAllNotificationsRead}>Mark all read</button>}
+                    </div>
+                    <div className="notif-list">
+                      {account.notifications.length ? (
+                        account.notifications.slice(0, 8).map((n, i) => (
+                          <motion.button type="button" key={n.id} className={`notif-item ${n.read ? "" : "unread"}`}
+                            initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
+                            onClick={() => { markNotificationRead(n.id); setNotifOpen(false); navigate(NOTE_ROUTES[n.type] ?? "/app"); }}>
+                            <span className={`notif-icon t-${n.type}`}>{NOTE_ICONS[n.type] ?? <Bell size={14} />}</span>
+                            <span className="notif-body">
+                              <strong>{n.title}</strong>
+                              <span className="notif-detail">{n.detail}</span>
+                              <small>{timeAgo(n.time)}</small>
+                            </span>
+                            {!n.read && <span className="notif-unread-dot" />}
+                          </motion.button>
+                        ))
+                      ) : (
+                        <p className="notif-empty">You're all caught up.</p>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+            <Link to="/app/settings" className="app-avatar top-avatar avatar-with-image" aria-label="Account settings">
+              <img src={user.avatarUrl || "/images/avatar-3d-default.svg"} alt={user.name} />
+            </Link>
+          </div>
+        </header>
+
+        <KycAlertBanner />
+
+        <motion.main key={location.pathname} className="app-content" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, ease }}>
+          {outlet}
+        </motion.main>
+        <Footer />
+      </div>
       <WelcomeModal />
       <ScoutQuickDrawer open={scoutDrawerOpen} onClose={() => setScoutDrawerOpen(false)} />
       <CommandPalette
@@ -642,8 +874,14 @@ export function DashboardLayout() {
         onOpenZelleHub={() => setZelleHubOpen(true)}
         onOpenScout={() => setScoutDrawerOpen(true)}
       />
-      <MobileCheckDepositModal open={checkDepositOpen} onClose={() => setCheckDepositOpen(false)} />
-      <ZelleHubModal open={zelleHubOpen} onClose={() => setZelleHubOpen(false)} />
+      <MobileCheckDepositModal
+        open={checkDepositOpen}
+        onClose={() => setCheckDepositOpen(false)}
+      />
+      <ZelleHubModal
+        open={zelleHubOpen}
+        onClose={() => setZelleHubOpen(false)}
+      />
     </div>
   );
 }
@@ -651,13 +889,177 @@ export function DashboardLayout() {
 /* ============================================================
    Overview
    ============================================================ */
-/**
- * The member home. Personal and business accounts get genuinely different
- * dashboards (see ./dashboards/*) rather than one layout with swapped labels.
- */
 export function Overview() {
-  const { user } = useAcct();
-  return user?.accountType === "personal" ? <PersonalOverview /> : <BusinessOverview />;
+  const { account, user, redeemRewards } = useAcct();
+  const { openDeposit } = useMoneyFlow();
+  const toast = useToast();
+  const [selected, setSelected] = useState<Txn | null>(null);
+  const [burst, setBurst] = useState(0);
+  const [revealAcct, setRevealAcct] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const weeks = useMemo(() => (account ? weeklyFlow(account.transactions) : []), [account]);
+  const cats = useMemo(() => (account ? topCategories(account.transactions, 5) : []), [account]);
+  const balanceFlash = useValueFlash(account?.balance ?? 0);
+  const rewardsFlash = useValueFlash(account?.rewards ?? 0);
+  if (!account) return null;
+
+  const first = user?.name.split(" ")[0] ?? "there";
+  const personal = user?.accountType === "personal";
+  const bank = account.bankDetails;
+  const activeCards = account.cards.filter(c => !c.frozen).length;
+  const totalLimit = account.cards.reduce((s, c) => s + c.limit, 0);
+  const primary = account.cards[0];
+  const upcoming = account.invoices.filter(i => i.status !== "paid").sort((a, b) => a.due - b.due).slice(0, 3);
+  const totalIn = weeks.reduce((s, w) => s + w.inflow, 0);
+  const totalOut = weeks.reduce((s, w) => s + w.outflow, 0);
+
+  const onRedeem = () => {
+    const amount = redeemRewards();
+    if (amount > 0) {
+      setBurst(b => b + 1);
+      toast({ tone: "success", title: `${money(amount)} moved to checking`, description: "Your cash back was redeemed 1:1." });
+    }
+  };
+  const onCopy = async () => {
+    const ok = await copyText(`${bank.bankName}\nRouting (ABA): ${bank.routingNumber}\nAccount: ${bank.accountNumber}\nAccount name: ${bank.holder}`);
+    if (ok) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    }
+    toast(ok ? { tone: "success", title: "Account details copied", description: "Share them to receive ACH and wire transfers." } : { tone: "error", title: "Couldn't copy", description: "Select the numbers and copy them manually." });
+  };
+
+  return (
+    <div className="app-page">
+      <PageHeader eyebrow={`${greeting()} · ${new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}`} title={<>Welcome back, {first}</>}>
+        <button type="button" className="ghost-btn" onClick={() => openDeposit()}><ArrowDownLeft size={15} /> Add funds</button>
+        <Link className="solid-btn" to="/app/transfers"><Send size={15} /> Send money</Link>
+      </PageHeader>
+
+      <div className="stat-row">
+        <motion.div className="stat stat-balance" {...rise(0)}>
+          {balanceFlash && <span key={balanceFlash.key} className={`stat-flash ${balanceFlash.dir}`} />}
+          <div className="stat-top"><span>Available balance</span><span className="chip chip-green">Checking</span></div>
+          <AnimatedMoney value={account.balance} className="stat-value" cents fromZero />
+          <div className="stat-meta">
+            <span className="up"><TrendingUp size={12} /> 12.4% vs last month</span>
+            <span>Pending {money(account.pendingBalance)}</span>
+          </div>
+          <div className="stat-spark"><Sparkline data={weeks.map(w => w.outflow + w.inflow * 0.2)} /></div>
+        </motion.div>
+
+        <motion.div className="stat stat-dark" {...rise(1)}>
+          {rewardsFlash && <span key={rewardsFlash.key} className={`stat-flash ${rewardsFlash.dir}`} />}
+          <div className="stat-top"><span>Rewards balance</span><span className="chip chip-glass">2% back</span></div>
+          <AnimatedMoney value={account.rewards} className="stat-value" cents fromZero />
+          <p className="stat-note">Unlimited cash back on every purchase.</p>
+          <div className="burst-anchor">
+            <button type="button" className="pill-btn" onClick={onRedeem} disabled={account.rewards < 0.01}><Sparkles size={13} /> Redeem to checking</button>
+            <Burst fire={burst} />
+          </div>
+        </motion.div>
+
+        <motion.div className="stat stat-scout" {...rise(2)}>
+          <div className="stat-top"><span>Scout savings</span><span className="chip chip-violet">AI</span></div>
+          <AnimatedMoney value={account.scoutSaved} className="stat-value" cents fromZero />
+          <p className="stat-note">Recovered automatically this year.</p>
+          <Link to="/app/scout" className="stat-link">View report <ArrowRight size={13} /></Link>
+        </motion.div>
+
+        <motion.div className="stat" {...rise(3)}>
+          <div className="stat-top"><span>Active cards</span><span className="chip">{account.cards.length} issued</span></div>
+          <AnimatedNumber value={activeCards} className="stat-value" />
+          <p className="stat-note">{account.cards.length - activeCards} frozen · {money(totalLimit, false)} in limits</p>
+          <Link to="/app/cards" className="stat-link">Manage cards <ArrowRight size={13} /></Link>
+        </motion.div>
+      </div>
+
+      <motion.section className="routing-card" {...rise(4)}>
+        <div className="routing-left">
+          <span className="routing-icon"><Landmark size={19} /></span>
+          <div><strong>Account & routing details</strong><p>{bank.bankName} · {bank.holder}</p></div>
+        </div>
+        <div className="routing-fields">
+          <div><span>Routing (ABA)</span><code>{bank.routingNumber}</code></div>
+          <div><span>Account</span><code>{revealAcct ? bank.accountNumber : `•••• ${bank.accountNumber.slice(-4)}`}</code></div>
+          <button type="button" className="icon-btn" onClick={() => setRevealAcct(r => !r)} aria-label={revealAcct ? "Hide account number" : "Show account number"}>
+            {revealAcct ? <EyeOff size={15} /> : <Eye size={15} />}
+          </button>
+          <button type="button" className={`copy-btn ${copied ? "is-done" : ""}`} onClick={onCopy}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? "Copied" : "Copy"}</button>
+        </div>
+      </motion.section>
+
+      <div className="overview-grid">
+        <div className="overview-main">
+        <motion.section className="panel real-charts-panel" {...rise(5)}>
+          <div className="panel-head">
+            <div><h2>Cash Flow & Activity Analytics</h2><span className="panel-sub">Interactive Recharts visualization with weekly inflows vs outflows</span></div>
+            <div className="legend"><span><i className="in" /> In {money(totalIn, false)}</span><span><i className="out" /> Out {money(totalOut, false)}</span></div>
+          </div>
+          <CashflowChart weeks={weeks} />
+        </motion.section>
+          <motion.section className="panel" {...rise(6)}>
+            <div className="panel-head">
+              <div><h2>Recent activity</h2><span className="panel-sub">Tap a transaction for details</span></div>
+              <Link to="/app/transactions" className="text-link">View all <ArrowRight size={14} /></Link>
+            </div>
+            <TxnList txns={account.transactions.slice(0, 6)} onSelect={setSelected} />
+          </motion.section>
+        </div>
+
+        <div className="overview-side">
+          <motion.section className="panel" {...rise(5)}>
+            <div className="panel-head"><h2>Primary card</h2><Link to="/app/cards" className="text-link">All cards <ArrowRight size={14} /></Link></div>
+            {primary ? (
+              <>
+                <VirtualCard small label={primary.label} holder={primary.cardholder} last4={primary.last4} frozen={primary.frozen} type={primary.type} />
+                <div className="mini-metrics">
+                  <div><span>Spent this month</span><strong>{money(primary.spent)}</strong></div>
+                  <div><span>Monthly limit</span><strong>{money(primary.limit, false)}</strong></div>
+                </div>
+                <UsageBar spent={primary.spent} limit={primary.limit} />
+              </>
+            ) : (
+              <EmptyState icon={<CreditCard size={18} />} title="No cards yet" text="Issue a virtual card in seconds." />
+            )}
+          </motion.section>
+          <motion.section className="panel" {...rise(6)}>
+            <div className="panel-head"><div><h2>Top categories</h2><span className="panel-sub">Where your money went</span></div></div>
+            <CategoryBars items={cats} />
+          </motion.section>
+          <motion.section className="panel" {...rise(7)}>
+            {personal ? (
+              <>
+                <div className="panel-head"><div><h2>Everyday tools</h2><span className="panel-sub">Quick ways to manage your money</span></div></div>
+                <div className="everyday-links">
+                  <Link to="/app/accounts"><PiggyBank size={16} /><span><b>Savings goals</b><small>Build and fund pockets</small></span><ArrowRight size={13} /></Link>
+                  <Link to="/app/transfers"><Send size={16} /><span><b>Send money</b><small>ACH or wire</small></span><ArrowRight size={13} /></Link>
+                  <Link to="/app/cards"><CreditCard size={16} /><span><b>Card controls</b><small>Freeze, PIN and limits</small></span><ArrowRight size={13} /></Link>
+                  <Link to="/app/bills"><CalendarClock size={16} /><span><b>Bills & autopay</b><small>Manage upcoming payments</small></span><ArrowRight size={13} /></Link>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="panel-head"><h2>Upcoming</h2><Link to="/app/invoices" className="text-link">Invoices <ArrowRight size={14} /></Link></div>
+                {upcoming.length ? (
+                  <div className="upcoming">
+                    {upcoming.map(inv => (
+                      <div className="upcoming-row" key={inv.id}>
+                        <span className="upcoming-date"><b>{new Date(inv.due).getDate()}</b><small>{new Date(inv.due).toLocaleDateString("en-US", { month: "short" })}</small></span>
+                        <div className="upcoming-main"><strong>{inv.client}</strong><small>Invoice #{inv.id}</small></div>
+                        <div className="upcoming-side"><b>{money(inv.amount)}</b><span className={`status-pill ${inv.status}`}>{inv.status}</span></div>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="muted-note">No open invoices — you're all caught up.</p>}
+              </>
+            )}
+          </motion.section>
+        </div>
+      </div>
+      <TxnDrawer txn={selected} onClose={() => setSelected(null)} />
+    </div>
+  );
 }
 
 /* ============================================================
@@ -1501,7 +1903,7 @@ export function InvoicesPage() {
 }
 
 // Re-export the elevated, intelligent Scout AI Experience with conversational copilot & live negotiation
-export { ScoutAIPage } from "../components/ScoutAIAssistant";
+export { ScoutAIPage } from "../../components/ScoutAIAssistant";
 
 /* ============================================================
    Rewards
@@ -2529,7 +2931,10 @@ export function SecurityCenterPage() {
 }
 
 // Re-export high-fidelity institutional bank statement suite
-export { StatementsPage } from "./StatementsPage";
+import { StatementsPage } from "../StatementsPage";
+import { SupportCenterPage } from "../SupportCenter";
+
+export { StatementsPage };
 
 /* ============================================================
    Settings
@@ -2718,5 +3123,37 @@ export function SettingsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ============================================================
+   The original member dashboard, mounted as one unit.
+   Personal accounts run this: the layout, the home page and every
+   section below are the app as it shipped, with its own routing.
+   Business accounts use the treasury shell, staff the control room.
+   ============================================================ */
+export function ClassicApp() {
+  return (
+    <Routes>
+      <Route element={<DashboardLayout />}>
+        <Route index element={<Overview />} />
+        <Route path="accounts" element={<AccountsPage />} />
+        <Route path="cards" element={<CardsPage />} />
+        <Route path="transactions" element={<TransactionsPage />} />
+        <Route path="transfers" element={<PaymentsPage />} />
+        <Route path="payments" element={<PaymentsPage />} />
+        <Route path="bills" element={<BillsPage />} />
+        <Route path="scout" element={<ScoutWorkspace />} />
+        <Route path="rewards" element={<RewardsPage />} />
+        <Route path="perks" element={<PerksPage />} />
+        <Route path="statements" element={<StatementsPage />} />
+        <Route path="disputes" element={<DisputesPage />} />
+        <Route path="kyc" element={<KYCPage />} />
+        <Route path="security" element={<SecurityCenterPage />} />
+        <Route path="support-desk" element={<SupportCenterPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="*" element={<Navigate to="/app" replace />} />
+      </Route>
+    </Routes>
   );
 }

@@ -5,6 +5,8 @@ import "./styles/dashboard.css";
 import "./styles/flow.css";
 import "./styles/scout.css";
 import "./styles/admin.css";
+import "./styles/personal.css";
+import "./styles/business.css";
 import "./styles/statements.css";
 import App from "./App";
 
