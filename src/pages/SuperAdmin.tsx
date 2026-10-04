@@ -438,40 +438,70 @@ export function SuperAdminPage() {
 
   const activeMatrix = matrixDraft ?? Object.fromEntries(STAFF_ROLES.map(r => [r, rolePermissions(r)])) as Record<StaffRole, Permission[]>;
 
-  const adminNetFlow = [
-    { month: "Jan", inflow: 82000, outflow: 46000 },
-    { month: "Feb", inflow: 90000, outflow: 50000 },
-    { month: "Mar", inflow: 98000, outflow: 53000 },
-    { month: "Apr", inflow: 101000, outflow: 56000 },
-    { month: "May", inflow: 112000, outflow: 61000 },
-    { month: "Jun", inflow: 125000, outflow: 67000 },
-  ];
+  // Console metrics deliberately derive from the live server snapshot rather
+  // than displaying sample financial figures. This keeps the control room
+  // useful on a brand-new platform as well as at scale.
+  const adminNetFlow = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 6 }, (_, index) => {
+      const period = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
+      const nextPeriod = new Date(period.getFullYear(), period.getMonth() + 1, 1);
+      const rows = allTxns.filter(transaction => transaction.date >= period.getTime() && transaction.date < nextPeriod.getTime());
+      return {
+        month: period.toLocaleDateString("en-US", { month: "short" }),
+        inflow: rows.filter(transaction => transaction.amount > 0).reduce((sum, transaction) => sum + transaction.amount, 0),
+        outflow: rows.filter(transaction => transaction.amount < 0).reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0),
+      };
+    });
+  }, [allTxns]);
 
-  const channelMix = [
-    { name: "Card", value: 44, color: "#7558dc" },
-    { name: "ACH", value: 27, color: "#8fd3a4" },
-    { name: "Wire", value: 18, color: "#f0bf6a" },
-    { name: "Other", value: 11, color: "#c6d0ff" },
+  const channelMix = useMemo(() => {
+    const colorByChannel: Record<string, string> = { Card: "#7558dc", ACH: "#5aa77b", Wire: "#e2a649", Transfer: "#4b8fb2", Other: "#a9a2b6" };
+    const totalsByChannel = new Map<string, number>();
+    allTxns.forEach(transaction => {
+      const raw = (transaction.method ?? "Other").toLowerCase();
+      const channel = raw.includes("card") ? "Card" : raw.includes("ach") ? "ACH" : raw.includes("wire") ? "Wire" : raw.includes("transfer") || raw.includes("zelle") ? "Transfer" : "Other";
+      totalsByChannel.set(channel, (totalsByChannel.get(channel) ?? 0) + Math.abs(transaction.amount));
+    });
+    const total = [...totalsByChannel.values()].reduce((sum, amount) => sum + amount, 0);
+    if (!total) return [{ name: "Awaiting activity", value: 100, color: "#ded9e5" }];
+    return [...totalsByChannel.entries()]
+      .sort(([, amountA], [, amountB]) => amountB - amountA)
+      .slice(0, 4)
+      .map(([name, amount]) => ({ name, value: Math.round((amount / total) * 100), color: colorByChannel[name] ?? colorByChannel.Other }));
+  }, [allTxns]);
+
+  const sixMonthInflow = adminNetFlow.reduce((sum, period) => sum + period.inflow, 0);
+  const sixMonthOutflow = adminNetFlow.reduce((sum, period) => sum + period.outflow, 0);
+  const attentionItems = [
+    ...(totals.riskAlerts > 0 ? [{ tab: "risk" as TabId, tone: "risk", title: "Risk signals need a decision", detail: `${totals.riskAlerts} open alert${totals.riskAlerts === 1 ? "" : "s"} across disputes and restricted accounts`, count: totals.riskAlerts }] : []),
+    ...(totals.kycPending > 0 ? [{ tab: "kyc" as TabId, tone: "kyc", title: "Verification is waiting", detail: `${totals.kycPending} member${totals.kycPending === 1 ? "" : "s"} need a compliance review`, count: totals.kycPending }] : []),
+    ...(totals.pendingTxns > 0 ? [{ tab: "transactions" as TabId, tone: "ledger", title: "Pending ledger activity", detail: `${totals.pendingTxns} transaction${totals.pendingTxns === 1 ? "" : "s"} still awaiting settlement`, count: totals.pendingTxns }] : []),
   ];
 
   return (
     <div className="app-page superadmin-page">
       {/* Console header */}
-      <header className="app-head admin-head">
-        <div>
+      <header className="app-head admin-head admin-command-header">
+        <div className="admin-command-copy">
           <span className="admin-master-badge">
             <AlertOctagon size={13} /> SUPER ADMIN CONTROL CENTER
           </span>
-          <h1>Platform oversight</h1>
-          <div className="admin-head-controls">
+          <h1>Platform command</h1>
+          <p>Real-time authority over member safety, money movement and platform configuration.</p>
+          <div className="admin-command-meta">
             <span className="admin-role-chip">{ROLE_LABELS[role]}</span>
             <span className="admin-identity">{user?.name} · {user?.email}</span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, flex: "none" }}>
-          <button type="button" className="ghost-btn sm" onClick={() => { logout(); navigate("/"); }}>
-            <LogOut size={14} /> Sign out
-          </button>
+        <div className="admin-command-actions">
+          <div className="admin-command-health">
+            <span className={`admin-health-dot ${apiHealth}`} />
+            <span><b>{apiHealth === "online" ? "Platform online" : apiHealth === "offline" ? "Connection degraded" : "Checking platform"}</b><small>{systemFrozen ? "Payment rails halted" : "Payment rails available"}</small></span>
+          </div>
+          <button type="button" className="admin-refresh-btn" onClick={refresh}><RefreshCw size={14} /> Refresh</button>
+          {allow("settings.manage") && <button type="button" className={`admin-emergency-btn ${systemFrozen ? "active-halt" : ""}`} onClick={() => setHaltConfirm(true)}><AlertTriangle size={14} /> {systemFrozen ? "Rails halted" : "Emergency halt"}</button>}
+          <button type="button" className="admin-signout-btn" onClick={() => { logout(); navigate("/"); }} aria-label="Sign out"><LogOut size={15} /></button>
         </div>
       </header>
 
@@ -533,10 +563,10 @@ export function SuperAdminPage() {
             <div className="admin-chart-panel admin-chart-main">
               <div className="chart-panel-head">
                 <div>
-                  <span className="chart-panel-kicker">Cash flow</span>
-                  <h3>Net inflow vs operating outflow</h3>
+                  <span className="chart-panel-kicker">Live member ledger · 6 months</span>
+                  <h3>Incoming and outgoing movement</h3>
                 </div>
-                <span className="chart-panel-badge positive">+18.4% QoQ</span>
+                <span className={`chart-panel-badge ${sixMonthInflow >= sixMonthOutflow ? "positive" : "neutral"}`}>{sixMonthInflow >= sixMonthOutflow ? "Inflow-led" : "Outflow-led"}</span>
               </div>
               <div className="chart-panel-body">
                 <ResponsiveContainer width="100%" height={250}>
@@ -564,8 +594,8 @@ export function SuperAdminPage() {
             <div className="admin-chart-panel">
               <div className="chart-panel-head">
                 <div>
-                  <span className="chart-panel-kicker">Funding mix</span>
-                  <h3>Volume by channel</h3>
+                  <span className="chart-panel-kicker">Payment rails</span>
+                  <h3>Movement by channel</h3>
                 </div>
               </div>
               <div className="chart-panel-body chart-panel-compact">
@@ -593,6 +623,35 @@ export function SuperAdminPage() {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="admin-operator-grid">
+            <section className="admin-attention-panel">
+              <div className="admin-attention-head">
+                <div><span className="admin-section-kicker">Priority queue</span><h2>Decisions waiting for you</h2></div>
+                <span className={`admin-queue-count ${attentionItems.length ? "has-items" : ""}`}>{attentionItems.length || "✓"}</span>
+              </div>
+              {attentionItems.length ? (
+                <div className="admin-attention-list">
+                  {attentionItems.map(item => (
+                    <button key={item.tab} type="button" className={`admin-attention-row ${item.tone}`} onClick={() => setActiveTab(item.tab)}>
+                      <span className="admin-attention-count">{item.count}</span>
+                      <span><b>{item.title}</b><small>{item.detail}</small></span>
+                      <span className="admin-attention-cta">Review</span>
+                    </button>
+                  ))}
+                </div>
+              ) : <div className="admin-all-clear"><Check size={16} /><span><b>Everything is clear</b><small>No current KYC, risk or settlement items need attention.</small></span></div>}
+            </section>
+            <section className="admin-command-summary">
+              <span className="admin-section-kicker">Command summary</span>
+              <h2>Operational snapshot</h2>
+              <div className="admin-summary-stats">
+                <div><span>Ledger inflow</span><strong>{money(sixMonthInflow, false)}</strong></div>
+                <div><span>Ledger outflow</span><strong>{money(sixMonthOutflow, false)}</strong></div>
+              </div>
+              <div className="admin-summary-note"><ShieldCheck size={14} /> Server-authoritative roles, ledger and audit trail are active.</div>
+            </section>
           </div>
 
           <div className={`admin-api-strip ${apiHealth === "offline" ? "offline" : ""}`} role="status">
