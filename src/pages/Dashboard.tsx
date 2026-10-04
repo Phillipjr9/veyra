@@ -485,7 +485,16 @@ function KycAlertBanner() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease }}
     >
-      <span className="kyc-banner-icon">{asked ? <ShieldAlert size={19} /> : <ShieldCheck size={19} />}</span>
+      <span className="kyc-banner-icon">
+        <img
+          src={asked ? "/images/icon-shield-3d-alert.webp" : "/images/icon-shield-3d-check.webp"}
+          alt=""
+          width={34}
+          height={34}
+          loading="lazy"
+          decoding="async"
+        />
+      </span>
       <div className="kyc-banner-copy">
         <strong>
           {status === "requested" && "Identity verification requested"}
