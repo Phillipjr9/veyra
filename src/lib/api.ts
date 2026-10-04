@@ -17,16 +17,20 @@ let probe: Promise<boolean> | null = null;
 // Preview browsers can be embedded in a context where persistent storage is
 // blocked. Keep the active token in memory as well, so a successful sign-in
 // always authenticates the current page even when localStorage is unavailable.
-let sessionToken: string | null = null;
+// `undefined` means storage has not been checked yet; `null` means explicitly
+// signed out, so an old storage value can never be resurrected.
+let sessionToken: string | null | undefined;
 
 export function getToken(): string | null {
+  // A freshly issued in-memory credential wins over an older persisted value.
+  // This matters in embedded previews where storage can be readable but writes
+  // or removal are blocked, leaving a stale value behind.
+  if (sessionToken !== undefined) return sessionToken;
   try {
-    const stored = localStorage.getItem(TOKEN_KEY);
-    if (stored) {
-      sessionToken = stored;
-      return stored;
-    }
-  } catch { /* storage unavailable — use this page's session token */ }
+    sessionToken = localStorage.getItem(TOKEN_KEY);
+  } catch {
+    sessionToken = null;
+  }
   return sessionToken;
 }
 export function setToken(token: string): void {
