@@ -1733,6 +1733,10 @@
 .admin-app .admin-chart-grid, .admin-app .admin-grid-split { gap: 14px; }
 .admin-app .admin-table-wrap { border: 1px solid #1e2634; border-radius: 8px; background: #111721; }
 .admin-app .admin-table { color: #cfd6e2; }
+/* Identity columns hold short, exact values — a wrapped date or SSN is harder
+   to read at a glance than a wider table. */
+.admin-app .admin-table td.id-cell { white-space: nowrap; }
+.admin-app .admin-table td.id-cell code { font-size: 11.5px; letter-spacing: .01em; }
 .admin-app .admin-table thead th { border-color: #1a2130; background: #0f141d; color: #8b95a7; font-size: 10px; letter-spacing: .11em; text-transform: uppercase; }
 .admin-app .admin-table tbody td { border-color: #1a2130; }
 .admin-app .admin-table tbody tr:hover { background: #141b26; }

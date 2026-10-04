@@ -150,6 +150,8 @@ export type KycSubmission = {
   taxId: string;
   registration?: string;
   industry?: string;
+  /** The full sign-up application, present when the member verified at sign-up. */
+  application?: Record<string, unknown>;
   documents: Array<{ key: string; label: string; name: string }>;
   submittedAt: number;
 };
@@ -457,6 +459,8 @@ function normalize(raw: unknown, p: Profile): Account {
         taxId: typeof kyc.submission.taxId === "string" ? kyc.submission.taxId : "",
         registration: typeof kyc.submission.registration === "string" ? kyc.submission.registration : undefined,
         industry: typeof kyc.submission.industry === "string" ? kyc.submission.industry : undefined,
+        application: kyc.submission.application && typeof kyc.submission.application === "object"
+          ? (kyc.submission.application as Record<string, unknown>) : undefined,
         documents: Array.isArray(kyc.submission.documents)
           ? kyc.submission.documents
               .filter(d => Boolean(d) && typeof d === "object" && typeof (d as { name?: unknown }).name === "string")
@@ -502,6 +506,15 @@ export type PlatformAccount = {
   kycStatus: KycStatus;
   accountStatus: "active" | "restricted";
   lastActivity: number;
+  /** From the member's account application — staff see these in the console. */
+  dob?: string | null;
+  ssn?: string | null;
+  city?: string | null;
+  state?: string | null;
+  idType?: string | null;
+  legalName?: string | null;
+  ownerName?: string | null;
+  applicationAt?: number | null;
 };
 
 type SendInput = { counterparty: string; amount: number; category: string; method: string; cardId?: string; note?: string };

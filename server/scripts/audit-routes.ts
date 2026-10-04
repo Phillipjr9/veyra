@@ -27,6 +27,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app.js";
+import { applicationFor } from "./fixtures.js";
 import { resetRateLimits } from "../src/security.js";
 
 process.env.ADMIN_EMAIL = "audit-admin@veyra.test";
@@ -73,6 +74,7 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/me/notifications/read-all", auth: true, perm: null },
   { method: "POST", path: "/api/me/notifications/:id/read", auth: true, perm: null },
   { method: "GET", path: "/api/me/kyc", auth: true, perm: null },
+  { method: "GET", path: "/api/me/profile", auth: true, perm: null },
   { method: "PATCH", path: "/api/me/kyc", auth: true, perm: null },
   { method: "POST", path: "/api/me/kyc/submit", auth: true, perm: null },
   { method: "POST", path: "/api/me/disputes", auth: true, perm: null },
@@ -207,7 +209,10 @@ const call = async (method: string, path: string, token?: string, body?: unknown
 };
 
 const register = async (name: string, email: string) =>
-  (await call("POST", "/api/auth/register", undefined, { name, email, password: "audit-pass-1", accountType: "business", business: "Audit Co" })).json;
+  (await call("POST", "/api/auth/register", undefined, {
+    name, email, password: "audit-pass-1", accountType: "business", business: "Audit Co",
+    profile: applicationFor("business", name, "Audit Co"),
+  })).json;
 
 // Identities
 const adminLogin = await call("POST", "/api/auth/login", undefined, { email: "audit-admin@veyra.test", password: "audit-admin-pass" });
@@ -464,6 +469,17 @@ for (const [method, path, body] of staffTargeting) {
 
 const emptyBusiness = await call("POST", "/api/auth/register", undefined, { name: "Empty Biz", email: "empty-biz@audit.test", password: "audit-pass-1", accountType: "business", business: "" });
 if (emptyBusiness.status === 201) problems.push({ route: "POST /api/auth/register", role: "anonymous", status: 201, note: "business account accepted an empty business name" });
+
+// An account cannot be opened without a complete application — no profile at
+// all, an invalid SSN, an under-age applicant and a bad EIN must all fail.
+const noApplication = await call("POST", "/api/auth/register", undefined, { name: "No Profile", email: "no-profile@audit.test", password: "audit-pass-1", accountType: "personal" });
+if (noApplication.status !== 422) problems.push({ route: "POST /api/auth/register", role: "anonymous", status: noApplication.status, note: "account opened without an application (expected 422)" });
+const badSsn = await call("POST", "/api/auth/register", undefined, { name: "Bad Ssn", email: "bad-ssn@audit.test", password: "audit-pass-1", accountType: "personal", profile: { ...applicationFor("personal", "Bad Ssn"), ssn: "000-00-0000" } });
+if (badSsn.status !== 422) problems.push({ route: "POST /api/auth/register", role: "anonymous", status: badSsn.status, note: "invalid SSN accepted (expected 422)" });
+const underAge = await call("POST", "/api/auth/register", undefined, { name: "Under Age", email: "under-age@audit.test", password: "audit-pass-1", accountType: "personal", profile: { ...applicationFor("personal", "Under Age"), dob: "2015-01-01" } });
+if (underAge.status !== 422) problems.push({ route: "POST /api/auth/register", role: "anonymous", status: underAge.status, note: "under-18 applicant accepted (expected 422)" });
+const badEin = await call("POST", "/api/auth/register", undefined, { name: "Bad Ein", email: "bad-ein@audit.test", password: "audit-pass-1", accountType: "business", business: "Bad Ein Co", profile: { ...applicationFor("business", "Bad Ein", "Bad Ein Co"), ein: "00-0000000" } });
+if (badEin.status !== 422) problems.push({ route: "POST /api/auth/register", role: "anonymous", status: badEin.status, note: "invalid EIN accepted (expected 422)" });
 
 /* ---------- report ---------- */
 

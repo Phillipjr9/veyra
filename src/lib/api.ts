@@ -155,9 +155,12 @@ export async function probeApi(force = false): Promise<boolean> {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** The form field a validation failure points at, when the server sends one. */
+  field?: string;
+  constructor(status: number, message: string, field?: string) {
     super(message);
     this.status = status;
+    this.field = field;
   }
 }
 
@@ -236,7 +239,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
 
   if (!res.ok) {
     if (res.status === 401 && opts.handleUnauthorized !== false) sessionRejected(Boolean(token), json?.error ?? "Session rejected.");
-    throw new ApiError(res.status, json?.error ?? `Request failed (${res.status}).`);
+    throw new ApiError(res.status, json?.error ?? `Request failed (${res.status}).`, typeof json?.field === "string" ? json.field : undefined);
   }
   return json as T;
 }

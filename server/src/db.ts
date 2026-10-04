@@ -359,6 +359,67 @@ CREATE TABLE password_resets (
 CREATE INDEX idx_pw_resets_user ON password_resets(user_id);
 `,
   },
+  {
+    version: 4,
+    sql: `
+-- v4: the account application. Everything a bank must collect before it can
+-- open a checking or business account: the applicant's legal identity and
+-- government ID, where they live, the business's registration details, and the
+-- beneficial owner. One row per member; the applicant's own account is created
+-- in the same transaction. Tax IDs (SSN / EIN) are stored whole because
+-- compliance has to read them back, but they are masked on every member-facing
+-- response — only staff with customers.view see the full value.
+CREATE TABLE identity_profiles (
+  user_id            TEXT PRIMARY KEY REFERENCES users(id),
+  -- Applicant (both account types)
+  first_name         TEXT NOT NULL DEFAULT '',
+  middle_name        TEXT NOT NULL DEFAULT '',
+  last_name          TEXT NOT NULL DEFAULT '',
+  dob                TEXT NOT NULL DEFAULT '',
+  ssn                TEXT NOT NULL DEFAULT '',
+  citizenship        TEXT NOT NULL DEFAULT '',
+  phone              TEXT NOT NULL DEFAULT '',
+  email              TEXT NOT NULL DEFAULT '',
+  address_line1      TEXT NOT NULL DEFAULT '',
+  address_line2      TEXT NOT NULL DEFAULT '',
+  city               TEXT NOT NULL DEFAULT '',
+  state              TEXT NOT NULL DEFAULT '',
+  postal_code        TEXT NOT NULL DEFAULT '',
+  country            TEXT NOT NULL DEFAULT '',
+  id_type            TEXT NOT NULL DEFAULT '',
+  id_number          TEXT NOT NULL DEFAULT '',
+  id_issuer          TEXT NOT NULL DEFAULT '',
+  id_expiry          TEXT NOT NULL DEFAULT '',
+  occupation         TEXT NOT NULL DEFAULT '',
+  employer           TEXT NOT NULL DEFAULT '',
+  income_range       TEXT NOT NULL DEFAULT '',
+  source_of_funds    TEXT NOT NULL DEFAULT '',
+  -- Business applicants only
+  legal_name         TEXT NOT NULL DEFAULT '',
+  dba                TEXT NOT NULL DEFAULT '',
+  ein                TEXT NOT NULL DEFAULT '',
+  business_type      TEXT NOT NULL DEFAULT '',
+  formation_state    TEXT NOT NULL DEFAULT '',
+  formation_date     TEXT NOT NULL DEFAULT '',
+  industry           TEXT NOT NULL DEFAULT '',
+  website            TEXT NOT NULL DEFAULT '',
+  monthly_volume     TEXT NOT NULL DEFAULT '',
+  biz_address_line1  TEXT NOT NULL DEFAULT '',
+  biz_address_line2  TEXT NOT NULL DEFAULT '',
+  biz_city           TEXT NOT NULL DEFAULT '',
+  biz_state          TEXT NOT NULL DEFAULT '',
+  biz_postal_code    TEXT NOT NULL DEFAULT '',
+  biz_country        TEXT NOT NULL DEFAULT '',
+  owner_name         TEXT NOT NULL DEFAULT '',
+  owner_title        TEXT NOT NULL DEFAULT '',
+  owner_dob          TEXT NOT NULL DEFAULT '',
+  owner_ssn          TEXT NOT NULL DEFAULT '',
+  owner_ownership    INTEGER NOT NULL DEFAULT 0,
+  submitted_at       INTEGER
+);
+CREATE INDEX idx_identity_submitted ON identity_profiles(submitted_at);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

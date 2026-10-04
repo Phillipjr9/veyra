@@ -28,11 +28,46 @@ export const DEMO_ADMIN_PASSWORD = "veyra-admin-2026";
 
 type Json = Record<string, any>;
 
-type Member = { name: string; email: string; accountType: "personal" | "business"; business?: string };
+type Member = {
+  name: string; email: string; accountType: "personal" | "business"; business?: string;
+  /** The full account application the demo member signed up with. */
+  profile: Record<string, unknown>;
+};
+
+/**
+ * Demo applications are complete, US-shaped records — the same fields a real
+ * applicant fills in — so the staff console has genuine data to display and
+ * the compliance queue has something to review.
+ */
+const PERSONAL_PROFILE = {
+  firstName: "Maya", middleName: "Rose", lastName: "Bennett",
+  dob: "1991-04-17", ssn: "412-88-6207", citizenship: "United States",
+  phone: "+1 (555) 019-2834",
+  addressLine1: "1841 Maple Grove Avenue", addressLine2: "Apt 4B",
+  city: "Brooklyn", state: "NY", postalCode: "11218", country: "United States",
+  idType: "Driver's license", idNumber: "B4720-9183-2244", idIssuer: "New York", idExpiry: "2028-06-30",
+  occupation: "Product designer", employer: "Northwind Studio", incomeRange: "$50,000 – $100,000", sourceOfFunds: "Salary or wages",
+};
+
+const BUSINESS_PROFILE = {
+  firstName: "Tunde", middleName: "", lastName: "Ola",
+  dob: "1986-11-02", ssn: "387-52-1140", citizenship: "United States",
+  phone: "+1 (555) 014-7781",
+  addressLine1: "220 West 34th Street", addressLine2: "Suite 12",
+  city: "New York", state: "NY", postalCode: "10001", country: "United States",
+  idType: "US passport", idNumber: "554812397", idIssuer: "United States", idExpiry: "2029-09-14",
+  occupation: "Logistics manager", employer: "Lagos Logistics Ltd", incomeRange: "$100,000 – $250,000", sourceOfFunds: "Business income",
+  legalName: "Lagos Logistics Ltd", dba: "Lagos Logistics", ein: "84-2917716", businessType: "Multi-member LLC",
+  formationState: "DE", formationDate: "2019-03-11", industry: "Freight & logistics", website: "lagoslogistics.com",
+  monthlyVolume: "$50,000 – $250,000",
+  bizAddressLine1: "220 West 34th Street", bizAddressLine2: "Suite 12", bizCity: "New York", bizState: "NY",
+  bizPostalCode: "10001", bizCountry: "United States",
+  ownerName: "Tunde Ola", ownerTitle: "Managing Member", ownerDob: "1986-11-02", ownerSsn: "387-52-1140", ownerOwnership: 100,
+};
 
 const MEMBERS: Member[] = [
-  { name: "Maya Personal", email: "demo.personal@veyra.dev", accountType: "personal" },
-  { name: "Tunde Ops", email: "demo.business@veyra.dev", accountType: "business", business: "Lagos Logistics Ltd" },
+  { name: "Maya Bennett", email: "demo.personal@veyra.dev", accountType: "personal", profile: PERSONAL_PROFILE },
+  { name: "Tunde Ola", email: "demo.business@veyra.dev", accountType: "business", business: "Lagos Logistics Ltd", profile: BUSINESS_PROFILE },
 ];
 
 export type DemoAccount = {
@@ -111,7 +146,7 @@ export async function seedDemoAccounts(opts: {
     if (token) {
       log(`· ${member.email} already exists`);
     } else {
-      const reg = await call("POST", "/api/auth/register", undefined, { ...member, password: DEMO_PASSWORD });
+      const reg = await call("POST", "/api/auth/register", undefined, { ...member, password: DEMO_PASSWORD, profile: member.profile });
       if (reg.status !== 201) {
         log(`! ${member.email}: ${reg.json.error ?? `HTTP ${reg.status}`}`);
         continue;

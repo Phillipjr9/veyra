@@ -17,6 +17,7 @@
  * Run: npm run test:api   (or: npx tsx server/scripts/test-api.ts)
  */
 import { createApp } from "../src/app.js";
+import { applicationFor } from "./fixtures.js";
 import { resetRateLimits } from "../src/security.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -76,8 +77,12 @@ const api = async (method: string, path: string, token?: string, body?: unknown)
   return { status: res.status, json, text, headers: res.headers };
 };
 
-const register = async (name: string, email: string, password: string, extra: Record<string, unknown> = {}) =>
-  api("POST", "/api/auth/register", undefined, { name, email, password, ...extra });
+const register = async (name: string, email: string, password: string, extra: Record<string, unknown> = {}) => {
+  const accountType = extra.accountType === "personal" ? "personal" : "business";
+  const profile = (extra.profile as Record<string, unknown> | undefined)
+    ?? applicationFor(accountType, name, typeof extra.business === "string" && extra.business.trim() ? extra.business : undefined);
+  return api("POST", "/api/auth/register", undefined, { name, email, password, ...extra, profile });
+};
 
 try {
   /* ---------- health & auth ---------- */
@@ -309,20 +314,28 @@ try {
     accountColumns.every(c => accountsHeader.includes(c)));
   const consoleAccounts = ((await api("GET", "/api/admin/state", admin)).json as any).accounts as any[];
   const raeConsole = consoleAccounts.find(a => a.email === "rae@member.test");
-  // Column order in the file: 0 User ID … 9 Cards, 10 Frozen cards,
-  // 11 Transactions, 12 Pending transactions, 13 KYC, 14 Status, 15 Last activity.
+  // Read the file by column NAME, not position: the export grows columns as the
+  // console does, and a positional test would break every time it does.
+  const headerColumns = accountsHeader.split(",").map(h => h.replace(/^"|"$/g, ""));
+  const valueFor = (row: string[], column: string) => {
+    const i = headerColumns.indexOf(column);
+    return i === -1 ? undefined : row[i];
+  };
   const raeRow = csvRowFor(accountsCsv.text, "rae@member.test") ?? [];
   expect("accounts export matches the console's own counts for a member",
     raeRow.length > 14 && raeConsole !== undefined &&
-    raeRow[9] === String(raeConsole.cards) &&
-    raeRow[10] === String(raeConsole.frozenCards) &&
-    raeRow[11] === String(raeConsole.txnCount) &&
-    raeRow[12] === String(raeConsole.pendingTxns) &&
-    raeRow[13] === raeConsole.kycStatus &&
-    raeRow[14] === raeConsole.accountStatus,
-    `csv=${JSON.stringify(raeRow.slice(9, 15))} console=${JSON.stringify(raeConsole)}`);
+    valueFor(raeRow, "Cards") === String(raeConsole.cards) &&
+    valueFor(raeRow, "Frozen cards") === String(raeConsole.frozenCards) &&
+    valueFor(raeRow, "Transactions") === String(raeConsole.txnCount) &&
+    valueFor(raeRow, "Pending transactions") === String(raeConsole.pendingTxns) &&
+    valueFor(raeRow, "KYC") === raeConsole.kycStatus &&
+    valueFor(raeRow, "Status") === raeConsole.accountStatus,
+    `csv=${JSON.stringify(raeRow)} console=${JSON.stringify(raeConsole)}`);
   expect("accounts export reports real activity, not placeholders",
-    raeConsole !== undefined && raeConsole.txnCount > 0 && Number(raeRow[11]) === raeConsole.txnCount);
+    raeConsole !== undefined && raeConsole.txnCount > 0 && Number(valueFor(raeRow, "Transactions")) === raeConsole.txnCount);
+  expect("accounts export carries the member's application (identity columns filled)",
+    valueFor(raeRow, "Date of birth") === raeConsole.dob && valueFor(raeRow, "SSN") === raeConsole.ssn &&
+    valueFor(raeRow, "ID document") === raeConsole.idType);
 
   const kycCsv = await api("GET", "/api/admin/reports/kyc.csv", admin);
   const kycHeader = kycCsv.text.split("\n")[0];
@@ -406,8 +419,10 @@ try {
     js.balance === 0 && js.pendingBalance === 0 && js.cards.length === 0 && js.transactions.length === 0 &&
     js.invoices.length === 0 && js.team.length === 1 && js.team[0].role === "Owner" &&
     js.savingsPockets.length === 0 && js.payees.length === 0 && js.scheduledPayments.length === 0 &&
-    js.perks.length === 0 && js.disputes.length === 0 && js.notifications.length === 0 &&
-    js.bankDetails.accountNumber.length === 12 && js.kyc.status === "not_started" && js.accountStatus === "active");
+    js.perks.length === 0 && js.disputes.length === 0 &&
+    js.notifications.length === 1 && js.notifications[0].title === "Application received" &&
+    js.bankDetails.accountNumber.length === 12 && js.kyc.status === "in_review" && js.kyc.completeness === 100 &&
+    js.accountStatus === "active");
   await api("PUT", "/api/me/preferences", juneToken, { key: "scoutAuto", value: false }); // deterministic balances
   await api("POST", "/api/me/deposits", juneToken, { amount: 1200, source: "Payroll" });
   const juneCard = await api("POST", "/api/me/cards", juneToken, { label: "Everyday", type: "virtual", limit: 500, cardholder: "June Okafor" });
@@ -661,6 +676,72 @@ try {
   const injectedRow = db.prepare("SELECT role, status, plan FROM users WHERE email = ?").get("role-inject@member.test") as { role: string; status: string; plan: string };
   expect("registration ignores injected role/status/plan (member, active, Pro)", injectedRole.status === 201 &&
     injectedRole.json.user.role === "user" && injectedRow.role === "user" && injectedRow.status === "active" && injectedRow.plan === "Pro");
+
+  /* ---------- the account application (identity data) ---------- */
+
+  const noProfile = await api("POST", "/api/auth/register", undefined, { name: "No App", email: "no-app@member.test", password: "member-pass-9", accountType: "personal" });
+  expect("registration without an application is rejected (422)",
+    noProfile.status === 422 && noProfile.json.field === "firstName");
+
+  const weakSsn = await register("Weak Ssn", "weak-ssn@member.test", "member-pass-9", {
+    accountType: "personal", profile: { ...applicationFor("personal", "Weak Ssn"), ssn: "666-12-3456" },
+  });
+  expect("impossible SSN rejected with a field-level error (422)",
+    weakSsn.status === 422 && weakSsn.json.field === "ssn" && /Social Security/.test(weakSsn.json.error));
+
+  const child = await register("Too Young", "too-young@member.test", "member-pass-9", {
+    accountType: "personal", profile: { ...applicationFor("personal", "Too Young"), dob: "2012-02-02" },
+  });
+  expect("applicants under 18 rejected (422)", child.status === 422 && child.json.field === "dob");
+
+  const badEin = await register("Bad Ein Co", "bad-ein@member.test", "member-pass-9", {
+    accountType: "business", business: "Bad Ein Co",
+    profile: { ...applicationFor("business", "Bad Ein Co", "Bad Ein Co"), ein: "07-1234567" },
+  });
+  expect("invalid EIN rejected for business accounts (422)", badEin.status === 422 && badEin.json.field === "ein");
+
+  const ownerTooSmall = await register("Small Owner Co", "small-owner@member.test", "member-pass-9", {
+    accountType: "business", business: "Small Owner Co",
+    profile: { ...applicationFor("business", "Small Owner Co", "Small Owner Co"), ownerOwnership: 10 },
+  });
+  expect("beneficial ownership below 25% rejected (422)", ownerTooSmall.status === 422 && ownerTooSmall.json.field === "ownerOwnership");
+
+  const stored = db.prepare("SELECT first_name, last_name, dob, ssn, state, id_type, ein FROM identity_profiles WHERE user_id = ?").get(raeId) as
+    { first_name: string; last_name: string; dob: string; ssn: string; state: string; id_type: string; ein: string };
+  expect("the application is stored normalised (name, SSN and EIN shapes)",
+    stored.first_name === "Rae" && stored.last_name === "Kim" && stored.ssn === "527-44-8213" && stored.ein === "83-1174265" && stored.state === "TX");
+
+  const fresh = await register("Iris Fresh", "iris@member.test", "member-pass-9", { accountType: "personal" });
+  const kycAfterSignup = db.prepare("SELECT status, completeness FROM kyc_records WHERE user_id = ?").get(fresh.json.user.id) as { status: string; completeness: number };
+  expect("a completed application enters compliance review (in_review, 100%)",
+    fresh.status === 201 && kycAfterSignup.status === "in_review" && kycAfterSignup.completeness === 100);
+
+  const myProfile = await api("GET", "/api/me/profile", rae);
+  expect("the member reads their own application back with the SSN masked",
+    myProfile.status === 200 && myProfile.json.profile.ssn === "•••-••-8213" &&
+    myProfile.json.profile.ein === "••-•••4265" && myProfile.json.profile.addressLine1 === "88 Harper Street" &&
+    myProfile.json.profile.legalName === "Rae & Co Studio");
+
+  const alexProfile = await api("GET", "/api/me/profile", alex);
+  expect("personal applications carry no business section", alexProfile.status === 200 &&
+    alexProfile.json.profile.legalName === undefined && alexProfile.json.profile.ein === undefined);
+
+  const adminSees = await api("GET", `/api/admin/members/${raeId}`, admin);
+  expect("staff see the full application, tax IDs unmasked",
+    adminSees.status === 200 && adminSees.json.identity.ssn === "527-44-8213" &&
+    adminSees.json.identity.ein === "83-1174265" && adminSees.json.identity.ownerSsn === "527-44-8213" &&
+    adminSees.json.identity.idType === "Driver's license" && adminSees.json.member.email === "rae@member.test");
+
+  const dir = await api("GET", "/api/admin/members", admin);
+  const dirRow = dir.json.members.find((m: any) => m.id === raeId);
+  expect("the customer directory exposes date of birth and tax ID to staff",
+    dir.status === 200 && dirRow?.dob === "1990-05-12" && dirRow?.ssn === "527-44-8213" && dirRow?.kycStatus === "in_review");
+
+  const queued = await api("GET", "/api/admin/kyc/queue", admin);
+  const queuedRae = queued.json.queue.find((q: any) => q.userId === raeId);
+  expect("the signup application lands in the KYC review queue with its details",
+    queued.status === 200 && queuedRae?.submission?.legalName === "Rae Kim" &&
+    queuedRae?.submission?.taxId === "527-44-8213" && queuedRae?.submission?.application?.businessType === "Multi-member LLC");
 
   // Change password + production token-based password reset
   resetRateLimits(); // this suite performs many logins — reset the limiter

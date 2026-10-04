@@ -21,6 +21,7 @@ import {
   PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS, type Permission, type StaffRole,
 } from "./rbac.js";
 import { logAdminAction } from "./audit.js";
+import { validateApplication, rowToApplication, memberIdentity, submissionFor, PROFILE_COLUMNS } from "./identity.js";
 import { seed } from "./seed.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 
@@ -233,7 +234,7 @@ export function createApp(dbPath?: string) {
   }));
 
   app.post("/api/auth/register", wrap((req, res) => {
-    const { name, email, password, accountType, business, phone, plan } = req.body ?? {};
+    const { name, email, password, accountType, business, phone, plan, profile } = req.body ?? {};
     if (typeof name !== "string" || !name.trim()) return void res.status(400).json({ error: "Name is required." });
     if (typeof email !== "string" || !/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "A valid email is required." });
     if (typeof password !== "string" || password.length < 8) return void res.status(400).json({ error: "Use at least 8 characters for your password." });
@@ -246,20 +247,41 @@ export function createApp(dbPath?: string) {
     if (type === "business" && (typeof business !== "string" || !business.trim())) {
       return void res.status(400).json({ error: "Business name is required for a business account." });
     }
+    // Opening an account requires a complete application: legal identity, tax
+    // ID, address and government ID (plus the business and its beneficial
+    // owner for business accounts). The account is never created without it.
+    const application = validateApplication(type, {
+      ...(profile && typeof profile === "object" ? profile : {}),
+      email: (typeof profile?.email === "string" && profile.email.trim()) ? profile.email : email,
+      phone: (typeof profile?.phone === "string" && profile.phone.trim()) ? profile.phone : phone,
+    });
+    if (!application.ok) return void res.status(422).json({ error: application.error, field: application.field });
+    const values = application.value;
     const id = rid("u");
     const accountNumber = Array.from({ length: 12 }, () => Math.floor(Math.random() * 10)).join("");
     inTransaction(db, () => {
       db.prepare(
         `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
          VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?, 'active', ?)`,
-      ).run(id, name.trim(), email, typeof phone === "string" ? phone.trim() : "", typeof business === "string" ? business : "", type,
+      ).run(id, name.trim(), email, values.phone, typeof business === "string" ? business : "", type,
         plan === "Starter" ? "Starter" : "Pro", hashPassword(password), now());
+      // The application itself. One row, one shape, normalised by identity.ts.
+      const columns = PROFILE_COLUMNS.map(([, column]) => column);
+      db.prepare(
+        `INSERT INTO identity_profiles (user_id, ${columns.join(", ")}, submitted_at)
+         VALUES (?, ${columns.map(() => "?").join(", ")}, ?)`,
+      ).run(id, ...PROFILE_COLUMNS.map(([key]) => values[key]), now());
       // Production start: a real, empty account — $0 balance, no cards, no history.
       db.prepare(
         `INSERT INTO accounts (user_id, account_number, routing_number, bank_name, balance_cents, pending_cents, rewards_cents, created_at, updated_at)
          VALUES (?, ?, '091408735', 'Northfield Bank', 0, 0, 0, ?, ?)`,
       ).run(id, accountNumber, now(), now());
-      db.prepare("INSERT INTO kyc_records (user_id, status, completeness, updated_at) VALUES (?, 'not_started', 0, ?)").run(id, now());
+      // The application is complete and goes straight into compliance's queue
+      // for review — nothing to chase, nothing missing.
+      db.prepare(
+        `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at)
+         VALUES (?, 'in_review', 100, ?, ?, ?, ?)`,
+      ).run(id, values.idType, values.country, JSON.stringify(submissionFor(type, values, now())), now());
       db.prepare("INSERT INTO preferences (user_id, two_factor, login_alerts, scout_auto, weekly_digest) VALUES (?, 1, 1, 1, 0)").run(id);
       db.prepare(
         `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status) VALUES (?, ?, ?, ?, 'Owner', 0, 0, 'active')`,
@@ -271,6 +293,8 @@ export function createApp(dbPath?: string) {
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
+    notify(id, "security", "Application received",
+      `Thanks — we have your details on file and they're with our compliance team now. Most reviews finish within one business day, and we'll email you the moment yours is done.`);
     res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
   }));
 
@@ -514,6 +538,20 @@ export function createApp(dbPath?: string) {
   app.get("/api/me/kyc", requireAuth, wrap((req, res) => {
     const row = db.prepare("SELECT status, completeness, document_type, country, requested_by, requested_at, request_reason, submission_json, updated_at FROM kyc_records WHERE user_id = ?").get(req.user!.id);
     res.json({ kyc: row ?? { status: "not_started", completeness: 0 } });
+  }));
+
+  /**
+   * The member's own application, read back to them. Tax IDs are masked here
+   * (their full value exists in exactly two places: the database and the staff
+   * console) and the shape matches what they filled in at sign-up.
+   */
+  app.get("/api/me/profile", requireAuth, wrap((req, res) => {
+    const row = db.prepare("SELECT * FROM identity_profiles WHERE user_id = ?").get(req.user!.id) as Record<string, unknown> | undefined;
+    if (!row) return void res.json({ profile: null, submittedAt: null });
+    res.json({
+      profile: memberIdentity(req.user!.accountType, rowToApplication(row)),
+      submittedAt: row.submitted_at ?? null,
+    });
   }));
 
   app.post("/api/me/kyc/submit", requireAuth, wrap((req, res) => {
@@ -1091,15 +1129,17 @@ export function createApp(dbPath?: string) {
     const q = String(req.query.q ?? "").toLowerCase();
     const rows = db.prepare(
       `SELECT u.id, u.name, u.email, u.phone, u.business, u.account_type, u.plan, u.status,
-              a.balance_cents, a.pending_cents, k.status AS kyc_status
+              a.balance_cents, a.pending_cents, k.status AS kyc_status,
+              p.dob, p.ssn, p.city, p.state, p.id_type, p.submitted_at
        FROM users u
        LEFT JOIN accounts a ON a.user_id = u.id
        LEFT JOIN kyc_records k ON k.user_id = u.id
+       LEFT JOIN identity_profiles p ON p.user_id = u.id
        WHERE u.role = 'user'
        ORDER BY u.created_at DESC`,
     ).all() as Array<Record<string, unknown>>;
     const filtered = q
-      ? rows.filter(r => `${r.name} ${r.email} ${r.business}`.toLowerCase().includes(q))
+      ? rows.filter(r => `${r.name} ${r.email} ${r.business} ${r.ssn ?? ""}`.toLowerCase().includes(q))
       : rows;
     res.json({
       members: filtered.map(r => ({
@@ -1108,6 +1148,11 @@ export function createApp(dbPath?: string) {
         balance: money((r.balance_cents as number) ?? 0),
         pending: money((r.pending_cents as number) ?? 0),
         kycStatus: r.kyc_status ?? "not_started",
+        // Enough for the directory table; the full application is one request
+        // away at /api/admin/members/:id.
+        dob: r.dob ?? null, ssn: r.ssn ?? null,
+        city: r.city ?? null, state: r.state ?? null, idType: r.id_type ?? null,
+        profileSubmittedAt: r.submitted_at ?? null,
       })),
     });
   }));
@@ -1118,6 +1163,7 @@ export function createApp(dbPath?: string) {
     const account = db.prepare("SELECT * FROM accounts WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
     const txns = db.prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").all(String(req.params.id));
     const kyc = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(String(req.params.id));
+    const identityRow = db.prepare("SELECT * FROM identity_profiles WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
     res.json({
       member: {
         id: user.id, name: user.name, email: user.email, phone: user.phone, business: user.business,
@@ -1125,6 +1171,11 @@ export function createApp(dbPath?: string) {
         balance: money((account?.balance_cents as number) ?? 0),
         accountNumber: account?.account_number, routingNumber: account?.routing_number,
       },
+      // The full application, unmasked: staff reviewing an account see the
+      // Social Security and EIN numbers exactly as the member entered them.
+      identity: identityRow
+        ? { ...rowToApplication(identityRow), submittedAt: identityRow.submitted_at ?? null }
+        : null,
       transactions: txns.map(txnOut),
       kyc,
     });
@@ -1470,14 +1521,30 @@ export function createApp(dbPath?: string) {
     const stamp = new Date().toISOString().slice(0, 10);
     let rows: Array<Array<string | number>>;
     if (kind === "customers") {
-      rows = [["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Status", "Role"],
-        ...db.prepare("SELECT id, name, email, phone, business, account_type, plan, status, role FROM users ORDER BY created_at").all()
-          .map((r: any) => [r.id, r.name, r.email, r.phone, r.business, r.account_type, r.plan, r.status, r.role])];
+      // Every column the directory shows, including the identity the member
+      // applied with: this is the register compliance works from.
+      rows = [["ID", "Name", "Email", "Phone", "Business", "Type", "Plan", "Status", "Role",
+        "Date of birth", "SSN", "Legal name (business)", "EIN", "Address", "City", "State", "ZIP", "Country",
+        "ID document", "ID number", "ID expiry", "Applied at"],
+        ...db.prepare(`SELECT u.id, u.name, u.email, u.phone, u.business, u.account_type, u.plan, u.status, u.role,
+                              p.dob, p.ssn, p.legal_name, p.ein, p.address_line1, p.city, p.state, p.postal_code,
+                              p.country, p.id_type, p.id_number, p.id_expiry, p.submitted_at
+                       FROM users u LEFT JOIN identity_profiles p ON p.user_id = u.id
+                       ORDER BY u.created_at`).all()
+          .map((r: any) => [r.id, r.name, r.email, r.phone, r.business, r.account_type, r.plan, r.status, r.role,
+            r.dob ?? "", r.ssn ?? "", r.legal_name ?? "", r.ein ?? "", r.address_line1 ?? "", r.city ?? "",
+            r.state ?? "", r.postal_code ?? "", r.country ?? "", r.id_type ?? "", r.id_number ?? "", r.id_expiry ?? "",
+            r.submitted_at ? new Date(r.submitted_at).toISOString() : ""])];
     } else if (kind === "accounts") {
       // Columns mirror the Accounts console: the same counts (cards, frozen
       // cards, transactions incl. how many are pending), KYC standing, status
       // and last activity, computed from the same source of truth.
-      rows = [["User ID", "Member", "Email", "Business", "Type", "Account number", "Balance", "Pending", "Rewards", "Cards", "Frozen cards", "Transactions", "Pending transactions", "KYC", "Status", "Last activity"],
+      // The accounts export carries the account application too — a compliance
+      // officer pulling the register needs the identity behind each account in
+      // the same file.
+      rows = [["User ID", "Member", "Email", "Business", "Type", "Date of birth", "SSN", "Legal name (business)", "EIN",
+        "Address", "City", "State", "ZIP", "Country", "ID document", "ID number", "ID expiry",
+        "Account number", "Balance", "Pending", "Rewards", "Cards", "Frozen cards", "Transactions", "Pending transactions", "KYC", "Status", "Last activity"],
         ...db.prepare(`SELECT a.user_id, u.name, u.email, u.business, u.account_type, u.status, a.account_number,
                               a.balance_cents, a.pending_cents, a.rewards_cents,
                               (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
@@ -1485,9 +1552,16 @@ export function createApp(dbPath?: string) {
                               (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
                               (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id AND t.status = 'pending') AS pending_count,
                               (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status,
-                              (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity
-                       FROM accounts a JOIN users u ON u.id = a.user_id ORDER BY a.balance_cents DESC`).all()
-          .map((r: any) => [r.user_id, r.name, r.email, r.business ?? "", r.account_type, r.account_number,
+                              (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity,
+                              p.dob, p.ssn, p.legal_name, p.ein, p.address_line1, p.city, p.state, p.postal_code,
+                              p.country, p.id_type, p.id_number, p.id_expiry
+                       FROM accounts a JOIN users u ON u.id = a.user_id
+                       LEFT JOIN identity_profiles p ON p.user_id = u.id
+                       ORDER BY a.balance_cents DESC`).all()
+          .map((r: any) => [r.user_id, r.name, r.email, r.business ?? "", r.account_type,
+            r.dob ?? "", r.ssn ?? "", r.legal_name ?? "", r.ein ?? "",
+            r.address_line1 ?? "", r.city ?? "", r.state ?? "", r.postal_code ?? "", r.country ?? "",
+            r.id_type ?? "", r.id_number ?? "", r.id_expiry ?? "", r.account_number,
             centsToDecimal(r.balance_cents), centsToDecimal(r.pending_cents), centsToDecimal(r.rewards_cents),
             r.card_count, r.frozen_count, r.txn_count, r.pending_count, r.kyc_status ?? "not_started", r.status,
             r.last_activity ? new Date(r.last_activity).toISOString() : "Never"])];
@@ -1573,8 +1647,10 @@ export function createApp(dbPath?: string) {
              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id) AS txn_count,
              (SELECT COUNT(*) FROM transactions t WHERE t.user_id = u.id AND t.status = 'pending') AS pending_txn_count,
              (SELECT MAX(created_at) FROM transactions t WHERE t.user_id = u.id) AS last_activity,
-             (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status
+             (SELECT status FROM kyc_records k WHERE k.user_id = u.id) AS kyc_status,
+             p.dob, p.ssn, p.city, p.state, p.id_type, p.legal_name, p.owner_name, p.submitted_at
       FROM users u LEFT JOIN accounts a ON a.user_id = u.id
+      LEFT JOIN identity_profiles p ON p.user_id = u.id
       WHERE u.role = 'user' OR u.role IS NULL
       ORDER BY u.created_at
     `).all() as Array<Record<string, unknown>>).map(a => ({
@@ -1591,6 +1667,16 @@ export function createApp(dbPath?: string) {
       kycStatus: (a.kyc_status as string) ?? "not_started",
       accountStatus: a.status === "restricted" ? "restricted" : "active",
       lastActivity: (a.last_activity as number) ?? 0,
+      // The application, visible to staff in the console: date of birth, tax
+      // ID, address and the ID document each member applied with.
+      dob: (a.dob as string) ?? null,
+      ssn: (a.ssn as string) ?? null,
+      city: (a.city as string) ?? null,
+      state: (a.state as string) ?? null,
+      idType: (a.id_type as string) ?? null,
+      legalName: (a.legal_name as string) ?? null,
+      ownerName: (a.owner_name as string) ?? null,
+      applicationAt: (a.submitted_at as number) ?? null,
     }));
 
     const transactions = (db.prepare(`

@@ -34,7 +34,11 @@ type AuthValue = {
   /** Forgets this browser's session entirely (every token store) and returns to the form. */
   resetSession: () => void;
   login: (email: string, password: string) => Promise<User>;
-  signup: (input: { name: string; phone?: string; business?: string; accountType: User["accountType"]; email: string; password: string; plan?: User["plan"] }) => Promise<void>;
+  /** `profile` carries the full account application (see server/src/identity.ts). */
+  signup: (input: {
+    name: string; phone?: string; business?: string; accountType: User["accountType"];
+    email: string; password: string; plan?: User["plan"]; profile?: Record<string, unknown>;
+  }) => Promise<void>;
   logout: () => void;
   updateUser: (patch: Partial<Pick<User, "name" | "phone" | "business" | "accountType" | "email" | "plan" | "role" | "avatarUrl">>) => void;
   changePassword: (current: string, next: string) => Promise<void>;
@@ -108,11 +112,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return me;
   }, []);
 
-  const signup = useCallback<AuthValue["signup"]>(async ({ name, phone = "", business = "", accountType, email, password, plan = "Pro" }) => {
+  const signup = useCallback<AuthValue["signup"]>(async ({ name, phone = "", business = "", accountType, email, password, plan = "Pro", profile }) => {
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
       name: name.trim(), phone: phone.trim(), business: accountType === "business" ? business.trim() : "",
-      accountType, email: email.trim(), password, plan,
+      accountType, email: email.trim(), password, plan, profile,
     });
     setToken(token);
     setUser(me);
