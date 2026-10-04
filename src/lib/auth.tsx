@@ -43,8 +43,17 @@ const AuthCtx = createContext<AuthValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [previewAccount, setPreviewAccount] = useState<PreviewAccountSnapshot | null>(null);
+  // Keep the active credential in React state as well as the API module. Vite
+  // can hot-reload that module while preserving this provider and user state;
+  // without this bridge the UI could still look authenticated while the next
+  // protected request was sent without its bearer credential.
+  const [activeToken, setActiveToken] = useState<string | null>(() => getToken());
   const [ready, setReady] = useState(false);
   const [offline, setOffline] = useState(false);
+
+  useEffect(() => {
+    if (activeToken && getToken() !== activeToken) setToken(activeToken);
+  }, [activeToken]);
 
   useEffect(() => {
     (async () => {
@@ -62,7 +71,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const { user: me } = await apiGet<{ user: User }>("/api/auth/me");
           if (getToken() === restoringToken) setUser(me);
         } catch {
-          if (getToken() === restoringToken) clearToken(); // revoked or expired — sign in again
+          if (getToken() === restoringToken) {
+            clearToken(); // revoked or expired — sign in again
+            setActiveToken(null);
+          }
         }
       }
       setReady(true);
@@ -73,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
     setToken(token);
+    setActiveToken(token);
     setPreviewAccount(null);
     setUser(me);
     return me;
@@ -81,6 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const previewLogin = useCallback<AuthValue["previewLogin"]>(async persona => {
     const { token, user: me, account } = await apiPost<{ token: string; user: User; account: unknown }>("/api/auth/preview-access", { persona });
     setToken(token);
+    setActiveToken(token);
     // This data is an authoritative snapshot supplied by the guarded server
     // endpoint, not a client-side demo. It avoids a second auth round trip
     // before the preview dashboard can render.
@@ -96,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accountType, email: email.trim(), password, plan,
     });
     setToken(token);
+    setActiveToken(token);
     setPreviewAccount(null);
     setUser(me);
   }, []);
@@ -104,6 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Revoke the server session (best-effort — local sign-out proceeds regardless).
     apiPost("/api/auth/logout").catch(() => undefined);
     clearToken();
+    setActiveToken(null);
     setPreviewAccount(null);
     setUser(null);
   }, []);

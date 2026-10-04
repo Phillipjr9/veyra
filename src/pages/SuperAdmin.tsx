@@ -210,7 +210,22 @@ export function SuperAdminPage() {
   const [adminLoadError, setAdminLoadError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    apiGet<AdminServerState>("/api/admin/state")
+    const loadConsole = async () => {
+      try {
+        return await apiGet<AdminServerState>("/api/admin/state");
+      } catch (firstError) {
+        // During a hot update, the API module can be recreated a fraction
+        // before AuthProvider restores its in-memory token. Retry once after
+        // that bridge has run instead of presenting a valid operator with a
+        // misleading authentication error.
+        if (firstError instanceof Error && /authentication required/i.test(firstError.message)) {
+          await new Promise(resolve => window.setTimeout(resolve, 80));
+          return apiGet<AdminServerState>("/api/admin/state");
+        }
+        throw firstError;
+      }
+    };
+    loadConsole()
       .then(data => {
         if (cancelled) return;
         setAdminData(data);
