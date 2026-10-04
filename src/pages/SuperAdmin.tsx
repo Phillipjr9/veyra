@@ -693,7 +693,12 @@ export function SuperAdminPage() {
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button type="button" className="ghost-btn sm" onClick={refresh}><RefreshCw size={14} /> Retry</button>
-              {/authentication required|invalid or expired token/i.test(adminLoadError) && <button type="button" className="solid-btn sm" onClick={() => { logout(); navigate("/login", { replace: true }); }}>Sign in again</button>}
+              {/authentication required|invalid or expired token/i.test(adminLoadError) && <button type="button" className="solid-btn sm" onClick={() => {
+                // A hard navigation clears any HMR-preserved React state as
+                // well as the local credential before showing the sign-in UI.
+                logout();
+                window.location.assign(`${window.location.pathname}#/login`);
+              }}>Sign in again</button>}
             </div>
           </div>
         </div>
