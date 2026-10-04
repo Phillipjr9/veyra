@@ -43,15 +43,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     (async () => {
+      // Keep the token that initiated restoration. A user can choose a preview
+      // role while this request is still in flight; an old rejected request
+      // must never erase that newly-issued session token.
+      const restoringToken = getToken();
       const online = await probeApi();
       setOffline(!online);
-      if (online && getToken()) {
-        // Restore the session from the server via the stored bearer token.
+      if (online && restoringToken) {
         try {
           const { user: me } = await apiGet<{ user: User }>("/api/auth/me");
-          setUser(me);
+          if (getToken() === restoringToken) setUser(me);
         } catch {
-          clearToken(); // revoked or expired — sign in again
+          if (getToken() === restoringToken) clearToken(); // revoked or expired — sign in again
         }
       }
       setReady(true);
