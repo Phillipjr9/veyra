@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -23,7 +23,7 @@ import {
   suggestPasskeyLabel, passkeyErrorMessage, isPasskeyCancellation, type Passkey,
 } from "../../lib/passkey";
 import { useAuth } from "../../lib/auth";
-import { fetchHoldings, tradeHolding, quoteAge, type Holding, type HoldingsResponse } from "../../lib/holdings";
+import { tradeHolding, quoteAge, useHoldings, type Holding } from "../../lib/holdings";
 import { BackButton } from "../../components/BackButton";
 import { lockScroll } from "../../lib/scrollLock";
 import {
@@ -947,8 +947,6 @@ export function Overview() {
   const first = user?.name.split(" ")[0] ?? "there";
   const personal = user?.accountType === "personal";
   const bank = account.bankDetails;
-  const activeCards = account.cards.filter(c => !c.frozen).length;
-  const totalLimit = account.cards.reduce((s, c) => s + c.limit, 0);
   const primary = account.cards[0];
   const upcoming = account.invoices.filter(i => i.status !== "paid").sort((a, b) => a.due - b.due).slice(0, 3);
   const totalIn = weeks.reduce((s, w) => s + w.inflow, 0);
@@ -1007,16 +1005,7 @@ export function Overview() {
           </div>
         </motion.div>
 
-        <motion.div className="stat stat-dark" {...rise(1)}>
-          {rewardsFlash && <span key={rewardsFlash.key} className={`stat-flash ${rewardsFlash.dir}`} />}
-          <div className="stat-top"><span>Rewards balance</span><span className="chip chip-glass">2% back</span></div>
-          <AnimatedMoney value={account.rewards} className="stat-value" cents fromZero />
-          <p className="stat-note">Unlimited cash back on every purchase.</p>
-          <div className="burst-anchor">
-            <button type="button" className="pill-btn" onClick={onRedeem} disabled={account.rewards < 0.01}><Sparkles size={13} /> Redeem to checking</button>
-            <Burst fire={burst} />
-          </div>
-        </motion.div>
+        <CryptoStat index={1} />
 
         <motion.div className="stat stat-scout" {...rise(2)}>
           <div className="stat-top"><span>Scout savings</span><span className="chip chip-violet">AI</span></div>
@@ -1025,11 +1014,15 @@ export function Overview() {
           <Link to="/app/scout" className="stat-link">View report <ArrowRight size={13} /></Link>
         </motion.div>
 
-        <motion.div className="stat" {...rise(3)}>
-          <div className="stat-top"><span>Active cards</span><span className="chip">{account.cards.length} issued</span></div>
-          <AnimatedNumber value={activeCards} className="stat-value" />
-          <p className="stat-note">{account.cards.length - activeCards} frozen · {money(totalLimit, false)} in limits</p>
-          <Link to="/app/cards" className="stat-link">Manage cards <ArrowRight size={13} /></Link>
+        <motion.div className="stat stat-dark" {...rise(3)}>
+          {rewardsFlash && <span key={rewardsFlash.key} className={`stat-flash ${rewardsFlash.dir}`} />}
+          <div className="stat-top"><span>Rewards balance</span><span className="chip chip-glass">2% back</span></div>
+          <AnimatedMoney value={account.rewards} className="stat-value" cents fromZero />
+          <p className="stat-note">Unlimited cash back on every purchase.</p>
+          <div className="burst-anchor">
+            <button type="button" className="pill-btn" onClick={onRedeem} disabled={account.rewards < 0.01}><Sparkles size={13} /> Redeem to checking</button>
+            <Burst fire={burst} />
+          </div>
         </motion.div>
       </div>
 
@@ -2269,6 +2262,69 @@ export function AccountsPage() {
   );
 }
 
+/**
+ * Overview tile for the digital asset balance.
+ *
+ * Sits in the slot the rewards tile used to occupy. The 3D coin is a real
+ * rendered asset rather than a flat glyph, so the tile reads as a distinct
+ * class of money at a glance — which is the point, because the number under
+ * it behaves nothing like the deposit balance two tiles over.
+ *
+ * The discipline from the holdings panel carries over verbatim: a total that
+ * is missing a price is never shown as a confident figure. $0.00 is a number
+ * people believe, and believing it here would mean believing their crypto
+ * vanished.
+ */
+function CryptoStat({ index }: { index: number }) {
+  const { data, loading } = useHoldings();
+  const reduce = useReducedMotion();
+
+  const held = data?.holdings.filter(h => h.units !== "0") ?? [];
+  const unpricedHeld = held.filter(h => h.valueUsd === null).length;
+  const everythingDark = held.length > 0 && unpricedHeld === held.length;
+
+  const note = loading ? "Loading…"
+    : !data ? "Balance unavailable right now."
+    : everythingDark ? "No current quote — value hidden rather than guessed."
+    : held.length === 0 ? "Buy BTC, ETH, SOL or USDC from checking."
+    : unpricedHeld > 0 ? `${held.length} held · ${unpricedHeld} without a quote, so this is partial.`
+    : `${held.length} asset${held.length === 1 ? "" : "s"} held · not FDIC insured`;
+
+  return (
+    <motion.div className="stat stat-crypto" {...rise(index)}>
+      <div className="stat-top">
+        <span>Digital assets</span>
+        {data && !data.tradingEnabled
+          ? <span className="chip chip-glass">View only</span>
+          : <span className="chip chip-glass">{unpricedHeld > 0 ? "Partial" : "Live"}</span>}
+      </div>
+
+      <div className="crypto-stat-body">
+        {/* The wrapper owns the hover lift and the glow; Motion owns the img's
+            transform for the float. Separating them keeps CSS and the inline
+            style Motion writes from overwriting each other. */}
+        <span className="crypto-coin-wrap">
+          <span className="crypto-glow" aria-hidden="true" />
+          <motion.img
+            src="/images/icon-crypto-3d.webp" alt="" aria-hidden="true" className="crypto-coin"
+            width={128} height={128} loading="lazy" decoding="async"
+            animate={reduce ? undefined : { y: [0, -5, 0], rotate: [0, 3.5, 0] }}
+            transition={reduce ? undefined : { duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
+          />
+        </span>
+        {loading || !data
+          ? <strong className="stat-value crypto-muted">—</strong>
+          : everythingDark
+            ? <strong className="stat-value crypto-muted">Price unavailable</strong>
+            : <AnimatedMoney value={Number(data.totalUsd)} className="stat-value" cents fromZero />}
+      </div>
+
+      <p className="stat-note">{note}</p>
+      <Link to="/app/accounts" className="stat-link crypto-link">Manage assets <ArrowRight size={13} /></Link>
+    </motion.div>
+  );
+}
+
 /* ============================================================
    Digital assets
    ============================================================ */
@@ -2284,17 +2340,10 @@ export function AccountsPage() {
  */
 function HoldingsPanel() {
   const toast = useToast();
-  const [data, setData] = useState<HoldingsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, loading, reload } = useHoldings();
   const [trade, setTrade] = useState<{ holding: Holding; side: "buy" | "sell" } | null>(null);
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    try { setData(await fetchHoldings()); } catch { /* panel stays hidden rather than erroring the page */ }
-    finally { setLoading(false); }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -2310,7 +2359,7 @@ function HoldingsPanel() {
         title: `${result.side === "buy" ? "Bought" : "Sold"} ${result.quantity} ${result.asset}`,
         description: `${result.amountUsd} at ${result.priceUsd} per ${result.asset}.`,
       });
-      await load();
+      await reload();
     } catch (err) {
       toast({ tone: "error", title: "Trade didn't go through", description: err instanceof Error ? err.message : undefined });
     } finally { setBusy(false); }

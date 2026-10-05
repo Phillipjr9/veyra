@@ -7,6 +7,7 @@
  * formatted the display values; the client's job is to render them, not to do
  * arithmetic on them.
  */
+import { useCallback, useEffect, useState } from "react";
 import { apiGet, apiPost } from "./api";
 
 export type Holding = {
@@ -57,4 +58,30 @@ export const tradeHolding = (asset: string, side: "buy" | "sell", amount: string
 export function quoteAge(quotedAt: number | null): string | null {
   if (!quotedAt) return null;
   return `as of ${new Date(quotedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+/**
+ * Shared holdings state for any surface that needs it.
+ *
+ * A failed refresh keeps the last good snapshot rather than blanking the UI —
+ * the same reasoning as the server's price cache. `loading` is only true for
+ * the first load, so a background refresh never flashes a placeholder over
+ * numbers the member is already reading.
+ */
+export function useHoldings() {
+  const [data, setData] = useState<HoldingsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    try {
+      setData(await fetchHoldings());
+    } catch {
+      // Keep whatever was last known; the caller decides how to degrade.
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void reload(); }, [reload]);
+  return { data, loading, reload };
 }
