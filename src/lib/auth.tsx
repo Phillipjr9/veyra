@@ -22,6 +22,9 @@ export type User = {
   teamOwnerId?: string;
 };
 
+export type LoginChallenge = { twoFactorRequired: true; challengeId: string; expiresIn: number };
+export type LoginResult = User | LoginChallenge;
+
 type AuthValue = {
   user: User | null;
   ready: boolean;
@@ -39,7 +42,14 @@ type AuthValue = {
   dismissSessionNotice: () => void;
   /** Forgets this browser's session entirely (every token store) and returns to the form. */
   resetSession: () => void;
-  login: (email: string, password: string) => Promise<User>;
+  /**
+   * Password sign-in. Resolves to the signed-in user, or — when the account has
+   * an authenticator enrolled — to a LoginChallenge the form must complete
+   * with verifyLoginCode() before any session exists.
+   */
+  login: (email: string, password: string) => Promise<LoginResult>;
+  /** Second step of a password sign-in: an authenticator or recovery code. */
+  verifyLoginCode: (challengeId: string, code: string) => Promise<User>;
   /**
    * Federated sign-in (Google / Apple / Microsoft). Firebase proves identity;
    * the server decides whether that identity may open an existing account
@@ -134,7 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     dismissSessionNotice();
   }, [dismissSessionNotice]);
 
-  const login = useCallback(async (email: string, password: string): Promise<User> => {
+  const login = useCallback(async (email: string, password: string): Promise<LoginResult> => {
     // A leftover token must not ride along with a sign-in attempt: if the server
     // rejected the request, the automatic 401 handling would clear the session
     // and claim it "ended" — confusing when the real cause is a typed password.
@@ -143,7 +153,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // A fresh reCAPTCHA token per attempt — they are single-use and expire in
     // about two minutes, so one is never reused across submissions. Resolves
     // to {} when the gate is off or Google is unreachable; the server decides.
-    const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password, ...(await recaptchaField("login")) });
+    const result = await apiPost<{
+      token?: string; user?: User; twoFactorRequired?: true; challengeId?: string; expiresIn?: number;
+    }>("/api/auth/login", { email: email.trim(), password, ...(await recaptchaField("login")) });
+    if (result.twoFactorRequired && result.challengeId) {
+      // The password was right but no session exists yet: the form now asks
+      // for the authenticator code and finishes with verifyLoginCode().
+      return { twoFactorRequired: true, challengeId: result.challengeId, expiresIn: result.expiresIn ?? 300 };
+    }
+    if (!result.token || !result.user) throw new Error("The server did not complete sign-in. Try again.");
+    setToken(result.token);
+    setActiveToken(result.token);
+    setUser(result.user);
+    return result.user;
+  }, []);
+
+  const verifyLoginCode = useCallback(async (challengeId: string, code: string): Promise<User> => {
+    const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/login/verify", { challengeId, code });
     setToken(token);
     setActiveToken(token);
     setUser(me);
@@ -232,8 +258,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, verifyLoginCode, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, verifyLoginCode, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword],
 
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;

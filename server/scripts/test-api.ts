@@ -18,6 +18,7 @@
  */
 import { createApp } from "../src/app.js";
 import { applicationFor } from "./fixtures.js";
+import { decryptTotpSecret, encryptTotpSecret, generateRecoveryCodes, generateTotpSecret, hashRecoveryCode, normalizeRecoveryCode, totpCode, verifyTotp } from "../src/totp.js";
 import { resetRateLimits } from "../src/security.js";
 import { resetRecaptchaConfig } from "../src/recaptcha.js";
 import { resetFederatedConfig } from "../src/federated.js";
@@ -73,12 +74,13 @@ const server = await new Promise<{ port: number }>(resolve => {
 });
 const base = `http://127.0.0.1:${server.port}`;
 
-const api = async (method: string, path: string, token?: string, body?: unknown) => {
+const api = async (method: string, path: string, token?: string, body?: unknown, deviceId?: string) => {
   const res = await fetch(base + path, {
     method,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(deviceId ? { "X-Veyra-Device": deviceId } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -106,6 +108,23 @@ try {
   /* ---------- health & auth ---------- */
   const health = await api("GET", "/api/health");
   expect("health check", health.status === 200 && health.json.ok === true);
+
+  const totpAt = 1_700_000_000_000;
+  const knownSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+  const secret = generateTotpSecret();
+  const encryptedSecret = encryptTotpSecret(secret);
+  expect("TOTP uses the RFC 6238 six-digit code", totpCode(knownSecret, 59_000) === "287082");
+  expect("TOTP accepts clock-skew window and rejects malformed codes",
+    verifyTotp(secret, totpCode(secret, totpAt), totpAt) &&
+    verifyTotp(secret, totpCode(secret, totpAt - 30_000), totpAt) && !verifyTotp(secret, "abc123", totpAt));
+  expect("TOTP secrets encrypt at rest and round-trip", encryptedSecret !== secret && decryptTotpSecret(encryptedSecret) === secret);
+  const helperRecoveryCodes = generateRecoveryCodes();
+  expect("recovery codes are ten unique, formatted one-time secrets",
+    helperRecoveryCodes.length === 10 && new Set(helperRecoveryCodes).size === 10 && helperRecoveryCodes.every(code => /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}(?:-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}){2}$/.test(code)));
+  expect("recovery code normalization is case/spacing tolerant and stores only a hash",
+    normalizeRecoveryCode(` ${helperRecoveryCodes[0].toLowerCase().replaceAll("-", " ")} `) === helperRecoveryCodes[0].replaceAll("-", "") &&
+    hashRecoveryCode(helperRecoveryCodes[0]) === hashRecoveryCode(helperRecoveryCodes[0].toLowerCase().replaceAll("-", " ")) &&
+    hashRecoveryCode("invalid") === null);
 
   const bootCount = (db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n;
   expect("clean database contains only the bootstrap admin", bootCount === 1);
@@ -157,6 +176,158 @@ try {
   const rae = raeLogin.json.token, alex = alexLogin.json.token;
   const compliance = complianceLogin.json.token, support = supportLogin.json.token;
   expect("staff + member logins", rae && alex && compliance && support);
+
+  /* ---------- authenticator-backed two-step sign-in ---------- */
+  const initialSecurityState = await api("GET", "/api/me/state", rae);
+  expect("new accounts do not claim two-factor is enabled before enrollment",
+    initialSecurityState.status === 200 && initialSecurityState.json.account.preferences.twoFactor === false);
+  const initialAlertCount = (db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND type = 'security'").get(raeId) as { n: number }).n;
+  await api("PUT", "/api/me/preferences", rae, { key: "loginAlerts", value: false });
+  await api("POST", "/api/auth/login", undefined, { email: "rae@member.test", password: "member-pass-1" }, "device-rae-silent-alert-check-01");
+  const alertCountWhileOff = (db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND type = 'security'").get(raeId) as { n: number }).n;
+  await api("PUT", "/api/me/preferences", rae, { key: "loginAlerts", value: true });
+  await api("POST", "/api/auth/login", undefined, { email: "rae@member.test", password: "member-pass-1" }, "device-rae-alert-check-on-01");
+  const alertCountWhileOn = (db.prepare("SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND type = 'security'").get(raeId) as { n: number }).n;
+  expect("login-alert preference suppresses and enables in-app new-device notifications",
+    alertCountWhileOff === initialAlertCount && alertCountWhileOn === alertCountWhileOff + 1);
+  const setup2fa = await api("POST", "/api/me/security/two-factor/setup", rae, { password: "member-pass-1" });
+  const totpSecret = setup2fa.json.secret as string;
+  expect("authenticator setup requires the account password and returns one-time enrollment data",
+    setup2fa.status === 200 && /^[A-Z2-7]{32}$/.test(totpSecret) && setup2fa.json.otpauthUrl.startsWith("otpauth://totp/"));
+  const storedPendingSecret = db.prepare("SELECT totp_pending_secret_encrypted FROM users WHERE id = ?").get(raeId) as { totp_pending_secret_encrypted: string };
+  expect("pending authenticator secret is encrypted in the database",
+    Boolean(storedPendingSecret.totp_pending_secret_encrypted) && !storedPendingSecret.totp_pending_secret_encrypted.includes(totpSecret));
+  const badSetupConfirmation = await api("POST", "/api/me/security/two-factor/confirm", rae, { password: "member-pass-1", code: "bad-code" });
+  expect("authenticator enrollment cannot be enabled without a valid code", badSetupConfirmation.status === 400 &&
+    (await api("GET", "/api/me/state", rae)).json.account.preferences.twoFactor === false);
+  const confirm2fa = await api("POST", "/api/me/security/two-factor/confirm", rae, { password: "member-pass-1", code: totpCode(totpSecret) });
+  const enrolledRecoveryCodes = Array.isArray(confirm2fa.json?.recoveryCodes) ? confirm2fa.json.recoveryCodes as string[] : [];
+  const enrolledRecoveryHashes = (db.prepare("SELECT code_hash FROM totp_recovery_codes WHERE user_id = ?").all(raeId) as Array<{ code_hash: string }>).map(row => row.code_hash);
+  const stateAfterEnrollment = (await api("GET", "/api/me/state", rae)).json.account;
+  expect("valid authenticator enrollment enables MFA and returns ten one-time recovery codes",
+    confirm2fa.status === 200 && stateAfterEnrollment.preferences.twoFactor === true &&
+    stateAfterEnrollment.recoveryCodesRemaining === 10 && enrolledRecoveryCodes.length === 10);
+  expect("recovery codes are stored only as account-scoped hashes",
+    enrolledRecoveryHashes.length === 10 && enrolledRecoveryCodes.every(code => enrolledRecoveryHashes.includes(hashRecoveryCode(code) ?? "")) &&
+    enrolledRecoveryHashes.every(digest => !enrolledRecoveryCodes.includes(digest)));
+  const loginChallenge = await api("POST", "/api/auth/login", undefined, { email: "rae@member.test", password: "member-pass-1" }, "device-rae-second-browser-0001");
+  expect("password login for an enrolled account returns a code challenge without a token",
+    loginChallenge.status === 200 && loginChallenge.json.twoFactorRequired === true && Boolean(loginChallenge.json.challengeId) && !loginChallenge.json.token);
+  const badMfaCode = await api("POST", "/api/auth/login/verify", undefined, { challengeId: loginChallenge.json.challengeId, code: "bad-code" });
+  expect("invalid authenticator or recovery code does not issue a session", badMfaCode.status === 401 && !badMfaCode.json.token);
+  const verifiedLogin = await api("POST", "/api/auth/login/verify", undefined, { challengeId: loginChallenge.json.challengeId, code: totpCode(totpSecret) }, "device-rae-second-browser-0001");
+  expect("valid authenticator code completes login and records a live session", verifiedLogin.status === 200 && Boolean(verifiedLogin.json.token) &&
+    (await api("GET", "/api/auth/me", verifiedLogin.json.token, undefined, "device-rae-second-browser-0001")).status === 200);
+
+  const firstRecoveryCode = enrolledRecoveryCodes[0] ?? "INVALID-CODE";
+  const recoveryLoginChallenge = await api("POST", "/api/auth/login", undefined, { email: "rae@member.test", password: "member-pass-1" }, "device-rae-recovery-browser-0001");
+  const recoveryLogin = await api("POST", "/api/auth/login/verify", undefined, {
+    challengeId: recoveryLoginChallenge.json.challengeId,
+    code: firstRecoveryCode.toLowerCase().replaceAll("-", " "),
+  }, "device-rae-recovery-browser-0001");
+  const stateAfterRecoveryLogin = (await api("GET", "/api/me/state", rae)).json.account;
+  expect("a formatted, case-insensitive recovery code completes MFA login once",
+    recoveryLogin.status === 200 && Boolean(recoveryLogin.json.token) && stateAfterRecoveryLogin.recoveryCodesRemaining === 9);
+  const reusedCodeChallenge = await api("POST", "/api/auth/login", undefined, { email: "rae@member.test", password: "member-pass-1" });
+  const reusedRecoveryLogin = await api("POST", "/api/auth/login/verify", undefined, {
+    challengeId: reusedCodeChallenge.json.challengeId, code: firstRecoveryCode,
+  });
+  expect("a consumed recovery code cannot be reused for another sign-in",
+    reusedRecoveryLogin.status === 401 && !reusedRecoveryLogin.json.token &&
+    (await api("GET", "/api/me/state", rae)).json.account.recoveryCodesRemaining === 9);
+
+  const rejectedRegeneration = await api("POST", "/api/me/security/two-factor/recovery-codes/regenerate", rae, {
+    password: "member-pass-1", code: "bad-code",
+  });
+  expect("recovery-code regeneration requires the current authenticator and preserves codes on failure",
+    rejectedRegeneration.status === 400 && (await api("GET", "/api/me/state", rae)).json.account.recoveryCodesRemaining === 9);
+  const rejectedPasswordRegeneration = await api("POST", "/api/me/security/two-factor/recovery-codes/regenerate", rae, {
+    password: "wrong-password", code: totpCode(totpSecret),
+  });
+  expect("recovery-code regeneration also verifies the current password",
+    rejectedPasswordRegeneration.status === 400 && (await api("GET", "/api/me/state", rae)).json.account.recoveryCodesRemaining === 9);
+  const regeneration = await api("POST", "/api/me/security/two-factor/recovery-codes/regenerate", rae, {
+    password: "member-pass-1", code: totpCode(totpSecret),
+  });
+  const regeneratedRecoveryCodes = Array.isArray(regeneration.json?.recoveryCodes) ? regeneration.json.recoveryCodes as string[] : [];
+  const regeneratedHashes = (db.prepare("SELECT code_hash FROM totp_recovery_codes WHERE user_id = ?").all(raeId) as Array<{ code_hash: string }>).map(row => row.code_hash);
+  expect("password plus authenticator regenerates ten codes and replaces the prior set",
+    regeneration.status === 200 && regeneratedRecoveryCodes.length === 10 &&
+    (await api("GET", "/api/me/state", rae)).json.account.recoveryCodesRemaining === 10 &&
+    regeneratedHashes.length === 10 && regeneratedRecoveryCodes.every(code => regeneratedHashes.includes(hashRecoveryCode(code) ?? "")));
+
+  const staleCode = enrolledRecoveryCodes[1] ?? "INVALID-CODE";
+  const regeneratedLoginChallenge = await api("POST", "/api/auth/login", undefined, { email: "rae@member.test", password: "member-pass-1" });
+  const staleRecoveryLogin = await api("POST", "/api/auth/login/verify", undefined, {
+    challengeId: regeneratedLoginChallenge.json.challengeId, code: staleCode,
+  });
+  const regeneratedRecoveryLogin = await api("POST", "/api/auth/login/verify", undefined, {
+    challengeId: regeneratedLoginChallenge.json.challengeId, code: regeneratedRecoveryCodes[0] ?? "INVALID-CODE",
+  });
+  expect("regeneration invalidates old codes while a new recovery code can finish login",
+    staleRecoveryLogin.status === 401 && regeneratedRecoveryLogin.status === 200 && Boolean(regeneratedRecoveryLogin.json.token) &&
+    (await api("GET", "/api/me/state", rae)).json.account.recoveryCodesRemaining === 9);
+
+  const disableWithRecovery = await api("POST", "/api/me/security/two-factor/disable", rae, {
+    password: "member-pass-1", code: (regeneratedRecoveryCodes[1] ?? "INVALID-CODE").toLowerCase().replaceAll("-", " "),
+  });
+  const stateAfterRecoveryDisable = (await api("GET", "/api/me/state", rae)).json.account;
+  expect("a one-time recovery code can disable two-step sign-in with the password",
+    disableWithRecovery.status === 200 && stateAfterRecoveryDisable.preferences.twoFactor === false &&
+    stateAfterRecoveryDisable.recoveryCodesRemaining === 0 &&
+    (db.prepare("SELECT COUNT(*) AS n FROM totp_recovery_codes WHERE user_id = ?").get(raeId) as { n: number }).n === 0);
+
+  const secondSetup = await api("POST", "/api/me/security/two-factor/setup", rae, { password: "member-pass-1" });
+  const secondTotpSecret = secondSetup.json.secret as string;
+  const secondConfirm = await api("POST", "/api/me/security/two-factor/confirm", rae, {
+    password: "member-pass-1", code: totpCode(secondTotpSecret),
+  });
+  const disable2fa = await api("POST", "/api/me/security/two-factor/disable", rae, {
+    password: "member-pass-1", code: totpCode(secondTotpSecret),
+  });
+  expect("turning off two-step sign-in also accepts the current authenticator and clears recovery codes",
+    secondSetup.status === 200 && secondConfirm.status === 200 && disable2fa.status === 200 &&
+    (await api("GET", "/api/me/state", rae)).json.account.preferences.twoFactor === false &&
+    (await api("GET", "/api/me/state", rae)).json.account.recoveryCodesRemaining === 0);
+  const loginAfterDisable = await api("POST", "/api/auth/login", undefined, { email: "rae@member.test", password: "member-pass-1" });
+  expect("login returns to the normal flow after authenticator is disabled", loginAfterDisable.status === 200 && Boolean(loginAfterDisable.json.token));
+  const fakeTwoFactorPreference = await api("PUT", "/api/me/preferences", rae, { key: "twoFactor", value: true });
+  expect("two-factor enrollment cannot be bypassed with a preference edit", fakeTwoFactorPreference.status === 400 &&
+    (await api("GET", "/api/me/state", rae)).json.account.preferences.twoFactor === false);
+
+  /* ---------- live sessions, device trust and real revocation ---------- */
+  const tokenSessionId = (token: string) => JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString()).jti as string;
+  const trustedDeviceId = "device-rae-second-browser-0001";
+  const verifiedSessionId = tokenSessionId(verifiedLogin.json.token);
+  const trustVerifiedDevice = await api("PATCH", `/api/me/sessions/${verifiedSessionId}`, rae, { trusted: true });
+  const repeatDeviceLogin = await api("POST", "/api/auth/login", undefined, { email: "rae@member.test", password: "member-pass-1" }, trustedDeviceId);
+  const repeatDeviceTokenId = tokenSessionId(repeatDeviceLogin.json.token);
+  const repeatDeviceState = await api("GET", "/api/me/state", repeatDeviceLogin.json.token, undefined, trustedDeviceId);
+  const repeatedSessionIsTrusted = repeatDeviceState.json.account.sessions.some((session: any) => session.id === repeatDeviceTokenId && session.trusted);
+  expect("persistent device id carries trust to a later sign-in on that browser",
+    trustVerifiedDevice.status === 200 && repeatDeviceLogin.status === 200 && repeatedSessionIsTrusted,
+    `trust=${trustVerifiedDevice.status}, login=${repeatDeviceLogin.status}, trusted=${repeatedSessionIsTrusted}, session=${repeatDeviceTokenId}`);
+  const registeredSessionId = tokenSessionId(raeReg.json.token);
+  const currentSessionId = tokenSessionId(rae);
+  const sessionsBefore = (await api("GET", "/api/me/state", rae)).json.account.sessions as Array<{ id: string; current: boolean; trusted: boolean }>;
+  expect("session projection contains only live sessions and marks the current token exactly once",
+    sessionsBefore.some(session => session.id === registeredSessionId) &&
+    sessionsBefore.filter(session => session.current).length === 1 &&
+    sessionsBefore.find(session => session.id === currentSessionId)?.current === true);
+  const selfRevoke = await api("POST", `/api/me/sessions/${currentSessionId}/revoke`, rae);
+  expect("server refuses to revoke the session making the request", selfRevoke.status === 400 && (await api("GET", "/api/auth/me", rae)).status === 200);
+  const trustSession = await api("PATCH", `/api/me/sessions/${registeredSessionId}`, rae, { trusted: true });
+  expect("device trust updates only a live session", trustSession.status === 200 &&
+    (await api("GET", "/api/me/state", rae)).json.account.sessions.some((session: any) => session.id === registeredSessionId && session.trusted));
+  const revokeSession = await api("POST", `/api/me/sessions/${registeredSessionId}/revoke`, rae);
+  expect("revoking a device session invalidates its actual bearer token", revokeSession.status === 200 &&
+    (await api("GET", "/api/auth/me", raeReg.json.token)).status === 401 &&
+    !(await api("GET", "/api/me/state", rae)).json.account.sessions.some((session: any) => session.id === registeredSessionId));
+  const revokeOthers = await api("POST", "/api/me/sessions/revoke-others", rae);
+  expect("sign out other devices revokes every other token while preserving this session",
+    revokeOthers.status === 200 && revokeOthers.json.revokedCount >= 1 &&
+    (await api("GET", "/api/auth/me", verifiedLogin.json.token)).status === 401 &&
+    (await api("GET", "/api/auth/me", rae)).status === 200);
 
   /* ---------- unauthorized & role restrictions ---------- */
   const memberOnAdmin = await api("GET", "/api/admin/overview", rae);
@@ -221,14 +392,42 @@ try {
   const overdraftTransfer = await api("POST", "/api/me/transfers", rae, { counterparty: "X", amount: 99_999_999 });
   expect("transfer beyond balance rejected", overdraftTransfer.status === 400);
 
-  const restrict = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "restricted", reason: "Suspicious transaction pattern" });
-  expect("account restriction applied", restrict.status === 200 && restrict.json.status === "restricted");
+  const reasonCatalogue = await api("GET", "/api/admin/members/status-reasons", admin);
+  const suspensionReasons = reasonCatalogue.json?.reasons ?? [];
+  expect("admin reason picker has 15 complete presets", reasonCatalogue.status === 200 && suspensionReasons.length === 15 &&
+    suspensionReasons.every((r: any) => r.code && r.label && r.note && r.memberText));
+  const memberReasonCatalogue = await api("GET", "/api/admin/members/status-reasons", rae);
+  expect("members cannot read the admin-only reason catalogue (403)", memberReasonCatalogue.status === 403);
+
+  const unknownReason = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "restricted", reasonCode: "not-a-preset" });
+  expect("unknown suspension reason code rejected (400)", unknownReason.status === 400);
+  const shortCustomReason = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "restricted", reasonCode: "other", reason: "tiny" });
+  expect("short custom suspension reason rejected (400)", shortCustomReason.status === 400);
+
+  const presetReason = suspensionReasons.find((r: any) => r.code === "suspicious_activity");
+  const restrict = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "restricted", reasonCode: presetReason.code });
+  expect("account restriction stores the preset's member-facing sentence", restrict.status === 200 &&
+    restrict.json.status === "restricted" && restrict.json.reason === presetReason.memberText && restrict.json.reasonCode === presetReason.code);
+  const restrictedState = (await api("GET", "/api/me/state", rae)).json.account;
+  expect("member state exposes the exact suspension reason and operator", restrictedState.statusReason === presetReason.memberText &&
+    restrictedState.statusChangedBy === "Ops Admin" && typeof restrictedState.statusChangedAt === "number");
   const blockedTransfer = await api("POST", "/api/me/transfers", rae, { counterparty: "Y", amount: 5 });
   expect("restricted member's transfers blocked server-side (403)", blockedTransfer.status === 403);
   const depositStillWorks = await api("POST", "/api/me/deposits", rae, { amount: 25, source: "Incoming ACH" });
   expect("deposits still land while restricted", depositStillWorks.status === 201);
   const restore = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "active" });
-  expect("account restored", restore.status === 200 && restore.json.status === "active");
+  const restoredState = (await api("GET", "/api/me/state", rae)).json.account;
+  expect("restoring clears the member-facing suspension reason", restore.status === 200 && restore.json.status === "active" &&
+    restoredState.accountStatus === "active" && !restoredState.statusReason);
+
+  const customText = "We paused this account while we review a reported scam payment.";
+  const customRestrict = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "restricted", reasonCode: "other", reason: customText });
+  const customState = (await api("GET", "/api/me/state", rae)).json.account;
+  expect("Other stores the exact custom sentence for the member", customRestrict.status === 200 &&
+    customRestrict.json.reason === customText && customState.statusReason === customText);
+  const customRestore = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "active" });
+  expect("custom suspension can also be restored", customRestore.status === 200 &&
+    !(await api("GET", "/api/me/state", rae)).json.account.statusReason);
 
   const restrictNoReason = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "restricted" });
   expect("restriction without a reason rejected", restrictNoReason.status === 400);
@@ -863,8 +1062,12 @@ try {
 
   // Change password + production token-based password reset
   resetRateLimits(); // this suite performs many logins — reset the limiter
+  const juneParallelLogin = await api("POST", "/api/auth/login", undefined, { email: "june@okafor.design", password: "supersafe123" }, "device-june-second-browser-0001");
   const changePw = await api("POST", "/api/auth/change-password", juneToken, { current: "supersafe123", next: "even safer 99" });
-  expect("change password works", changePw.status === 200 &&
+  expect("changing password keeps this session, revokes other sessions and accepts the new password",
+    changePw.status === 200 && changePw.json.signedOutOtherSessions === true &&
+    (await api("GET", "/api/auth/me", juneToken)).status === 200 &&
+    (await api("GET", "/api/auth/me", juneParallelLogin.json.token)).status === 401 &&
     (await api("POST", "/api/auth/login", undefined, { email: "june@okafor.design", password: "even safer 99" })).status === 200);
   const forgotUnknown = await api("POST", "/api/auth/forgot-password", undefined, { email: "nobody@nowhere.example" });
   expect("forgot-password never reveals account existence", forgotUnknown.status === 200 && forgotUnknown.json.ok === true &&

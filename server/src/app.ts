@@ -34,6 +34,8 @@ import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./stat
 import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
 import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
 import { loadPrices, loadMarkets, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
+import { OTHER_REASON_CODE, SUSPENSION_REASONS, resolveSuspensionReason } from "./suspension.js";
+import { authenticatorUri, decryptTotpSecret, encryptTotpSecret, generateRecoveryCodes, generateTotpSecret, hashRecoveryCode, verifyTotp } from "./totp.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -52,9 +54,10 @@ export type TeamRole = "Admin" | "Member" | "Bookkeeper";
 /**
  * What each team role may do on the owner's account. Allow-list: anything not
  * listed is refused. Identity-bound routes (the owner's ID application,
- * passkeys and device sessions) are never available to teammates.
+ * passkeys, device sessions and two-step sign-in) are never available to
+ * teammates.
  */
-const TEAM_NEVER = /^\/api\/me\/(profile|kyc|passkeys|sessions)(\/|$)/;
+const TEAM_NEVER = /^\/api\/me\/(profile|kyc|passkeys|sessions|security)(\/|$)/;
 const TEAM_ALL_WRITE = /^\/api\/me\/(notifications|support)(\/|$)/;
 const TEAM_MEMBER_WRITE = /^\/api\/me\/(transfers|deposits|holdings\/trade|cards|invoices|payees|scheduled|pockets|budgets|disputes|scout\/apply|perks)(\/|$)/;
 const TEAM_ADMIN_WRITE = /^\/api\/me\/(team|preferences|rewards\/redeem)(\/|$)/;
@@ -129,8 +132,8 @@ export function createApp(dbPath?: string) {
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
       "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Veyra-Token",
-      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Veyra-Token, X-Veyra-Device",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     });
     if (_req.method === "OPTIONS") return res.sendStatus(204);
     next();
@@ -227,8 +230,11 @@ export function createApp(dbPath?: string) {
     }
     req.user = user;
     // The credential that authenticated this request, whatever header carried
-    // it: logout revokes exactly this session, so it must not re-parse headers.
+    // it: logout and device revocation must target exactly this session.
     req.authToken = token;
+    // Keep the visible device list backed by actual live auth sessions, not a
+    // synthetic row created only at registration.
+    rememberSession(req, personOf(user), payload.jti);
     next();
   }
 
@@ -264,6 +270,84 @@ export function createApp(dbPath?: string) {
   const notify = (userId: string, type: string, title: string, detail: string) =>
     db.prepare("INSERT INTO notifications (id, user_id, type, title, detail, read, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)")
       .run(rid("n"), userId, type, title, detail, now());
+
+  /**
+   * The person behind a request: a teammate's own user id when they are acting
+   * on an owner's business, else the member. Sessions, authenticator secrets
+   * and recovery codes are keyed by this, never by the account acted on.
+   */
+  const personOf = (user: AuthedUser) => user.loginId ?? user.id;
+
+  /** Store only hashes; plaintext recovery codes are returned once to the member. */
+  const storeRecoveryCodes = (userId: string, codes: string[]) => {
+    db.prepare("DELETE FROM totp_recovery_codes WHERE user_id = ?").run(userId);
+    const insert = db.prepare("INSERT INTO totp_recovery_codes (id, user_id, code_hash, created_at) VALUES (?, ?, ?, ?)");
+    for (const code of codes) {
+      const digest = hashRecoveryCode(code);
+      if (!digest) throw new Error("Could not create an account recovery code.");
+      insert.run(rid("rc"), userId, digest, now());
+    }
+  };
+
+  type SessionDevice = { device: string; browser: string; deviceKey: string };
+  const sessionDevice = (req: Request, userId: string): SessionDevice => {
+    const ua = req.get("user-agent") ?? "";
+    const suppliedId = req.get("x-veyra-device") ?? "";
+    // This id is only a label/grouping key for the member's own device list and
+    // sign-in alerts; it is never an authentication credential or an MFA bypass.
+    const fingerprint = suppliedId.length >= 16 && suppliedId.length <= 128 ? `device:${suppliedId}` : `ua:${ua || "unknown"}`;
+    const deviceKey = createHash("sha256").update(`${userId}\0${fingerprint}`).digest("hex");
+    const browser = /edg\//i.test(ua) ? "Microsoft Edge"
+      : /firefox\//i.test(ua) ? "Firefox"
+        : /opr\//i.test(ua) || /opera/i.test(ua) ? "Opera"
+          : /chrome\//i.test(ua) ? "Chrome"
+            : /safari\//i.test(ua) ? "Safari"
+              : "Web browser";
+    const device = /ipad/i.test(ua) ? "iPad"
+      : /iphone/i.test(ua) ? "iPhone"
+        : /android/i.test(ua) ? "Android device"
+          : /mobile/i.test(ua) ? "Mobile device"
+            : "Desktop computer";
+    return { device, browser, deviceKey };
+  };
+
+  /** Records a real auth-token session and returns whether this browser was already recognized. */
+  const rememberSession = (req: Request, userId: string, tokenId: string) => {
+    const meta = sessionDevice(req, userId);
+    const prior = db.prepare(`
+      SELECT ss.trusted FROM security_sessions ss JOIN sessions s ON s.token_id = ss.auth_token_id
+      WHERE ss.user_id = ? AND ss.device_key = ? AND s.revoked = 0 AND s.expires_at > ?
+      ORDER BY ss.last_active DESC LIMIT 1
+    `).get(userId, meta.deviceKey, now()) as { trusted: number } | undefined;
+    const existing = db.prepare("SELECT id FROM security_sessions WHERE auth_token_id = ?").get(tokenId) as { id: string } | undefined;
+    const trusted = prior?.trusted === 1 ? 1 : 0;
+    if (existing) {
+      db.prepare("UPDATE security_sessions SET device = ?, browser = ?, last_active = ?, device_key = ? WHERE id = ? AND user_id = ?")
+        .run(meta.device, meta.browser, now(), meta.deviceKey, existing.id, userId);
+    } else {
+      db.prepare(`
+        INSERT INTO security_sessions (id, user_id, device, browser, location, last_active, current, trusted, auth_token_id, device_key)
+        VALUES (?, ?, ?, ?, '', ?, 0, ?, ?, ?)
+      `).run(tokenId, userId, meta.device, meta.browser, now(), trusted, tokenId, meta.deviceKey);
+    }
+    return { ...meta, isNewDevice: !prior, trusted: trusted === 1 };
+  };
+
+  const createLoginSession = (req: Request, user: AuthedUser) => {
+    const tokenId = randomUUID();
+    const createdAt = now();
+    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .run(tokenId, user.id, createdAt, createdAt + TOKEN_TTL_MS);
+    const device = rememberSession(req, user.id, tokenId);
+    const alertSetting = db.prepare("SELECT login_alerts FROM preferences WHERE user_id = ?").get(user.id) as { login_alerts: number } | undefined;
+    if (alertSetting?.login_alerts !== 0 && !device.trusted) {
+      notify(user.id, "security", "New sign-in detected",
+        `A sign-in was completed from ${device.device} using ${device.browser}. If this wasn't you, change your password and sign out that session in Security Center.`);
+    }
+    // The full user shape, so the client never has to fetch /api/auth/me
+    // before it can render an account number or avatar.
+    return { token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: { ...fullUser(user.id), status: user.status } };
+  };
 
   /**
    * Passkeys as the browser sees them. The public key, algorithm and signature
@@ -653,7 +737,7 @@ export function createApp(dbPath?: string) {
       return void res.status(429).json({ error: "Too many failed attempts — wait a minute, then try again." });
     }
     const row = db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").get(email) as
-      | (AuthedUser & { password_hash: string; account_type: string })
+      | (AuthedUser & { password_hash: string; account_type: string; totp_secret_encrypted: string | null })
       | undefined;
     // Constant-ish response regardless of which factor failed.
     if (!row || !verifyPassword(password, row.password_hash)) {
@@ -662,12 +746,72 @@ export function createApp(dbPath?: string) {
       return void res.status(401).json({ error: "Email or password doesn't match our records." });
     }
     clearFailures(accountKey);
-    const tokenId = randomUUID();
-    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
-      .run(tokenId, row.id, now(), now() + TOKEN_TTL_MS);
+    const prefs = db.prepare("SELECT two_factor FROM preferences WHERE user_id = ?").get(row.id) as { two_factor: number } | undefined;
+    if (prefs?.two_factor === 1 && row.totp_secret_encrypted) {
+      if (!rateLimit(`login:mfa:${row.id}`, 8, 60_000)) {
+        return void res.status(429).json({ error: "Too many verification requests. Wait a minute, then try again." });
+      }
+      db.prepare("DELETE FROM login_challenges WHERE expires_at <= ?").run(now());
+      const challengeId = randomUUID();
+      const created = now();
+      db.prepare("INSERT INTO login_challenges (id, user_id, created_at, expires_at, attempts) VALUES (?, ?, ?, ?, 0)")
+        .run(challengeId, row.id, created, created + 5 * 60_000);
+      return void res.json({ twoFactorRequired: true, challengeId, expiresIn: 300 });
+    }
     const user = loadUser(row.id)!;
-    const token = signToken({ sub: row.id, jti: tokenId, role: user.role });
-    res.json({ token, user: { ...fullUser(user.id), status: user.status } });
+    res.json(createLoginSession(req, user));
+  }));
+
+  app.post("/api/auth/login/verify", wrap((req, res) => {
+    const challengeId = typeof req.body?.challengeId === "string" ? req.body.challengeId.trim() : "";
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    if (!challengeId || !code) return void res.status(400).json({ error: "Enter your authenticator or recovery code." });
+    const challenge = db.prepare("SELECT * FROM login_challenges WHERE id = ?").get(challengeId) as
+      | { id: string; user_id: string; created_at: number; expires_at: number; attempts: number }
+      | undefined;
+    if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5) {
+      if (challenge) db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
+      return void res.status(400).json({ error: "This sign-in challenge expired. Start again with your email and password." });
+    }
+    if (!rateLimit(`login:mfa-verify:${challenge.user_id}`, 10, 60_000)) {
+      return void res.status(429).json({ error: "Too many authenticator checks. Wait a minute, then try again." });
+    }
+    const row = db.prepare("SELECT totp_secret_encrypted FROM users WHERE id = ?").get(challenge.user_id) as { totp_secret_encrypted: string | null } | undefined;
+    let validTotp = false;
+    if (row?.totp_secret_encrypted) {
+      try { validTotp = verifyTotp(decryptTotpSecret(row.totp_secret_encrypted), code); } catch { validTotp = false; }
+    }
+    const recoveryCodeHash = validTotp ? null : hashRecoveryCode(code);
+    if (!validTotp && !recoveryCodeHash) {
+      const attempts = challenge.attempts + 1;
+      if (attempts >= 5) db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
+      else db.prepare("UPDATE login_challenges SET attempts = ? WHERE id = ?").run(attempts, challengeId);
+      return void res.status(401).json({ error: attempts >= 5 ? "Too many incorrect codes. Start sign-in again." : "That code didn't match. Check your authenticator or recovery code and try again." });
+    }
+    const user = loadUser(challenge.user_id);
+    if (!user) {
+      db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
+      return void res.status(401).json({ error: "This account is no longer available." });
+    }
+    const result = inTransaction(db, () => {
+      const live = db.prepare("SELECT id FROM login_challenges WHERE id = ? AND expires_at > ? AND attempts < 5").get(challengeId, now());
+      if (!live) return { kind: "expired" as const };
+      if (recoveryCodeHash) {
+        const consumed = db.prepare("DELETE FROM totp_recovery_codes WHERE user_id = ? AND code_hash = ?")
+          .run(challenge.user_id, recoveryCodeHash);
+        if (consumed.changes !== 1) return { kind: "invalid-recovery" as const };
+      }
+      db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
+      return { kind: "ok" as const, session: createLoginSession(req, user) };
+    });
+    if (result.kind === "invalid-recovery") {
+      const attempts = challenge.attempts + 1;
+      if (attempts >= 5) db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
+      else db.prepare("UPDATE login_challenges SET attempts = ? WHERE id = ?").run(attempts, challengeId);
+      return void res.status(401).json({ error: attempts >= 5 ? "Too many incorrect codes. Start sign-in again." : "That code didn't match. Check your authenticator or recovery code and try again." });
+    }
+    if (result.kind !== "ok") return void res.status(400).json({ error: "This sign-in challenge expired. Start again with your email and password." });
+    res.json(result.session);
   }));
 
   app.post("/api/auth/register", requireRecaptcha(RECAPTCHA_ACTIONS.register), wrap((req, res) => {
@@ -727,17 +871,15 @@ export function createApp(dbPath?: string) {
         `INSERT INTO kyc_records (user_id, status, completeness, document_type, country, submission_json, updated_at, review_state)
          VALUES (?, 'in_review', 100, ?, ?, ?, ?, 'in_review')`,
       ).run(id, values.idType, values.country, JSON.stringify(submissionFor(type, values, now())), now());
-      db.prepare("INSERT INTO preferences (user_id, two_factor, login_alerts, scout_auto, weekly_digest) VALUES (?, 1, 1, 1, 0)").run(id);
+      db.prepare("INSERT INTO preferences (user_id, two_factor, login_alerts, scout_auto, weekly_digest) VALUES (?, 0, 1, 1, 0)").run(id);
       db.prepare(
         `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status) VALUES (?, ?, ?, ?, 'Owner', 0, 0, 'active')`,
       ).run(rid("tm"), id, name.trim(), email);
-      db.prepare(
-        `INSERT INTO security_sessions (id, user_id, device, browser, location, last_active, current, trusted) VALUES (?, ?, 'This device', 'Web', '', ?, 1, 1)`,
-      ).run(rid("session"), id, now());
     });
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
+    rememberSession(req, id, tokenId);
     notify(id, "security", "Application received — we're reviewing it",
       "Thanks, we have your details. A specialist is reviewing your application now: most take 1–2 business days. We'll email you the moment there's news, and your dashboard unlocks as soon as you're approved.");
     void sendMail(applicationReceivedMail(email, name.trim()));
@@ -763,8 +905,17 @@ export function createApp(dbPath?: string) {
     const loginId = req.user!.loginId ?? req.user!.id;
     const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(loginId) as { password_hash: string };
     if (!verifyPassword(current, row.password_hash)) return void res.status(400).json({ error: "Your current password is incorrect." });
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(next), loginId);
-    res.json({ ok: true });
+    const currentTokenId = req.authToken ? verifyToken(req.authToken)?.jti : undefined;
+    if (!currentTokenId) return void res.status(401).json({ error: "Your session could not be verified. Sign in again." });
+    // Sessions belong to the login too, so a teammate changing their password
+    // signs out their other devices — never the owner's or other teammates'.
+    inTransaction(db, () => {
+      db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(next), loginId);
+      db.prepare("UPDATE sessions SET revoked = 1 WHERE user_id = ? AND token_id <> ? AND revoked = 0").run(loginId, currentTokenId);
+      db.prepare("DELETE FROM login_challenges WHERE user_id = ?").run(loginId);
+      notify(loginId, "security", "Password changed", "Your password was updated. Other signed-in sessions have been signed out.");
+    });
+    res.json({ ok: true, signedOutOtherSessions: true });
   }));
 
   // Password reset — production flow. Requesting a reset always returns the
@@ -1284,7 +1435,8 @@ export function createApp(dbPath?: string) {
   // One round trip: the complete Account snapshot in the exact shape the
   // frontend consumes (see src/lib/store.tsx → Account).
   app.get("/api/me/state", requireAuth, wrap((req, res) => {
-    const state = buildMemberState(db, req.user!.id);
+    const currentTokenId = verifyToken(req.authToken ?? "")?.jti;
+    const state = buildMemberState(db, req.user!.id, currentTokenId);
     if (!state) return void res.status(404).json({ error: "No account found." });
     res.json({ account: state });
   }));
@@ -1308,12 +1460,123 @@ export function createApp(dbPath?: string) {
   app.put("/api/me/preferences", requireAuth, requireApproved, wrap((req, res) => {
     const key = String(req.body?.key ?? "");
     const value = req.body?.value === true;
-    const map: Record<string, string> = { twoFactor: "two_factor", loginAlerts: "login_alerts", scoutAuto: "scout_auto", weeklyDigest: "weekly_digest" };
+    // Two-factor must only be changed by the password- and code-verified
+    // authenticator flow below. A preference toggle is not authentication.
+    const map: Record<string, string> = { loginAlerts: "login_alerts", scoutAuto: "scout_auto", weeklyDigest: "weekly_digest" };
     const col = map[key];
+    if (key === "twoFactor") return void res.status(400).json({ error: "Set up or turn off two-step sign-in through Security Center." });
     if (!col) return void res.status(400).json({ error: "Unknown preference." });
-    db.prepare(`INSERT INTO preferences (user_id, ${col}) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET ${col} = excluded.${col}`)
-      .run(req.user!.id, value ? 1 : 0);
+    const existing = db.prepare("SELECT user_id FROM preferences WHERE user_id = ?").get(req.user!.id);
+    if (existing) {
+      db.prepare(`UPDATE preferences SET ${col} = ? WHERE user_id = ?`).run(value ? 1 : 0, req.user!.id);
+    } else {
+      // The legacy table defaulted two_factor to true, which only reflected a
+      // UI toggle and never represented an enrolled authenticator. Any first
+      // preference edit must preserve the honest, unenrolled default.
+      db.prepare(`INSERT INTO preferences (user_id, ${col}, two_factor) VALUES (?, ?, 0)`).run(req.user!.id, value ? 1 : 0);
+    }
     res.json({ ok: true });
+  }));
+
+  app.post("/api/me/security/two-factor/setup", requireAuth, requireApproved, wrap((req, res) => {
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    if (!password) return void res.status(400).json({ error: "Enter your password to set up an authenticator." });
+    if (!rateLimit(`totp-setup:${personOf(req.user!)}`, 5, 10 * 60_000)) {
+      return void res.status(429).json({ error: "Too many setup requests. Wait a few minutes, then try again." });
+    }
+    const row = db.prepare("SELECT password_hash, totp_secret_encrypted FROM users WHERE id = ?").get(personOf(req.user!)) as
+      | { password_hash: string; totp_secret_encrypted: string | null }
+      | undefined;
+    if (!row || !verifyPassword(password, row.password_hash)) return void res.status(400).json({ error: "Your current password is incorrect." });
+    if (row.totp_secret_encrypted) return void res.status(409).json({ error: "Two-step sign-in is already enabled." });
+    const secret = generateTotpSecret();
+    const expiresAt = now() + 10 * 60_000;
+    db.prepare("UPDATE users SET totp_pending_secret_encrypted = ?, totp_pending_expires_at = ? WHERE id = ?")
+      .run(encryptTotpSecret(secret), expiresAt, personOf(req.user!));
+    res.json({ secret, otpauthUrl: authenticatorUri(secret, req.user!.email), expiresAt });
+  }));
+
+  app.post("/api/me/security/two-factor/confirm", requireAuth, requireApproved, wrap((req, res) => {
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    if (!password || !code) return void res.status(400).json({ error: "Enter your password and authenticator code." });
+    if (!rateLimit(`totp-confirm:${personOf(req.user!)}`, 10, 60_000)) {
+      return void res.status(429).json({ error: "Too many verification attempts. Wait a minute, then try again." });
+    }
+    const row = db.prepare("SELECT password_hash, totp_pending_secret_encrypted, totp_pending_expires_at FROM users WHERE id = ?").get(personOf(req.user!)) as
+      | { password_hash: string; totp_pending_secret_encrypted: string | null; totp_pending_expires_at: number | null }
+      | undefined;
+    if (!row || !verifyPassword(password, row.password_hash)) return void res.status(400).json({ error: "Your current password is incorrect." });
+    if (!row.totp_pending_secret_encrypted || !row.totp_pending_expires_at || row.totp_pending_expires_at <= now()) {
+      db.prepare("UPDATE users SET totp_pending_secret_encrypted = NULL, totp_pending_expires_at = NULL WHERE id = ?").run(personOf(req.user!));
+      return void res.status(400).json({ error: "Authenticator setup expired. Start again to receive a new key." });
+    }
+    let secret = "";
+    try { secret = decryptTotpSecret(row.totp_pending_secret_encrypted); } catch { /* rejected below */ }
+    if (!secret || !verifyTotp(secret, code)) return void res.status(400).json({ error: "That code didn't match. Check your authenticator and try again." });
+    const recoveryCodes = generateRecoveryCodes();
+    inTransaction(db, () => {
+      db.prepare("UPDATE users SET totp_secret_encrypted = totp_pending_secret_encrypted, totp_pending_secret_encrypted = NULL, totp_pending_expires_at = NULL WHERE id = ?")
+        .run(personOf(req.user!));
+      db.prepare(`INSERT INTO preferences (user_id, two_factor, login_alerts, scout_auto, weekly_digest)
+        VALUES (?, 1, 1, 1, 0) ON CONFLICT(user_id) DO UPDATE SET two_factor = 1`).run(personOf(req.user!));
+      storeRecoveryCodes(personOf(req.user!), recoveryCodes);
+      notify(personOf(req.user!), "security", "Two-step sign-in enabled", "An authenticator code is now required when you sign in.");
+    });
+    res.json({ enabled: true, recoveryCodes });
+  }));
+
+  app.post("/api/me/security/two-factor/recovery-codes/regenerate", requireAuth, requireApproved, wrap((req, res) => {
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    if (!password || !code) return void res.status(400).json({ error: "Enter your password and current authenticator code." });
+    if (!rateLimit(`totp-recovery-regenerate:${personOf(req.user!)}`, 5, 10 * 60_000)) {
+      return void res.status(429).json({ error: "Too many recovery-code requests. Wait a few minutes, then try again." });
+    }
+    const row = db.prepare("SELECT password_hash, totp_secret_encrypted FROM users WHERE id = ?").get(personOf(req.user!)) as
+      | { password_hash: string; totp_secret_encrypted: string | null }
+      | undefined;
+    if (!row || !verifyPassword(password, row.password_hash)) return void res.status(400).json({ error: "Your current password is incorrect." });
+    let secret = "";
+    try { if (row.totp_secret_encrypted) secret = decryptTotpSecret(row.totp_secret_encrypted); } catch { /* rejected below */ }
+    if (!secret || !verifyTotp(secret, code)) return void res.status(400).json({ error: "That code didn't match your authenticator." });
+    const recoveryCodes = generateRecoveryCodes();
+    inTransaction(db, () => storeRecoveryCodes(personOf(req.user!), recoveryCodes));
+    res.json({ recoveryCodes });
+  }));
+
+  app.post("/api/me/security/two-factor/disable", requireAuth, requireApproved, wrap((req, res) => {
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+    if (!password || !code) return void res.status(400).json({ error: "Enter your password and an authenticator or recovery code." });
+    if (!rateLimit(`totp-disable:${personOf(req.user!)}`, 8, 60_000)) {
+      return void res.status(429).json({ error: "Too many attempts. Wait a minute, then try again." });
+    }
+    const row = db.prepare("SELECT password_hash, totp_secret_encrypted FROM users WHERE id = ?").get(personOf(req.user!)) as
+      | { password_hash: string; totp_secret_encrypted: string | null }
+      | undefined;
+    if (!row || !verifyPassword(password, row.password_hash)) return void res.status(400).json({ error: "Your current password is incorrect." });
+    let secret = "";
+    try { if (row.totp_secret_encrypted) secret = decryptTotpSecret(row.totp_secret_encrypted); } catch { /* rejected below */ }
+    const validTotp = Boolean(secret && verifyTotp(secret, code));
+    const recoveryCodeHash = validTotp ? null : hashRecoveryCode(code);
+    if (!validTotp && !recoveryCodeHash) return void res.status(400).json({ error: "That code didn't match your authenticator or recovery codes." });
+    const disabled = inTransaction(db, () => {
+      if (recoveryCodeHash) {
+        const consumed = db.prepare("DELETE FROM totp_recovery_codes WHERE user_id = ? AND code_hash = ?")
+          .run(personOf(req.user!), recoveryCodeHash);
+        if (consumed.changes !== 1) return false;
+      }
+      db.prepare("UPDATE users SET totp_secret_encrypted = NULL, totp_pending_secret_encrypted = NULL, totp_pending_expires_at = NULL WHERE id = ?")
+        .run(personOf(req.user!));
+      db.prepare("UPDATE preferences SET two_factor = 0 WHERE user_id = ?").run(personOf(req.user!));
+      db.prepare("DELETE FROM totp_recovery_codes WHERE user_id = ?").run(personOf(req.user!));
+      db.prepare("DELETE FROM login_challenges WHERE user_id = ?").run(personOf(req.user!));
+      notify(personOf(req.user!), "security", "Two-step sign-in turned off", "Authenticator verification is no longer required when you sign in.");
+      return true;
+    });
+    if (!disabled) return void res.status(400).json({ error: "That code didn't match your authenticator or recovery codes." });
+    res.json({ enabled: false });
   }));
 
   /* ---------- budgets & cash plans ---------- */
@@ -1855,14 +2118,38 @@ export function createApp(dbPath?: string) {
   }));
 
   app.post("/api/me/sessions/:id/revoke", requireAuth, requireApproved, wrap((req, res) => {
-    db.prepare("DELETE FROM security_sessions WHERE id = ? AND user_id = ? AND current = 0").run(String(req.params.id), req.user!.id);
-    res.json({ ok: true });
+    const target = db.prepare(`
+      SELECT ss.auth_token_id FROM security_sessions ss JOIN sessions s ON s.token_id = ss.auth_token_id AND s.user_id = ss.user_id
+      WHERE ss.id = ? AND ss.user_id = ? AND s.revoked = 0 AND s.expires_at > ?
+    `).get(String(req.params.id), personOf(req.user!), now()) as { auth_token_id: string } | undefined;
+    if (!target) return void res.status(404).json({ error: "That active session was not found." });
+    const current = req.authToken ? verifyToken(req.authToken)?.jti : undefined;
+    if (target.auth_token_id === current) return void res.status(400).json({ error: "You can't sign out the session you're using here. Use Sign out instead." });
+    const revoked = db.prepare("UPDATE sessions SET revoked = 1 WHERE token_id = ? AND user_id = ? AND revoked = 0")
+      .run(target.auth_token_id, personOf(req.user!));
+    if (revoked.changes === 0) return void res.status(404).json({ error: "That active session was not found." });
+    notify(personOf(req.user!), "security", "A device was signed out", "An active sign-in session was revoked from Security Center.");
+    res.json({ ok: true, revoked: true });
+  }));
+
+  app.post("/api/me/sessions/revoke-others", requireAuth, requireApproved, wrap((req, res) => {
+    const current = req.authToken ? verifyToken(req.authToken)?.jti : undefined;
+    if (!current) return void res.status(401).json({ error: "Your session could not be verified. Sign in again." });
+    const result = db.prepare("UPDATE sessions SET revoked = 1 WHERE user_id = ? AND token_id <> ? AND revoked = 0 AND expires_at > ?")
+      .run(personOf(req.user!), current, now());
+    if (result.changes > 0) notify(personOf(req.user!), "security", "Other devices were signed out", `${result.changes} other session${result.changes === 1 ? " was" : "s were"} revoked from Security Center.`);
+    res.json({ ok: true, revokedCount: result.changes });
   }));
 
   app.patch("/api/me/sessions/:id", requireAuth, requireApproved, wrap((req, res) => {
     if (typeof req.body?.trusted !== "boolean") return void res.status(400).json({ error: "Nothing to update." });
-    db.prepare("UPDATE security_sessions SET trusted = ? WHERE id = ? AND user_id = ?").run(req.body.trusted ? 1 : 0, String(req.params.id), req.user!.id);
-    res.json({ ok: true });
+    const live = db.prepare(`
+      SELECT 1 FROM security_sessions ss JOIN sessions s ON s.token_id = ss.auth_token_id AND s.user_id = ss.user_id
+      WHERE ss.id = ? AND ss.user_id = ? AND s.revoked = 0 AND s.expires_at > ?
+    `).get(String(req.params.id), personOf(req.user!), now());
+    if (!live) return void res.status(404).json({ error: "That active session was not found." });
+    db.prepare("UPDATE security_sessions SET trusted = ? WHERE id = ? AND user_id = ?").run(req.body.trusted ? 1 : 0, String(req.params.id), personOf(req.user!));
+    res.json({ ok: true, trusted: req.body.trusted });
   }));
 
   /* ---------- KYC wizard progress + member dispute tracking ---------- */
@@ -1941,6 +2228,14 @@ export function createApp(dbPath?: string) {
         profileSubmittedAt: r.submitted_at ?? null,
       })),
     });
+  }));
+
+  // Static path, declared before /:id: Express would otherwise read
+  // "status-reasons" as a member id and answer 404 instead of checking the
+  // permission. The console's picker and the route that applies a restriction
+  // must share one catalogue, which is why this is served and not hardcoded.
+  app.get("/api/admin/members/status-reasons", requireAuth, requirePerm("accounts.set_status"), wrap((_req, res) => {
+    res.json({ reasons: SUSPENSION_REASONS, otherCode: OTHER_REASON_CODE });
   }));
 
   app.get("/api/admin/members/:id", requireAuth, requirePerm("customers.view"), wrap((req, res) => {
@@ -2079,18 +2374,37 @@ export function createApp(dbPath?: string) {
     if (status !== "active" && status !== "restricted") {
       return void res.status(400).json({ error: "status must be 'active' or 'restricted'." });
     }
-    const reason = String(req.body?.reason ?? "").trim();
-    if (status === "restricted" && !reason) return void res.status(400).json({ error: "A reason is required to restrict an account." });
+    // A restriction must carry a reason from the catalogue (or an explicit
+    // custom one). `reason` is still accepted on its own for older clients.
+    let reasonText = "";
+    let reasonCode = "";
+    if (status === "restricted") {
+      const resolved = resolveSuspensionReason(req.body?.reasonCode, req.body?.reason);
+      if (!resolved.ok) return void res.status(400).json({ error: resolved.error });
+      reasonText = resolved.text;
+      reasonCode = resolved.code;
+    }
     const before = target.status as string;
-    db.prepare("UPDATE users SET status = ? WHERE id = ?").run(status, String(req.params.id));
+    const now = Date.now();
+    if (status === "restricted") {
+      db.prepare("UPDATE users SET status = ?, status_reason = ?, status_changed_at = ?, status_changed_by = ? WHERE id = ?")
+        .run(status, reasonText, now, req.user!.name, String(req.params.id));
+    } else {
+      // Lifting a hold clears the banner but keeps who did it and when, so the
+      // audit trail and the member's history stay coherent.
+      db.prepare("UPDATE users SET status = ?, status_reason = '', status_changed_at = ?, status_changed_by = ? WHERE id = ?")
+        .run(status, now, req.user!.name, String(req.params.id));
+    }
     audit(req, "account.status", "Financial", `user:${String(req.params.id)} · ${target.name}`,
-      status === "restricted" ? `Restricted account — ${reason}.` : "Restored account to active.", before, status);
+      status === "restricted"
+        ? `Restricted account — ${reasonCode === OTHER_REASON_CODE ? "custom reason" : reasonCode}: "${reasonText}"`
+        : "Restored account to active.", before, status);
     notify(String(req.params.id), "security",
       status === "restricted" ? "Your account is restricted" : "Your account is fully active",
       status === "restricted"
-        ? `${reason} Outgoing transfers are paused while we review.`
+        ? `${reasonText} Outgoing transfers are paused while we review.`
         : "Restrictions were lifted — all features are available again.");
-    res.json({ status });
+    res.json({ status, reason: reasonText || undefined, reasonCode: reasonCode || undefined });
   }));
 
   /* ============================== admin: KYC ============================== */
@@ -2866,7 +3180,7 @@ export function createApp(dbPath?: string) {
     }));
 
     const accounts = (db.prepare(`
-      SELECT u.id, u.name, u.email, u.business, u.account_type, u.status,
+      SELECT u.id, u.name, u.email, u.business, u.account_type, u.status, u.status_reason, u.status_changed_at,
              a.account_number, a.routing_number, a.balance_cents, a.pending_cents, a.rewards_cents,
              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id) AS card_count,
              (SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.frozen = 1) AS frozen_count,
@@ -2894,6 +3208,10 @@ export function createApp(dbPath?: string) {
       pendingTxns: a.pending_txn_count as number,
       kycStatus: (a.kyc_status as string) ?? "not_started",
       accountStatus: a.status === "restricted" ? "restricted" : "active",
+      // Why the hold is in place, so a second operator can see the reason the
+      // first one chose without opening the audit trail.
+      statusReason: (a.status_reason as string) || null,
+      statusChangedAt: (a.status_changed_at as number) ?? null,
       lastActivity: (a.last_activity as number) ?? 0,
       // The application, visible to staff in the console: date of birth, tax
       // ID, address and the ID document each member applied with.

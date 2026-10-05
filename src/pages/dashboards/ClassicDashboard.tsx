@@ -5,7 +5,7 @@ import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useOu
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
-  Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
+  Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, PackageCheck, Pause, PiggyBank, Play, Plus,
   Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap, LineChart, CandlestickChart, Link2,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
@@ -17,13 +17,10 @@ import { ScoutQuickDrawer, ScoutAIPage as ScoutWorkspace } from "../../component
 import { CommandPalette } from "../../components/CommandPalette";
 import { MoneyPlanPage } from "../../components/MoneyPlan";
 import { MobileCheckDepositModal } from "../../components/MobileCheckDeposit";
+import { SecurityCenterContent } from "../../components/SecurityCenterContent";
 import { ZelleHubModal } from "../../components/ZelleHubModal";
 import { InvoiceDetailModal } from "../../components/InvoiceDetailModal";
-import { Camera, Loader2 } from "lucide-react";
-import {
-  listPasskeys, createPasskey, deletePasskey, passkeySupported, passkeyRegistrationAvailable,
-  suggestPasskeyLabel, passkeyErrorMessage, isPasskeyCancellation, type Passkey,
-} from "../../lib/passkey";
+import { Camera } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import {
   tradeHolding, quoteAge, useHoldings, useCandles, useMarkets, assetIcon,
@@ -37,6 +34,7 @@ import {
   categories, copyText, downloadFile, longDate, money, rewardRate, shortDate, useAcct,
   type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type NotificationItem, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
 } from "../../lib/store";
+import { SuspensionBanner } from "./parts";
 
 /* ============================================================
    Helpers
@@ -908,6 +906,7 @@ export function DashboardLayout() {
           </div>
         </header>
 
+        <SuspensionBanner />
         <KycAlertBanner />
 
         <motion.main key={location.pathname} className="app-content" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, ease }}>
@@ -1231,7 +1230,12 @@ function CardManager({ card, onClose, onReplacement }: { card: Card | null; onCl
                   {tab === "details" && (
                     <>
                       <div className="manager-details-grid">
-                        <div className="wide"><span>Card number</span><code>{revealed ? card.fullNumber : `•••• •••• •••• ${card.last4}`}</code><button type="button" className="mini-copy" onClick={() => copy("Card number", card.fullNumber)}><Copy size={12} /></button></div>
+                        <div className="wide">
+                          <span>Card number</span>
+                          {revealed
+                            ? <button type="button" className="card-number-copy" aria-label="Copy card number" title="Click to copy" onClick={() => copy("Card number", card.fullNumber)}>{card.fullNumber}</button>
+                            : <code>{`•••• •••• •••• ${card.last4}`}</code>}
+                        </div>
                         <div><span>Expiration</span><code>{card.exp}</code></div>
                         <div><span>Security code</span><code>{revealed ? card.cvv : "•••"}</code></div>
                         <div><span>Cardholder</span><b>{card.cardholder}</b></div>
@@ -1433,8 +1437,9 @@ export function CardsPage() {
                   <div className="card-details">
                     <div className="cd-number">
                       <span>Card number</span>
-                      <code>{isFlipped ? c.fullNumber : `•••• ${c.last4}`}</code>
-                      {isFlipped && <button type="button" className="mini-copy" onClick={() => onCopyNumber(c)} aria-label="Copy card number"><Copy size={12} /></button>}
+                      {isFlipped
+                        ? <button type="button" className="card-number-copy" aria-label="Copy card number" title="Click to copy" onClick={() => onCopyNumber(c)}>{c.fullNumber}</button>
+                        : <code>{`•••• ${c.last4}`}</code>}
                     </div>
                     <div><span>Expires</span><code>{c.exp}</code></div>
                     <div><span>CVV</span><code>{isFlipped ? c.cvv : "•••"}</code></div>
@@ -3456,127 +3461,8 @@ export function KYCPage() {
 /* ============================================================
    Security center
    ============================================================ */
-/**
- * Passkey management.
- *
- * A passkey is the only credential on the account that cannot be phished,
- * reused across sites, or read out of a breach of Veyra's database — the
- * private half never leaves the member's device. This panel is where they are
- * added and removed; the ceremony itself lives in src/lib/passkey.ts.
- */
-export function PasskeysPanel() {
-  const toast = useToast();
-  const [keys, setKeys] = useState<Passkey[] | null>(null);
-  const [canAdd, setCanAdd] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [removing, setRemoving] = useState("");
-
-  useEffect(() => {
-    let live = true;
-    void listPasskeys()
-      .then(result => { if (live) setKeys(result.passkeys); })
-      .catch(() => { if (live) setKeys([]); });
-    void passkeyRegistrationAvailable().then(available => { if (live) setCanAdd(available); });
-    return () => { live = false; };
-  }, []);
-
-  const add = async () => {
-    setAdding(true);
-    try {
-      const created = await createPasskey(suggestPasskeyLabel());
-      setKeys(current => [created, ...(current ?? [])]);
-      toast({ tone: "success", title: `${created.label} added`, description: "You can now sign in without your password." });
-    } catch (err) {
-      // Backing out of the OS prompt is a decision, not an error.
-      if (isPasskeyCancellation(err)) return;
-      toast({ tone: "info", title: "Couldn't add that passkey", description: passkeyErrorMessage(err) });
-    } finally {
-      setAdding(false);
-    }
-  };
-
-  const remove = async (key: Passkey) => {
-    setRemoving(key.id);
-    try {
-      await deletePasskey(key.id);
-      setKeys(current => (current ?? []).filter(k => k.id !== key.id));
-      toast({ tone: "info", title: `${key.label} removed` });
-    } catch (err) {
-      toast({ tone: "info", title: "Couldn't remove that passkey", description: (err as Error).message });
-    } finally {
-      setRemoving("");
-    }
-  };
-
-  const supported = passkeySupported();
-  return (
-    <section className="panel sessions-panel">
-      <div className="panel-head">
-        <div><h2>Passkeys</h2><span className="panel-sub">Sign in with your fingerprint, face or device PIN</span></div>
-        {supported && canAdd && (
-          <button type="button" className="ghost-btn sm" onClick={add} disabled={adding}>
-            {adding ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}
-            {adding ? "Waiting for your device…" : "Add passkey"}
-          </button>
-        )}
-      </div>
-
-      {!supported ? (
-        <p className="passkey-empty">This browser doesn't support passkeys. Your password still works everywhere.</p>
-      ) : keys === null ? (
-        <p className="passkey-empty">Loading…</p>
-      ) : keys.length === 0 ? (
-        <p className="passkey-empty">
-          No passkeys yet. A passkey replaces your password with the lock you already use on this device —
-          and unlike a password it can't be phished, guessed, or reused anywhere else.
-          {!canAdd && " This device has no fingerprint, face or PIN set up, so add one from a phone or laptop that does."}
-        </p>
-      ) : (
-        <div className="session-list">
-          {keys.map(key => (
-            <div className="session-row" key={key.id}>
-              <span className="session-icon"><KeyRound size={17} /></span>
-              <div className="session-main">
-                <strong>
-                  {key.label}
-                  {key.syncedToCloud && <span className="chip chip-green">Synced</span>}
-                </strong>
-                <small>
-                  Added {new Date(key.createdAt).toLocaleDateString()}
-                  {key.lastUsedAt ? ` · last used ${timeAgo(key.lastUsedAt)}` : " · never used"}
-                </small>
-              </div>
-              <span />
-              <button type="button" className="ghost-btn sm" onClick={() => remove(key)} disabled={removing === key.id}>
-                <Trash2 size={13} /> Remove
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
 export function SecurityCenterPage() {
-  const { account, setPreference, revokeSession, toggleTrustedSession, freezeAllCards } = useAcct();
-  const toast = useToast();
-  const [confirmFreeze, setConfirmFreeze] = useState(false);
-  if (!account) return null;
-  const prefs = account.preferences;
-  return (
-    <div className="app-page">
-      <PageHeader eyebrow="Sign-in protection · Trusted devices · Emergency controls" title="Security center" />
-      <div className="security-score"><span className="security-score-ring"><b>{prefs.twoFactor && prefs.loginAlerts ? "96" : "72"}</b><small>/100</small></span><div><h2>Your account is well protected</h2><p>Two-factor authentication, login alerts and card controls are available from one place.</p></div><ShieldCheck size={32} /></div>
-      <div className="settings-grid security-center-grid">
-        <section className="panel"><div className="panel-head"><div><h2>Sign-in protection</h2><span className="panel-sub">Recommended settings</span></div></div><Toggle checked={prefs.twoFactor} onChange={value => { setPreference("twoFactor", value); toast({ tone: "info", title: `Two-factor authentication ${value ? "on" : "off"}` }); }} label="Two-factor authentication" description="Require a one-time code on new devices." /><Toggle checked={prefs.loginAlerts} onChange={value => { setPreference("loginAlerts", value); toast({ tone: "info", title: `Login alerts ${value ? "on" : "off"}` }); }} label="New device alerts" description="Notify me when a new browser signs in." /><div className="security-tip"><Lock size={15} /><span>Your password is stored server-side as a scrypt hash — never in plain text.</span></div></section>
-        <section className="panel emergency-panel"><div className="panel-head"><div><h2>Emergency controls</h2><span className="panel-sub">Use these if something feels wrong</span></div></div><button type="button" className="emergency-action" onClick={() => setConfirmFreeze(true)}><Snowflake size={18} /><span><b>Freeze every card</b><small>Immediately decline new purchases on all cards.</small></span><ArrowRight size={15} /></button><Link className="emergency-action" to="/app/disputes"><ShieldAlert size={18} /><span><b>Report a transaction</b><small>Open and track a card-purchase dispute.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/kyc"><UserRound size={18} /><span><b>Review KYC</b><small>Check your identity verification status and next steps.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/settings"><KeyRound size={18} /><span><b>Change password</b><small>Update your account password.</small></span><ArrowRight size={15} /></Link></section>
-      </div>
-      <PasskeysPanel />
-      <section className="panel sessions-panel"><div className="panel-head"><div><h2>Devices & sessions</h2><span className="panel-sub">Sign out a device you no longer use or recognize</span></div></div><div className="session-list">{account.sessions.map(session => <div className="session-row" key={session.id}><span className="session-icon">{session.browser.toLowerCase().includes("mobile") ? <Smartphone size={17} /> : <Monitor size={17} />}</span><div className="session-main"><strong>{session.device} {session.current && <span className="chip chip-green">This device</span>}</strong><small>{session.browser} · {session.location} · {timeAgo(session.lastActive)}</small></div><button type="button" className={`trust-btn ${session.trusted ? "trusted" : ""}`} onClick={() => toggleTrustedSession(session.id)}>{session.trusted ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}{session.trusted ? "Trusted" : "Untrusted"}</button>{!session.current && <button type="button" className="ghost-btn sm" onClick={() => { revokeSession(session.id); toast({ tone: "success", title: `${session.device} signed out` }); }}>Sign out</button>}</div>)}</div></section>
-      <Modal open={confirmFreeze} onClose={() => setConfirmFreeze(false)} title="Freeze every card?" subtitle="All new card purchases will be declined until you unfreeze cards individually."><div className="freeze-confirm"><Snowflake size={30} /><p>This does not close cards or cancel transfers that are already processing.</p><div className="modal-actions"><button type="button" className="ghost-btn" onClick={() => setConfirmFreeze(false)}>Cancel</button><button type="button" className="danger-btn" onClick={() => { freezeAllCards(); setConfirmFreeze(false); toast({ tone: "info", title: "All cards frozen" }); }}>Freeze all cards</button></div></div></Modal>
-    </div>
-  );
+  return <div className="app-page"><SecurityCenterContent variant="personal" /></div>;
 }
 
 // Re-export high-fidelity institutional bank statement suite
@@ -3744,7 +3630,7 @@ export function SettingsPage() {
 
           <motion.section className="panel" {...rise(1)}>
             <div className="panel-head"><div><h2>Notifications</h2><span className="panel-sub">Choose what we tell you about</span></div></div>
-            <Toggle checked={prefs.loginAlerts} onChange={v => pref("loginAlerts", v, "Sign-in alerts")} label="Sign-in alerts" description="Email me when a new device signs in." />
+            <Toggle checked={prefs.loginAlerts} onChange={v => pref("loginAlerts", v, "Sign-in alerts")} label="Sign-in alerts" description="Show an in-app security notification for sign-ins from untrusted browsers." />
             <Toggle checked={prefs.weeklyDigest} onChange={v => pref("weeklyDigest", v, "Weekly digest")} label="Weekly digest" description="A Monday summary of spend, rewards and savings." />
             <Toggle checked={prefs.scoutAuto} onChange={v => pref("scoutAuto", v, "Scout auto-savings")} label="Scout auto-savings" description="Apply offers and credit savings automatically." />
           </motion.section>
@@ -3753,7 +3639,7 @@ export function SettingsPage() {
         <div className="settings-col">
           <motion.form className="panel dash-form" onSubmit={savePw} {...rise(2)}>
             <h2>Security</h2>
-            <Toggle checked={prefs.twoFactor} onChange={v => pref("twoFactor", v, "Two-factor authentication")} label="Two-factor authentication" description="Require a one-time code when signing in." />
+            <div className="security-settings-link"><ShieldCheck size={17} /><span><b>Two-step sign-in</b><small>{prefs.twoFactor ? "Authenticator protection is enabled." : "Authenticator protection is not set up."}</small></span><Link to="/app/security">Manage</Link></div>
             <label htmlFor="st-cur">Current password</label>
             <input id="st-cur" type="password" autoComplete="current-password" required value={pw.current} onChange={e => setPw(p => ({ ...p, current: e.target.value }))} />
             <label htmlFor="st-next">New password</label>

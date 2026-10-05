@@ -32,6 +32,7 @@ const CLIENT_FILES = [
   "src/components/Chrome.tsx",
   "src/components/CommandPalette.tsx",
   "src/components/MoneyFlow.tsx",
+  "src/components/SecurityCenterContent.tsx",
   "src/pages/dashboards/parts.tsx",
   "src/pages/dashboards/PersonalDashboard.tsx",
   "src/pages/dashboards/BusinessDashboard.tsx",
