@@ -11,15 +11,9 @@
  * The only division by 100 is at the point of rendering a label, so nothing
  * here can accumulate float error the way a running total would.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export type Candle = { t: number; o: number; h: number; l: number; c: number };
-
-/* Plot geometry, in viewBox units. */
-const W = 760, H = 260;
-const PAD = { top: 12, right: 10, bottom: 24, left: 58 };
-const PLOT_W = W - PAD.left - PAD.right;
-const PLOT_H = H - PAD.top - PAD.bottom;
 
 const UP = "#3f8358";
 const DOWN = "#a04545";
@@ -30,6 +24,40 @@ const usd = (cents: number) => {
   return `$${dollars.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 };
 
+/**
+ * Axis labels on a phone. "$102,955" at the width a 360px screen gives each
+ * tick is unreadable, so large numbers collapse to "$103k" — the gridline
+ * carries the precision, the label only needs to carry the magnitude.
+ */
+const axisLabel = (cents: number, narrow: boolean) => {
+  const dollars = cents / 100;
+  if (!narrow || Math.abs(dollars) < 1000) return usd(cents);
+  const k = dollars / 1000;
+  return `$${k >= 100 ? Math.round(k) : k.toFixed(1)}k`;
+};
+
+/**
+ * The rendered width of the chart, in CSS pixels.
+ *
+ * The SVG viewBox is then set to match, so one viewBox unit is one real pixel
+ * and a 10px axis label is actually 10px at every screen size. A fixed 760-unit
+ * viewBox squeezed into a 340px phone renders that same label at 4.5px.
+ */
+function useMeasuredWidth<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const read = () => setWidth(Math.round(el.getBoundingClientRect().width));
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width] as const;
+}
+
 const timeLabel = (ms: number, range: string) =>
   range === "1d"
     ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -37,6 +65,24 @@ const timeLabel = (ms: number, range: string) =>
 
 export function CandleChart({ candles, range, label }: { candles: Candle[]; range: string; label: string }) {
   const [hover, setHover] = useState<number | null>(null);
+  const [wrapRef, measured] = useMeasuredWidth<HTMLDivElement>();
+
+  const geom = useMemo(() => {
+    // Before the first measurement, assume a desktop width rather than 0 —
+    // a zero-width viewBox makes the first paint collapse.
+    const W = Math.max(260, Math.min(measured || 760, 1100));
+    const narrow = W < 480;
+    const H = narrow ? 190 : 260;
+    const PAD = {
+      top: 12,
+      right: narrow ? 6 : 10,
+      bottom: narrow ? 20 : 24,
+      left: narrow ? 42 : 58,
+    };
+    return { W, H, PAD, narrow, PLOT_W: W - PAD.left - PAD.right, PLOT_H: H - PAD.top - PAD.bottom };
+  }, [measured]);
+
+  const { W, H, PAD, narrow, PLOT_W, PLOT_H } = geom;
 
   const view = useMemo(() => {
     const highs = candles.map(c => c.h);
@@ -52,10 +98,12 @@ export function CandleChart({ candles, range, label }: { candles: Candle[]; rang
     const y = (cents: number) => PAD.top + PLOT_H - ((cents - lo) / (hi - lo || 1)) * PLOT_H;
     const slot = PLOT_W / candles.length;
     const x = (i: number) => PAD.left + slot * (i + 0.5);
-    const body = Math.max(1.5, Math.min(slot * 0.62, 18));
-    const ticks = Array.from({ length: 5 }, (_, i) => lo + ((hi - lo) / 4) * i);
+    const body = Math.max(1, Math.min(slot * 0.62, 18));
+    // Fewer gridlines on a phone; five would stack labels on top of each other.
+    const tickCount = narrow ? 4 : 5;
+    const ticks = Array.from({ length: tickCount }, (_, i) => lo + ((hi - lo) / (tickCount - 1)) * i);
     return { hi, lo, y, x, slot, body, ticks };
-  }, [candles]);
+  }, [candles, PAD.top, PAD.left, PLOT_W, PLOT_H, narrow]);
 
   const first = candles[0];
   const last = candles[candles.length - 1];
@@ -74,7 +122,7 @@ export function CandleChart({ candles, range, label }: { candles: Candle[]; rang
   };
 
   return (
-    <div className="candle-chart">
+    <div className="candle-chart" ref={wrapRef}>
       <div className="candle-head">
         <div>
           <strong>{active ? usd(active.c) : usd(last.c)}</strong>
@@ -95,16 +143,19 @@ export function CandleChart({ candles, range, label }: { candles: Candle[]; rang
           return (
             <g key={i}>
               <line x1={PAD.left} x2={W - PAD.right} y1={y} y2={y} className="candle-grid" />
-              <text x={PAD.left - 8} y={y + 3.5} className="candle-axis" textAnchor="end">{usd(cents)}</text>
+              <text x={PAD.left - 6} y={y + 3.5} className="candle-axis" textAnchor="end">{axisLabel(cents, narrow)}</text>
             </g>
           );
         })}
 
         {candles.map((c, i) => {
-          // Evenly spaced labels: roughly six, never crowding the axis.
-          const step = Math.max(1, Math.ceil(candles.length / 6));
+          // Evenly spaced labels, never crowding the axis: about six across a
+          // desktop chart, three on a phone.
+          const step = Math.max(1, Math.ceil(candles.length / (narrow ? 3 : 6)));
           if (i % step !== 0) return null;
-          return <text key={`t${i}`} x={view.x(i)} y={H - 7} className="candle-axis" textAnchor="middle">{timeLabel(c.t, range)}</text>;
+          // The last slot would overflow the right edge once anchored middle.
+          if (view.x(i) > W - PAD.right - 18) return null;
+          return <text key={`t${i}`} x={view.x(i)} y={H - 6} className="candle-axis" textAnchor="middle">{timeLabel(c.t, range)}</text>;
         })}
 
         {candles.map((c, i) => {

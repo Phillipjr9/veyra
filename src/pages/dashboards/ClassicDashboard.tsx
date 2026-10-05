@@ -2208,7 +2208,7 @@ export function MarketsPage() {
   const total = data?.markets.filter(m => m.tradeable && m.units !== "0").length ?? 0;
 
   return (
-    <div className="app-page">
+    <div className="app-page markets-page">
       <PageHeader eyebrow="Digital assets · Market data" title="Markets">
         <button type="button" className="ghost-btn" onClick={() => { void reload(); toast({ tone: "info", title: "Refreshing market data" }); }}>
           <RefreshCw size={15} /> Refresh
@@ -2224,6 +2224,28 @@ export function MarketsPage() {
           onClick={() => setOnlyTradeable(v => !v)}>
           Tradeable on Veyra
         </button>
+        {/* The stacked card layout hides the header row, and with it the
+            column sort buttons, so narrow screens get this instead. */}
+        <label className="market-sort-mobile">
+          <span>Sort</span>
+          <select
+            value={`${sort}:${desc ? "d" : "a"}`}
+            onChange={e => {
+              const [next, dir] = e.target.value.split(":");
+              setSort(next as MarketSort);
+              setDesc(dir === "d");
+            }}
+          >
+            <option value="rank:a">Market rank</option>
+            <option value="marketCap:d">Market cap</option>
+            <option value="volume:d">Volume</option>
+            <option value="price:d">Price, high to low</option>
+            <option value="price:a">Price, low to high</option>
+            <option value="change24h:d">24H gainers</option>
+            <option value="change24h:a">24H losers</option>
+            <option value="name:a">Name A to Z</option>
+          </select>
+        </label>
         <span className="market-meta">
           {data?.quotedAt ? `${rows.length} markets · ${quoteAge(data.quotedAt)}` : `${rows.length} markets`}
           {total > 0 && ` · ${total} held`}
@@ -2303,6 +2325,18 @@ export function MarketsPage() {
                             </div>
                             <button type="button" className="icon-btn" onClick={() => show(null)} aria-label="Close chart"><X size={15} /></button>
                           </div>
+                          {/* Narrow viewports drop columns from the table, so
+                              the detail panel carries them instead — the data
+                              moves one tap away rather than disappearing. */}
+                          <dl className="market-stats">
+                            <div><dt>Rank</dt><dd>{m.rank ?? "—"}</dd></div>
+                            <div><dt>1H</dt><dd><Pct value={m.change1h} /></dd></div>
+                            <div><dt>24H</dt><dd><Pct value={m.change24h} /></dd></div>
+                            <div><dt>7D</dt><dd><Pct value={m.change7d} /></dd></div>
+                            <div><dt>Market cap</dt><dd>{compactUsd(m.marketCapUsd)}</dd></div>
+                            <div><dt>Volume 24H</dt><dd>{compactUsd(m.volumeUsd)}</dd></div>
+                          </dl>
+
                           {/* Only registry assets have candle history: the route
                               refuses anything it cannot also price in units. */}
                           {!m.tradeable
