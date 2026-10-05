@@ -35,8 +35,13 @@ const UPSTREAM_IDS: Record<string, string> = {
   USDC: "usd-coin",
 };
 
+// One call does everything. /coins/markets returns price, 1h/24h/7d change,
+// market cap, volume and a 7-day sparkline for up to 250 coins — so the
+// markets page and the holdings valuations share a single upstream request
+// rather than each paying for their own.
 const DEFAULT_URL =
-  "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,usd-coin&vs_currencies=usd";
+  "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc" +
+  "&per_page=100&page=1&sparkline=true&price_change_percentage=1h,24h,7d";
 
 export type Quote = {
   /** USD cents for one whole unit. bigint so a $100k BTC price stays exact. */
@@ -44,8 +49,31 @@ export type Quote = {
   fetchedAt: number;
 };
 
-type Cache = { quotes: Map<string, Quote>; fetchedAt: number; inFlight: Promise<void> | null };
-let cache: Cache = { quotes: new Map(), fetchedAt: 0, inFlight: null };
+/** One row of the market table. Money is integer cents; percentages are floats. */
+export type MarketRow = {
+  id: string;
+  code: string;
+  name: string;
+  /** Upstream logo URL. The browser can reach it even when the server cannot. */
+  image: string | null;
+  rank: number | null;
+  priceCents: number;
+  change1h: number | null;
+  change24h: number | null;
+  change7d: number | null;
+  marketCapCents: number | null;
+  volumeCents: number | null;
+  /** Downsampled 7-day closes in cents — enough to draw a sparkline, not 168 points per row. */
+  sparkline: number[] | null;
+};
+
+type Cache = {
+  quotes: Map<string, Quote>;
+  markets: MarketRow[];
+  fetchedAt: number;
+  inFlight: Promise<void> | null;
+};
+let cache: Cache = { quotes: new Map(), markets: [], fetchedAt: 0, inFlight: null };
 
 // 5 minutes. At 60s this endpoint alone bills 43,200 calls/month against a
 // 10,000 free-tier cap — the quota is gone in a week. See README.
@@ -65,7 +93,7 @@ const upstreamUrl = () => (process.env.CRYPTO_PRICES_URL ?? "").trim() || DEFAUL
 
 /** Test helper: drops every cached quote and forces the next read to refetch. */
 export function resetPrices(): void {
-  cache = { quotes: new Map(), fetchedAt: 0, inFlight: null };
+  cache = { quotes: new Map(), markets: [], fetchedAt: 0, inFlight: null };
   candleCache.clear();
 }
 
@@ -84,24 +112,71 @@ function toCents(usd: unknown): bigint | null {
   return cents > 0n ? cents : null;
 }
 
+/** Picks `count` evenly spaced samples so a sparkline costs 32 numbers, not 168. */
+function downsample(values: number[], count = 32): number[] {
+  if (values.length <= count) return values;
+  const step = (values.length - 1) / (count - 1);
+  return Array.from({ length: count }, (_, i) => values[Math.round(i * step)]);
+}
+
+/** Percentages stay floats — they are display-only and never touch a balance. */
+const pct = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) / 100 : null;
+
 async function refresh(): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs());
   try {
     const res = await fetch(upstreamUrl(), { signal: controller.signal, headers: { accept: "application/json" } });
     if (!res.ok) throw new Error(`upstream returned ${res.status}`);
-    const body = (await res.json()) as Record<string, { usd?: unknown }>;
+    const body = await res.json();
+    if (!Array.isArray(body)) throw new Error("upstream did not return a market array");
 
     const fetchedAt = Date.now();
+    const byId = new Map<string, bigint>();
+    const markets: MarketRow[] = [];
+
+    for (const row of body) {
+      if (!row || typeof row !== "object") continue;
+      const id = typeof row.id === "string" ? row.id : null;
+      const code = typeof row.symbol === "string" ? row.symbol.toUpperCase() : null;
+      const cents = toCents(row.current_price);
+      // A row with no usable price is dropped rather than carried as a zero.
+      if (!id || !code || cents === null) continue;
+
+      byId.set(id, cents);
+      const spark = Array.isArray(row.sparkline_in_7d?.price)
+        ? downsample(row.sparkline_in_7d.price.map((v: unknown) => toCents(v)).filter((v: bigint | null): v is bigint => v !== null).map(Number))
+        : null;
+
+      markets.push({
+        id,
+        code,
+        name: typeof row.name === "string" ? row.name : code,
+        image: typeof row.image === "string" ? row.image : null,
+        rank: typeof row.market_cap_rank === "number" ? row.market_cap_rank : null,
+        priceCents: Number(cents),
+        change1h: pct(row.price_change_percentage_1h_in_currency),
+        change24h: pct(row.price_change_percentage_24h_in_currency ?? row.price_change_percentage_24h),
+        change7d: pct(row.price_change_percentage_7d_in_currency),
+        marketCapCents: toCents(row.market_cap) === null ? null : Number(toCents(row.market_cap)),
+        volumeCents: toCents(row.total_volume) === null ? null : Number(toCents(row.total_volume)),
+        sparkline: spark && spark.length > 1 ? spark : null,
+      });
+    }
+
+    // Quotes for the tradeable registry are derived from the same payload, so
+    // valuing a holding and rendering the market table cost one call between
+    // them rather than one each.
     const quotes = new Map<string, Quote>();
     for (const [code, id] of Object.entries(UPSTREAM_IDS)) {
-      const cents = toCents(body?.[id]?.usd);
-      if (cents !== null) quotes.set(code, { cents, fetchedAt });
+      const cents = byId.get(id);
+      if (cents !== undefined) quotes.set(code, { cents, fetchedAt });
     }
     // An empty response is a failed response. Keeping the previous quotes is
     // strictly better than replacing them with nothing.
-    if (quotes.size === 0) throw new Error("upstream carried no usable prices");
-    cache = { quotes, fetchedAt, inFlight: null };
+    if (quotes.size === 0 && markets.length === 0) throw new Error("upstream carried no usable prices");
+    cache = { quotes, markets, fetchedAt, inFlight: null };
   } catch (err) {
     // Deliberately non-fatal: the last good quotes stay in place and keep
     // their original timestamp, so they age visibly instead of vanishing.
@@ -119,6 +194,17 @@ export async function loadPrices(): Promise<Map<string, Quote>> {
   if (!cache.inFlight) cache.inFlight = refresh();
   await cache.inFlight;
   return cache.quotes;
+}
+
+/**
+ * Every market row we know about, newest fetch first.
+ *
+ * Returns the cached rows with the moment they were fetched, so the page can
+ * label its own staleness instead of implying the table is live.
+ */
+export async function loadMarkets(): Promise<{ markets: MarketRow[]; fetchedAt: number }> {
+  await loadPrices();
+  return { markets: cache.markets, fetchedAt: cache.fetchedAt };
 }
 
 /** The current quote for one asset, or null when none is known. */

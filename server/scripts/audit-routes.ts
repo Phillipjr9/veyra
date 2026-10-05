@@ -121,6 +121,7 @@ const BASELINE: Policy[] = [
   { method: "GET", path: "/api/me/holdings", auth: true, perm: null },
   { method: "POST", path: "/api/me/holdings/trade", auth: true, perm: null },
   { method: "GET", path: "/api/me/holdings/:asset/candles", auth: true, perm: null },
+  { method: "GET", path: "/api/me/markets", auth: true, perm: null },
   { method: "POST", path: "/api/me/pockets", auth: true, perm: null },
   { method: "POST", path: "/api/me/budgets", auth: true, perm: null },
   { method: "DELETE", path: "/api/me/budgets/:id", auth: true, perm: null },

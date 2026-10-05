@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
   Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap, LineChart,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap, LineChart, CandlestickChart,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
 import { Footer } from "../../components/Chrome";
@@ -24,8 +24,9 @@ import {
 } from "../../lib/passkey";
 import { useAuth } from "../../lib/auth";
 import {
-  tradeHolding, quoteAge, useHoldings, useCandles, assetIcon,
-  CANDLE_RANGES, RANGE_LABEL, type Holding, type CandleRange,
+  tradeHolding, quoteAge, useHoldings, useCandles, useMarkets, assetIcon,
+  compactUsd, marketPrice, CANDLE_RANGES, RANGE_LABEL,
+  type Holding, type CandleRange, type MarketRow,
 } from "../../lib/holdings";
 import { CandleChart } from "../../components/CandleChart";
 import { BackButton } from "../../components/BackButton";
@@ -163,6 +164,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app", label: "Overview", icon: <LayoutDashboard size={18} />, end: true },
       { to: "/app/accounts", label: "Savings goals", icon: <PiggyBank size={18} /> },
       { to: "/app/cards", label: "Cards", icon: <CreditCard size={18} /> },
+      { to: "/app/markets", label: "Markets", icon: <CandlestickChart size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
@@ -2114,6 +2116,232 @@ export function TeamPage() {
 }
 
 /* ============================================================
+   Markets
+   ============================================================ */
+/**
+ * Full market table with an inline chart, modelled on how a custodian like
+ * BitGo presents markets: a curated list sitting inside custody, not an
+ * exchange's infinite listing.
+ *
+ * The important distinction the table has to carry is between a coin we quote
+ * and a coin we hold. Every row shows a price; only rows in the local asset
+ * registry are tradeable, because decimals — and therefore every unit
+ * conversion — exist only for the assets we seeded. A coin being listed on
+ * CoinGecko is not consent to custody it.
+ */
+type MarketSort = "rank" | "name" | "price" | "change24h" | "marketCap" | "volume";
+
+function MarketSparkline({ points, rising }: { points: number[]; rising: boolean }) {
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const span = max - min || 1;
+  const d = points
+    .map((v, i) => `${((i / (points.length - 1)) * 100).toFixed(2)},${(26 - ((v - min) / span) * 22).toFixed(2)}`)
+    .join(" ");
+  return (
+    <svg className="market-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={d} fill="none" stroke={rising ? "#3f8358" : "#a04545"} strokeWidth="1.6"
+        strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+function Pct({ value }: { value: number | null }) {
+  if (value === null) return <span className="market-flat">—</span>;
+  const up = value >= 0;
+  return <span className={up ? "candle-up" : "candle-down"}>{up ? "+" : "−"}{Math.abs(value).toFixed(2)}%</span>;
+}
+
+export function MarketsPage() {
+  const { data, loading, failed, reload } = useMarkets();
+  const toast = useToast();
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<MarketSort>("rank");
+  const [desc, setDesc] = useState(false);
+  const [onlyTradeable, setOnlyTradeable] = useState(false);
+  // Deep link from a holding card: /app/markets?asset=BTC opens that chart.
+  const [params, setParams] = useSearchParams();
+  const [open, setOpen] = useState<string | null>(params.get("asset"));
+  const [range, setRange] = useState<CandleRange>("7d");
+  const { candles, loading: candlesLoading } = useCandles(open, range);
+
+  const rows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const list = (data?.markets ?? []).filter(m =>
+      (!onlyTradeable || m.tradeable) &&
+      (!needle || m.code.toLowerCase().includes(needle) || m.name.toLowerCase().includes(needle)));
+    const num = (v: string | null) => (v === null ? -Infinity : Number(v));
+    const key = (m: typeof list[number]) =>
+      sort === "name" ? m.name.toLowerCase()
+      : sort === "price" ? Number(m.priceUsd)
+      : sort === "change24h" ? (m.change24h ?? -Infinity)
+      : sort === "marketCap" ? num(m.marketCapUsd)
+      : sort === "volume" ? num(m.volumeUsd)
+      : (m.rank ?? Infinity);
+    return [...list].sort((a, b) => {
+      const ka = key(a), kb = key(b);
+      const cmp = typeof ka === "string" ? ka.localeCompare(kb as string) : (ka as number) - (kb as number);
+      return desc ? -cmp : cmp;
+    });
+  }, [data, query, sort, desc, onlyTradeable]);
+
+  // Keep the URL honest so the open chart survives a refresh or a shared link.
+  const show = (code: string | null) => {
+    setOpen(code);
+    if (code) params.set("asset", code); else params.delete("asset");
+    setParams(params, { replace: true });
+  };
+
+  const sortBy = (next: MarketSort) => {
+    if (next === sort) return setDesc(d => !d);
+    setSort(next);
+    // Rank and name read best ascending; money reads best largest-first.
+    setDesc(next !== "rank" && next !== "name");
+  };
+
+  const head = (id: MarketSort, label: string, className = "") => (
+    <th className={className} aria-sort={sort === id ? (desc ? "descending" : "ascending") : "none"}>
+      <button type="button" onClick={() => sortBy(id)}>{label}{sort === id && <span>{desc ? "▼" : "▲"}</span>}</button>
+    </th>
+  );
+
+  const total = data?.markets.filter(m => m.tradeable && m.units !== "0").length ?? 0;
+
+  return (
+    <div className="app-page">
+      <PageHeader eyebrow="Digital assets · Market data" title="Markets">
+        <button type="button" className="ghost-btn" onClick={() => { void reload(); toast({ tone: "info", title: "Refreshing market data" }); }}>
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </PageHeader>
+
+      <div className="market-toolbar">
+        <label className="market-search">
+          <Search size={15} />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by name or symbol" aria-label="Search markets" />
+        </label>
+        <button type="button" className={`chip-toggle ${onlyTradeable ? "on" : ""}`} aria-pressed={onlyTradeable}
+          onClick={() => setOnlyTradeable(v => !v)}>
+          Tradeable on Veyra
+        </button>
+        <span className="market-meta">
+          {data?.quotedAt ? `${rows.length} markets · ${quoteAge(data.quotedAt)}` : `${rows.length} markets`}
+          {total > 0 && ` · ${total} held`}
+        </span>
+      </div>
+
+      {failed && <p className="holdings-warning"><AlertTriangle size={14} /> Market data is unavailable right now. Nothing below is current.</p>}
+
+      {loading && !data ? <p className="holding-chart-msg">Loading markets…</p> : (
+        <div className="market-table-wrap">
+          <table className="market-table">
+            <thead>
+              <tr>
+                {head("rank", "#", "market-rank")}
+                {head("name", "Asset")}
+                {head("price", "Price", "market-num")}
+                <th className="market-num">1H</th>
+                {head("change24h", "24H", "market-num")}
+                <th className="market-num">7D</th>
+                <th className="market-spark-col">Last 7 days</th>
+                {head("marketCap", "Market cap", "market-num")}
+                {head("volume", "Volume 24H", "market-num")}
+                <th className="market-num">Your holding</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(m => (
+                <Fragment key={m.code}>
+                  <tr className={open === m.code ? "is-open" : ""}>
+                    <td className="market-rank">{m.rank ?? "—"}</td>
+                    <td>
+                      <span className="market-asset">
+                        <MarketMark row={m} />
+                        <span><strong>{m.name}</strong><small>{m.code}{m.tradeable && <em className="market-badge">Tradeable</em>}</small></span>
+                      </span>
+                    </td>
+                    <td className="market-num market-price">{marketPrice(m.priceUsd)}</td>
+                    <td className="market-num"><Pct value={m.change1h} /></td>
+                    <td className="market-num"><Pct value={m.change24h} /></td>
+                    <td className="market-num"><Pct value={m.change7d} /></td>
+                    <td className="market-spark-col">
+                      {m.sparkline && m.sparkline.length > 1
+                        ? <MarketSparkline points={m.sparkline} rising={(m.change7d ?? 0) >= 0} />
+                        : <span className="market-flat">—</span>}
+                    </td>
+                    <td className="market-num">{compactUsd(m.marketCapUsd)}</td>
+                    <td className="market-num">{compactUsd(m.volumeUsd)}</td>
+                    <td className="market-num">
+                      {m.tradeable && m.units !== "0"
+                        ? <span className="market-held"><b>{m.valueUsd ? `$${m.valueUsd}` : "—"}</b><small>{m.quantity} {m.code}</small></span>
+                        : <span className="market-flat">—</span>}
+                    </td>
+                    <td className="market-actions">
+                      <button type="button" className={`ghost-btn sm ${open === m.code ? "on" : ""}`}
+                        aria-expanded={open === m.code}
+                        onClick={() => show(open === m.code ? null : m.code)}>
+                        <LineChart size={13} /> Chart
+                      </button>
+                    </td>
+                  </tr>
+                  {open === m.code && (
+                    <tr className="market-chart-row">
+                      <td colSpan={11}>
+                        <div className="market-chart">
+                          <div className="holding-chart-head">
+                            <span className="holding-chart-title">
+                              <MarketMark row={m} large />
+                              <span><strong>{m.name}</strong><small>{m.code} · price history</small></span>
+                            </span>
+                            <div className="holding-range" role="group" aria-label="Chart range">
+                              {CANDLE_RANGES.map(r => (
+                                <button key={r} type="button" className={range === r ? "on" : ""} aria-pressed={range === r} onClick={() => setRange(r)}>
+                                  {RANGE_LABEL[r]}
+                                </button>
+                              ))}
+                            </div>
+                            <button type="button" className="icon-btn" onClick={() => show(null)} aria-label="Close chart"><X size={15} /></button>
+                          </div>
+                          {/* Only registry assets have candle history: the route
+                              refuses anything it cannot also price in units. */}
+                          {!m.tradeable
+                            ? <p className="holding-chart-msg">{m.code} is quoted for reference only. Veyra does not hold or trade it.</p>
+                            : candlesLoading ? <p className="holding-chart-msg">Loading price history…</p>
+                            : candles && candles.length > 1 ? <CandleChart candles={candles} range={range} label={m.name} />
+                            : <p className="holding-chart-msg">No price history available for {m.code} right now.</p>}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+          {rows.length === 0 && <p className="holding-chart-msg">No markets match “{query}”.</p>}
+        </div>
+      )}
+
+      <p className="market-foot">{data?.disclosure ?? "Market data is indicative. Digital assets are not FDIC insured and can lose value."}</p>
+    </div>
+  );
+}
+
+/**
+ * Asset mark with a three-step fallback: our own 3D render, then the upstream
+ * logo, then a monogram. The table lists coins beyond the four we drew, and a
+ * broken image icon in a price table looks like broken data.
+ */
+function MarketMark({ row, large = false }: { row: MarketRow; large?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  const own = row.tradeable ? assetIcon(row.code) : null;
+  const src = own ?? (failed ? null : row.image);
+  const cls = large ? "market-mark lg" : "market-mark";
+  if (!src) return <span className={`${cls} market-mono`} aria-hidden="true">{row.code.slice(0, 3)}</span>;
+  return <img className={cls} src={src} alt="" aria-hidden="true" width={128} height={128} loading="lazy" decoding="async" onError={() => setFailed(true)} />;
+}
+
+/* ============================================================
    Perks
    ============================================================ */
 export function PerksPage() {
@@ -2348,10 +2576,7 @@ function HoldingsPanel() {
   const [trade, setTrade] = useState<{ holding: Holding; side: "buy" | "sell" } | null>(null);
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
-  const [charted, setCharted] = useState<string | null>(null);
-  const [range, setRange] = useState<CandleRange>("7d");
-  const chartAsset = data?.holdings.find(h => h.asset === charted) ?? null;
-  const { candles, loading: candlesLoading } = useCandles(charted, range);
+  const navigate = useNavigate();
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -2417,9 +2642,8 @@ function HoldingsPanel() {
                 </>
               ) : <span className="holding-locked">View only</span>}
               <button
-                type="button" className={`ghost-btn sm holding-chart-btn ${charted === holding.asset ? "on" : ""}`}
-                aria-expanded={charted === holding.asset}
-                onClick={() => setCharted(c => c === holding.asset ? null : holding.asset)}
+                type="button" className="ghost-btn sm holding-chart-btn"
+                onClick={() => navigate(`/app/markets?asset=${holding.asset}`)}
               >
                 <LineChart size={13} /> Chart
               </button>
@@ -2427,38 +2651,6 @@ function HoldingsPanel() {
           </motion.article>
         ))}
       </div>
-
-      <AnimatePresence>
-        {chartAsset && (
-          <motion.section
-            key={chartAsset.asset} className="holding-chart-panel"
-            initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: .3, ease }}
-          >
-            <div className="holding-chart-head">
-              <span className="holding-chart-title">
-                <img src={assetIcon(chartAsset.asset)} alt="" aria-hidden="true" width={128} height={128} />
-                <span><strong>{chartAsset.name}</strong><small>{chartAsset.asset} · price history</small></span>
-              </span>
-              <div className="holding-range" role="group" aria-label="Chart range">
-                {CANDLE_RANGES.map(r => (
-                  <button key={r} type="button" className={range === r ? "on" : ""} aria-pressed={range === r} onClick={() => setRange(r)}>
-                    {RANGE_LABEL[r]}
-                  </button>
-                ))}
-              </div>
-              <button type="button" className="icon-btn" onClick={() => setCharted(null)} aria-label="Close chart"><X size={15} /></button>
-            </div>
-
-            {/* Three distinct states. "No history" is not "flat" — a chart that
-                renders an empty series as a straight line is making a claim
-                about the market that nobody verified. */}
-            {candlesLoading ? <p className="holding-chart-msg">Loading price history…</p>
-              : candles && candles.length > 1 ? <CandleChart candles={candles} range={range} label={chartAsset.name} />
-              : <p className="holding-chart-msg">No price history available for {chartAsset.asset} right now.</p>}
-          </motion.section>
-        )}
-      </AnimatePresence>
 
       <Modal
         open={!!trade} onClose={() => { setTrade(null); setAmount(""); }}
@@ -3543,6 +3735,7 @@ export function ClassicApp() {
         <Route path="payments" element={<PaymentsPage />} />
         <Route path="bills" element={<BillsPage />} />
         <Route path="scout" element={<ScoutWorkspace />} />
+        <Route path="markets" element={<MarketsPage />} />
         <Route path="rewards" element={<RewardsPage />} />
         <Route path="perks" element={<PerksPage />} />
         <Route path="statements" element={<StatementsPage />} />

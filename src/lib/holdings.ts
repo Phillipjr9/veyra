@@ -154,3 +154,69 @@ export function useCandles(asset: string | null, range: CandleRange) {
 
   return { candles, loading, failed };
 }
+
+/* ---------- markets ---------- */
+
+export type MarketRow = {
+  code: string;
+  name: string;
+  /** Upstream logo URL. May be null; the UI falls back to a 3D mark or a monogram. */
+  image: string | null;
+  rank: number | null;
+  priceUsd: string;
+  change1h: number | null;
+  change24h: number | null;
+  change7d: number | null;
+  marketCapUsd: string | null;
+  volumeUsd: string | null;
+  /** Downsampled 7-day closes in cents. */
+  sparkline: number[] | null;
+  /** Only assets in the local registry can be bought or sold. */
+  tradeable: boolean;
+  decimals: number | null;
+  kind: "crypto" | "stablecoin" | null;
+  units: string;
+  quantity: string | null;
+  valueUsd: string | null;
+};
+
+export type MarketsResponse = {
+  markets: MarketRow[];
+  quotedAt: number | null;
+  tradingEnabled: boolean;
+  disclosure: string;
+};
+
+export const fetchMarkets = () => apiGet<MarketsResponse>("/api/me/markets");
+
+export function useMarkets() {
+  const [data, setData] = useState<MarketsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  const reload = useCallback(async () => {
+    try { setData(await fetchMarkets()); setFailed(false); }
+    catch { setFailed(true); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { void reload(); }, [reload]);
+  return { data, loading, failed, reload };
+}
+
+/** Compact money for table cells: $2.03T, $48.2B, $1.4M. */
+export function compactUsd(value: string | null): string {
+  if (value === null) return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const [div, suffix] = n >= 1e12 ? [1e12, "T"] : n >= 1e9 ? [1e9, "B"] : n >= 1e6 ? [1e6, "M"] : n >= 1e3 ? [1e3, "K"] : [1, ""];
+  return `$${(n / div).toFixed(suffix ? 2 : 0)}${suffix}`;
+}
+
+/** Price with a sensible number of decimals: $102,400.91 but $0.3612. */
+export function marketPrice(value: string): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const digits = n >= 1000 ? 2 : n >= 1 ? 2 : 4;
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}

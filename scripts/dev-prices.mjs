@@ -11,7 +11,7 @@
  * market. Prices drift by a small random walk so the UI can be seen updating.
  *
  * Serves two shapes:
- *   /prices              the /simple/price response
+ *   /prices              the /coins/markets response (array of market rows)
  *   /ohlc/<id>?days=N    the /coins/{id}/ohlc response (candle arrays)
  *
  *   node scripts/dev-prices.mjs                # listens on :8799
@@ -28,12 +28,42 @@ import { createServer } from "node:http";
 
 const PORT = Number(process.env.PORT) || 8799;
 
-/** Rough spot levels; the exact numbers don't matter, the movement does. */
-const prices = { bitcoin: 102_480.25, ethereum: 3_412.66, solana: 214.08, "usd-coin": 1.0 };
+/**
+ * A plausible top-of-market list. The first four are Veyra's tradeable
+ * registry; the rest exist so the markets table looks like a market rather
+ * than a four-row stub. Caps and volumes are order-of-magnitude realistic.
+ */
+const COINS = [
+  ["bitcoin", "BTC", "Bitcoin", 102_480.25, 2.03e12, 48.2e9],
+  ["ethereum", "ETH", "Ethereum", 3_412.66, 411e9, 24.8e9],
+  ["tether", "USDT", "Tether", 1.0, 142e9, 71.4e9],
+  ["ripple", "XRP", "XRP", 2.38, 137e9, 6.1e9],
+  ["binancecoin", "BNB", "BNB", 648.12, 94e9, 2.3e9],
+  ["solana", "SOL", "Solana", 214.08, 103e9, 5.7e9],
+  ["usd-coin", "USDC", "USD Coin", 1.0, 43e9, 9.2e9],
+  ["cardano", "ADA", "Cardano", 0.94, 33e9, 1.4e9],
+  ["dogecoin", "DOGE", "Dogecoin", 0.36, 53e9, 3.2e9],
+  ["tron", "TRX", "TRON", 0.26, 22e9, 0.9e9],
+  ["chainlink", "LINK", "Chainlink", 22.41, 14e9, 1.1e9],
+  ["avalanche-2", "AVAX", "Avalanche", 38.72, 15e9, 0.8e9],
+  ["stellar", "XLM", "Stellar", 0.41, 12e9, 0.5e9],
+  ["polkadot", "DOT", "Polkadot", 7.18, 10e9, 0.4e9],
+  ["litecoin", "LTC", "Litecoin", 104.55, 7.9e9, 0.6e9],
+  ["uniswap", "UNI", "Uniswap", 13.27, 7.9e9, 0.3e9],
+  ["aave", "AAVE", "Aave", 331.80, 4.9e9, 0.4e9],
+  ["cosmos", "ATOM", "Cosmos Hub", 6.44, 2.5e9, 0.2e9],
+  ["filecoin", "FIL", "Filecoin", 5.12, 3.1e9, 0.2e9],
+  ["arbitrum", "ARB", "Arbitrum", 0.82, 3.5e9, 0.3e9],
+];
 
-/** A stablecoin that wanders is a broken stablecoin, so USDC is pinned. */
+const STABLE = new Set(["usd-coin", "tether"]);
+
+/** Rough spot levels; the exact numbers don't matter, the movement does. */
+const prices = Object.fromEntries(COINS.map(([id, , , usd]) => [id, usd]));
+
+/** A stablecoin that wanders is a broken stablecoin, so those are pinned. */
 const drift = (id, value) => {
-  if (id === "usd-coin") return 1.0;
+  if (STABLE.has(id)) return 1.0;
   const next = value * (1 + (Math.random() - 0.5) * 0.004);
   return Math.round(next * 100) / 100;
 };
@@ -60,8 +90,8 @@ function candles(id, days) {
   let close = base;
   for (let i = 0; i < count; i++) {
     const t = now - i * stepMs;
-    const wobble = (seeded(Math.floor(t / stepMs) + id.length) - 0.5) * (id === "usd-coin" ? 0.0015 : 0.05);
-    const open = id === "usd-coin" ? 1 : close * (1 + wobble);
+    const wobble = (seeded(Math.floor(t / stepMs) + id.length) - 0.5) * (STABLE.has(id) ? 0.0015 : 0.05);
+    const open = STABLE.has(id) ? 1 : close * (1 + wobble);
     const high = Math.max(open, close) * (1 + Math.abs(wobble) * 0.45);
     const low = Math.min(open, close) * (1 - Math.abs(wobble) * 0.45);
     const r = (v) => Math.round(v * 100) / 100;
@@ -89,7 +119,27 @@ createServer((req, res) => {
 
   for (const id of Object.keys(prices)) prices[id] = drift(id, prices[id]);
   console.log(`${new Date().toLocaleTimeString()} ${req.method} ${req.url} — BTC ${prices.bitcoin}`);
-  json(Object.fromEntries(Object.entries(prices).map(([id, usd]) => [id, { usd }])));
+
+  // /coins/markets shape. image is null on purpose: the sandbox has no egress,
+  // and a dead URL would exercise the client's fallback worse than an honest
+  // absence does.
+  json(COINS.map(([id, symbol, name, , cap, vol], i) => {
+    const price = prices[id];
+    const spark = candles(id, 7).map(row => row[4]);
+    const ch = (n) => STABLE.has(id) ? Number(((seeded(i + n) - 0.5) * 0.08).toFixed(2))
+                                     : Number(((seeded(i + n) - 0.45) * 14).toFixed(2));
+    return {
+      id, symbol: symbol.toLowerCase(), name, image: null,
+      current_price: price,
+      market_cap: Math.round(cap * (price / COINS[i][3])),
+      total_volume: Math.round(vol),
+      market_cap_rank: i + 1,
+      price_change_percentage_1h_in_currency: ch(1) / 6,
+      price_change_percentage_24h_in_currency: ch(2),
+      price_change_percentage_7d_in_currency: ch(3) * 1.8,
+      sparkline_in_7d: { price: spark },
+    };
+  }));
 }).listen(PORT, "127.0.0.1", () => {
   console.log(`Dev price feed on http://127.0.0.1:${PORT}`);
   console.log(`  CRYPTO_PRICES_URL=http://127.0.0.1:${PORT}/prices`);

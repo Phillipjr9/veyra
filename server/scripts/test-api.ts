@@ -1522,7 +1522,27 @@ try {
   // the cache, timeout, parsing and staleness logic all run for real, only the
   // far end is ours. Tests never touch the network.
   {
-    let priceBody: unknown = { bitcoin: { usd: 100000 }, ethereum: { usd: 4000 }, solana: { usd: 200 }, "usd-coin": { usd: 1 } };
+    /* The upstream is /coins/markets, so the stub speaks that array shape.
+       mkt() keeps the tests written in the terms they care about — "which
+       coins are priced, and at what" — instead of 12 fields of noise. */
+    const mkt = (prices: Record<string, number>, extra: Record<string, unknown> = {}) =>
+      Object.entries(prices).map(([id, usd], i) => ({
+        id,
+        symbol: ({ bitcoin: "btc", ethereum: "eth", solana: "sol", "usd-coin": "usdc", dogecoin: "doge" } as Record<string, string>)[id] ?? id,
+        name: id,
+        image: `https://example.test/${id}.png`,
+        current_price: usd,
+        market_cap: usd * 1000,
+        total_volume: usd * 10,
+        market_cap_rank: i + 1,
+        price_change_percentage_1h_in_currency: 0.4,
+        price_change_percentage_24h_in_currency: -1.25,
+        price_change_percentage_7d_in_currency: 3.5,
+        sparkline_in_7d: { price: [usd * 0.98, usd * 0.99, usd] },
+        ...extra,
+      }));
+
+    let priceBody: unknown = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1 });
     let priceStatus = 200;
     // Candle rows in CoinGecko's shape: [ms, open, high, low, close].
     let ohlcBody: unknown = [
@@ -1617,11 +1637,11 @@ try {
 
       // A feed that answers but carries nothing usable is a failed feed: the
       // last good quotes must survive rather than being replaced by nothing.
-      priceStatus = 200; priceBody = { bitcoin: { usd: 100000 } };
+      priceStatus = 200; priceBody = mkt({ bitcoin: 100000 });
       resetPrices();
       await new Promise(r => setTimeout(r, 60));
       await api("GET", "/api/me/holdings", rae);
-      priceBody = {};
+      priceBody = [];
       await new Promise(r => setTimeout(r, 60));
       const kept = await api("GET", "/api/me/holdings", rae);
       expect("an empty feed response keeps the last known price", kept.json.holdings
@@ -1629,15 +1649,69 @@ try {
 
       // A member holding an asset the feed cannot price must be told the total
       // is incomplete rather than shown a smaller, confident number.
-      priceBody = { bitcoin: { usd: 100000 }, ethereum: { usd: 4000 }, solana: { usd: 200 }, "usd-coin": { usd: 1 } };
+      priceBody = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1 });
       resetPrices();
       await new Promise(r => setTimeout(r, 60));
       await api("POST", "/api/me/holdings/trade", rae, { asset: "SOL", side: "buy", amount: "100" });
-      priceBody = { bitcoin: { usd: 100000 } };
+      priceBody = mkt({ bitcoin: 100000 });
       resetPrices();
       await new Promise(r => setTimeout(r, 60));
       const partial = await api("GET", "/api/me/holdings", rae);
       expect("an unpriced holding flags the total as partial", partial.json.partial === true);
+
+      /* ---- markets table ---- */
+      priceBody = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1, dogecoin: 0.42 });
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      const markets = await api("GET", "/api/me/markets", rae);
+      expect("markets list every quoted coin, ranked", markets.status === 200 &&
+        markets.json.markets.length === 5 && markets.json.markets[0].code === "BTC" &&
+        markets.json.markets[0].rank === 1 && markets.json.markets[0].priceUsd === "100000.00");
+      expect("markets carry change, cap, volume and a sparkline", (() => {
+        const btc = markets.json.markets[0];
+        return btc.change24h === -1.25 && btc.change7d === 3.5 &&
+          btc.marketCapUsd === "100000000.00" && btc.volumeUsd === "1000000.00" &&
+          Array.isArray(btc.sparkline) && btc.sparkline.length === 3 && btc.sparkline[2] === 10000000;
+      })());
+
+      // Being quoted is not being custodied. DOGE is priced upstream but is not
+      // in the local registry, so it must be listed and explicitly untradeable
+      // — otherwise the UI would offer a buy we have no decimals to settle.
+      expect("a coin outside the registry is listed but not tradeable", (() => {
+        const doge = markets.json.markets.find((m: any) => m.code === "DOGE");
+        return doge && doge.tradeable === false && doge.decimals === null &&
+          doge.quantity === null && doge.valueUsd === null && doge.priceUsd === "0.42";
+      })());
+      expect("a registry asset is tradeable and carries its decimals", (() => {
+        const eth = markets.json.markets.find((m: any) => m.code === "ETH");
+        return eth && eth.tradeable === true && eth.decimals === 18 && eth.kind === "crypto";
+      })());
+
+      // The member's own position has to ride along, or the table is a price
+      // ticker rather than a view of their money.
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "buy", amount: "250" });
+      const withPosition = await api("GET", "/api/me/markets", rae);
+      expect("a held asset shows its quantity and value in the table", (() => {
+        const btc = withPosition.json.markets.find((m: any) => m.code === "BTC");
+        return btc.units === "250000" && btc.quantity === "0.0025" && btc.valueUsd === "250.00";
+      })());
+      expect("markets state the quote time and the disclosure", typeof withPosition.json.quotedAt === "number" &&
+        withPosition.json.quotedAt > 0 && /not FDIC insured/.test(withPosition.json.disclosure));
+      expect("markets require a session (401)", (await api("GET", "/api/me/markets")).status === 401);
+
+      // A dead feed must empty the table, not fill it with zero-priced coins.
+      priceStatus = 500;
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      const noMarkets = await api("GET", "/api/me/markets", rae);
+      expect("an unreachable feed yields no market rows, never $0 ones", noMarkets.status === 200 &&
+        noMarkets.json.markets.length === 0);
+
+      priceStatus = 200;
+      priceBody = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1 });
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "sell", amount: "0.0025" });
 
       /* ---- price history ---- */
       const candles = await api("GET", "/api/me/holdings/BTC/candles?range=7d", rae);

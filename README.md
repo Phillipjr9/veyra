@@ -310,7 +310,7 @@ funds) to the status columns.
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
   rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications,
   digital asset holdings (`GET /api/me/holdings`, `POST /api/me/holdings/trade`,
-  `GET /api/me/holdings/:asset/candles`)
+  `GET /api/me/holdings/:asset/candles`, `GET /api/me/markets`)
 - **Admin** — `GET /api/admin/state` (console aggregate: users, accounts, ledger, disputes,
   KYC queue, audit, role matrix, settings) `· overview · members · staff · roles · audit`,
   member detail/adjust/status, KYC request/queue/decision, risk dispute queue + advance,
@@ -504,7 +504,9 @@ builds each member's Account snapshot straight from these tables.
 
 Members can hold BTC, ETH, SOL and USDC alongside their deposit account, and
 buy or sell with their checking balance. `Accounts & savings` carries the
-panel; `GET /api/me/holdings` and `POST /api/me/holdings/trade` are the API.
+holdings panel; **Markets** (`/app/markets`) is the full market table.
+`GET /api/me/holdings`, `POST /api/me/holdings/trade` and
+`GET /api/me/markets` are the API.
 
 > ### ⚠ This is licensable activity in New York
 >
@@ -585,9 +587,35 @@ staleness logic all still run. For local work without egress,
 `node scripts/dev-prices.mjs` serves both shapes with prices that drift and
 deterministic candles.
 
+### The markets page
+
+`/app/markets` lists every coin the feed quotes — price, 1H/24H/7D change,
+market cap, 24h volume, a 7-day sparkline and the member's own position —
+sortable on any numeric column, searchable, and with the candlestick chart
+expanding inline under a row rather than on a separate screen.
+
+The modelling follows a custodian like BitGo rather than an exchange: a
+*curated* list that sits inside custody, not an infinite listing. So the table
+draws a hard line between **quoted** and **tradeable**. Every row shows a
+price; only assets in the local `crypto_assets` registry carry `tradeable:
+true`. A coin appearing on CoinGecko is not consent to custody it — decimals,
+and therefore every unit conversion the ledger depends on, exist only for the
+assets we seeded. Untradeable rows render as reference data with no Buy
+control and no candle history.
+
+This also means the markets page costs **no extra upstream calls**. The spot
+feed moved from `/simple/price` to `/coins/markets`, which returns price,
+changes, cap, volume and a sparkline for up to 100 coins in one request — the
+same call that values the holdings now populates the whole table. Sparklines
+are downsampled from 168 hourly points to 32 before they leave the server, so
+100 rows cost ~3,200 numbers instead of 16,800.
+
+Rows the feed cannot price are **dropped, not zeroed**, and a dead feed yields
+an empty table rather than a page of $0.00 coins.
+
 ### Price history and the API quota
 
-Each asset card opens a candlestick chart over 24H / 7D / 30D / 90D, drawn by
+Each asset row opens a candlestick chart over 24H / 7D / 30D / 90D, drawn by
 hand in SVG (`src/components/CandleChart.tsx`) — recharts is a dependency but
 has no candlestick primitive, and a custom Bar shape fighting the library's
 scales for wick placement is more code than the SVG. OHLC comes from
@@ -603,8 +631,9 @@ fetched only when a chart is actually opened.
 | 300s *(default)* | 288 | 8,640 | 86% — little room for charts |
 | 600s | 144 | 4,320 | 43% |
 
-At the 300s default, spot alone uses 86% of the free allowance, so **a
-production deployment serving real traffic needs the paid Basic plan**
+At the 300s default, spot alone uses 86% of the free allowance — unchanged by
+the markets page, which rides the same call — so **a production deployment
+serving real traffic needs the paid Basic plan**
 (~$35/month, 100k credits). Development and demo use fit comfortably in the
 free tier.
 
@@ -638,7 +667,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (312) = 353 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (320) = 361 checks
 node scripts/dev-prices.mjs  # offline crypto price feed (see Digital assets)
 ```
 

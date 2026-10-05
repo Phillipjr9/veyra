@@ -32,7 +32,7 @@ import { seed } from "./seed.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
 import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
-import { loadPrices, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
+import { loadPrices, loadMarkets, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -1075,6 +1075,49 @@ export function createApp(dbPath?: string) {
       quantity: formatUnitsTrimmed(units, asset.decimals),
       amountUsd: centsToDecimal(cents),
       priceUsd: centsToDecimal(Number(quote.cents)),
+    });
+  }));
+
+  app.get("/api/me/markets", requireAuth, wrap(async (req, res) => {
+    const { markets, fetchedAt } = await loadMarkets();
+    const registry = new Map(listAssets(db).map(a => [a.code, a]));
+    const held = new Map((db.prepare("SELECT asset, units FROM holdings WHERE user_id = ?")
+      .all(req.user!.id) as unknown as { asset: string; units: string }[]).map(r => [r.asset, r.units]));
+
+    // `tradeable` is driven by the local registry, never by the upstream list.
+    // A coin appearing on CoinGecko is not consent to custody it: decimals,
+    // and therefore every unit conversion, only exist for assets we seeded.
+    const rows = markets.map(row => {
+      const asset = registry.get(row.code);
+      const units = asset ? held.get(row.code) ?? "0" : "0";
+      return {
+        code: row.code,
+        name: row.name,
+        image: row.image,
+        rank: row.rank,
+        priceUsd: centsToDecimal(row.priceCents),
+        change1h: row.change1h,
+        change24h: row.change24h,
+        change7d: row.change7d,
+        marketCapUsd: row.marketCapCents === null ? null : centsToDecimal(row.marketCapCents),
+        volumeUsd: row.volumeCents === null ? null : centsToDecimal(row.volumeCents),
+        sparkline: row.sparkline,
+        tradeable: Boolean(asset),
+        decimals: asset?.decimals ?? null,
+        kind: asset?.kind ?? null,
+        units,
+        quantity: asset ? formatUnitsTrimmed(BigInt(units), asset.decimals) : null,
+        valueUsd: asset && units !== "0"
+          ? centsToDecimal(valueInCents(BigInt(units), asset.decimals, BigInt(row.priceCents)))
+          : null,
+      };
+    });
+
+    res.json({
+      markets: rows,
+      quotedAt: fetchedAt || null,
+      tradingEnabled: tradingEnabled(),
+      disclosure: "Market data is indicative. Digital assets are not FDIC insured and can lose value.",
     });
   }));
 
