@@ -53,3 +53,16 @@ public form).
   untracked.
 - Landing-page testimonial avatars are hotlinked from Pexels. They fall back to
   initials if blocked, but should be self-hosted for production.
+
+## Follow-up (same day)
+
+- **Dependencies:** React 19.3, Tailwind 4.3.3, tailwind-merge 3.7, motion 13.5.1, lucide 1.52, vite-plugin-singlefile 2.3.3, Vite 7.3.6 (security patch), gRPC pinned to ≥1.13.6 via `overrides`. `npm audit` now lists only `braces`, which every version is affected by (no fix exists upstream yet). It is pulled in by the build tooling and never reaches users.
+- **Team access is real:** owners (and Admin teammates) invite by email. The invitee picks their own password at `/invite/accept` and then works inside the owner's business account. Roles:
+  - **Admin:** everything a Member can do, plus invite/remove teammates, change preferences and redeem rewards.
+  - **Member:** move money and manage cards, invoices, payees, pockets and budgets.
+  - **Bookkeeper:** read-only, but can still use support and notifications.
+  - Teammates can never touch the owner's ID application, profile, passkeys or device sessions.
+  - Invite tokens are hashed, single-use and expire after 7 days.
+  - Removing a teammate revokes their sessions immediately.
+  - Without a mail provider, the dev server returns a copyable invite link instead.
+  - Not yet enforced: a Member's per-person monthly limit is stored but doesn't yet cap their transfers.

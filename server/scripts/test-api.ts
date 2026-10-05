@@ -579,6 +579,60 @@ try {
   const ownerRemove = await api("DELETE", `/api/me/team/${ownerRow.id}`, rae);
   expect("account owner cannot be removed (400)", ownerRemove.status === 400);
 
+  /* ---------- team access: invite → accept → role-scoped shared access ---------- */
+  const tokenFromMail = (to: string) => {
+    const mail = [...recentMail].reverse().find(m => m.to === to && m.tag === "team-invite");
+    return mail?.text.match(/token=([a-f0-9]+)/i)?.[1] ?? "";
+  };
+  const adaToken = tokenFromMail("ada@raeandco.com");
+  expect("team: invite email carries an accept link", adaToken.length >= 32);
+  expect("team: raw invite token is never stored",
+    !(db.prepare("SELECT 1 FROM team_members WHERE invite_token_hash = ?").get(adaToken)));
+  const dupInvite = await api("POST", "/api/me/team", rae, { name: "Ada Again", email: "ADA@raeandco.com", role: "Member", monthlyLimit: 0 });
+  expect("team: duplicate pending invite refused (409)", dupInvite.status === 409);
+  const lookup = await api("GET", `/api/invites/${adaToken}`);
+  expect("team: invite lookup shows business, role and inviter",
+    lookup.status === 200 && lookup.json.invite.role === "Admin" && lookup.json.invite.email === "ada@raeandco.com" && !!lookup.json.invite.business);
+  expect("team: unknown invite token 404", (await api("GET", `/api/invites/${"0".repeat(64)}`)).status === 404);
+  expect("team: short password refused (400)", (await api("POST", `/api/invites/${adaToken}/accept`, undefined, { name: "Ada", password: "short" })).status === 400);
+  const accepted = await api("POST", `/api/invites/${adaToken}/accept`, undefined, { name: "Ada Lovelace", password: "analytical-engine" });
+  expect("team: accepting creates a login and signs in",
+    accepted.status === 201 && !!accepted.json.token && accepted.json.user.teamRole === "Admin" && accepted.json.user.accountType === "business");
+  expect("team: an invite link works only once", (await api("POST", `/api/invites/${adaToken}/accept`, undefined, { name: "X", password: "another-pass-1" })).status === 404);
+  const ada = accepted.json.token as string;
+  const raeState = (await api("GET", "/api/me/state", rae)).json;
+  const adaState = await api("GET", "/api/me/state", ada);
+  expect("team: teammate sees the owner's business account",
+    adaState.status === 200 && adaState.json.account.balance === raeState.account.balance &&
+    adaState.json.account.team.some((m: any) => m.email === "ada@raeandco.com" && m.status === "active"));
+  const adaLogin = await api("POST", "/api/auth/login", undefined, { email: "ada@raeandco.com", password: "analytical-engine" });
+  expect("team: teammate signs in with their own password", adaLogin.status === 200 && adaLogin.json.user.teamRole === "Admin");
+  expect("team: /auth/me returns the teammate, not the owner", (await api("GET", "/api/auth/me", ada)).json.user.email === "ada@raeandco.com");
+  expect("team: teammates can't touch the owner's ID application (403)", (await api("PATCH", "/api/me/kyc", ada, { nextStep: "x", completeness: 1 })).status === 403);
+  expect("team: teammates can't edit the owner's profile (403)", (await api("PATCH", "/api/me/profile", ada, { name: "Hijack" })).status === 403);
+  expect("team: teammates can't register passkeys on the owner (403)", (await api("POST", "/api/me/passkeys/challenge", ada, {})).status === 403);
+  const adaPw = await api("POST", "/api/auth/change-password", ada, { current: "analytical-engine", next: "difference-engine" });
+  expect("team: password change applies to the teammate only",
+    adaPw.status === 200 && (await api("POST", "/api/auth/login", undefined, { email: "ada@raeandco.com", password: "difference-engine" })).status === 200);
+  // Admin can invite a Bookkeeper; Bookkeeper is read-only.
+  const bkInvite = await api("POST", "/api/me/team", ada, { name: "Bo Keeper", email: "bo@raeandco.com", role: "Bookkeeper", monthlyLimit: 0 });
+  expect("team: an Admin teammate can invite", bkInvite.status === 201);
+  const bo = (await api("POST", `/api/invites/${tokenFromMail("bo@raeandco.com")}/accept`, undefined, { name: "Bo Keeper", password: "ledger-pass-1" })).json.token as string;
+  expect("team: Bookkeeper can read the account", (await api("GET", "/api/me/state", bo)).status === 200);
+  expect("team: Bookkeeper can't move money (403)",
+    (await api("POST", "/api/me/transfers", bo, { amount: 1, counterparty: "X", kind: "ach" })).status === 403);
+  expect("team: Bookkeeper can't invite (403)",
+    (await api("POST", "/api/me/team", bo, { name: "Z", email: "z@raeandco.com", role: "Member", monthlyLimit: 0 })).status === 403);
+  expect("team: Bookkeeper can still contact support", (await api("POST", "/api/me/support", bo, { subject: "Statement question", message: "Where is the March statement?" })).status === 201);
+  const boRow = (await api("GET", "/api/me/state", rae)).json.account.team.find((m: any) => m.email === "bo@raeandco.com");
+  expect("team: owner removes a teammate", (await api("DELETE", `/api/me/team/${boRow.id}`, rae)).status === 200);
+  expect("team: removed teammate is signed out immediately (401)", (await api("GET", "/api/me/state", bo)).status === 401);
+  expect("team: removed teammate can't sign back in to the business",
+    (await (async () => { const l = await api("POST", "/api/auth/login", undefined, { email: "bo@raeandco.com", password: "ledger-pass-1" });
+      return l.status !== 200 || (await api("GET", "/api/me/state", l.json.token)).status === 401; })()));
+  expect("team: teammate logins aren't listed as separate customers",
+    !(await api("GET", "/api/admin/state", admin)).json.accounts?.some((a: any) => a.email === "ada@raeandco.com"));
+
   // Members can open disputes but never resolve their own (compliance resolves)
   const memberAdvance = await api("POST", `/api/me/disputes/${disputeId}/advance`, alex);
   expect("member self-resolution blocked (404 — no such route)", memberAdvance.status === 404);

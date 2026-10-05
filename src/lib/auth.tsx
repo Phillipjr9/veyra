@@ -17,6 +17,9 @@ export type User = {
   role?: UserRole;
   plan: "Starter" | "Pro";
   createdAt: number;
+  /** Set for teammates: their role on the owner's business account. */
+  teamRole?: "Admin" | "Member" | "Bookkeeper";
+  teamOwnerId?: string;
 };
 
 type AuthValue = {
@@ -55,6 +58,8 @@ type AuthValue = {
     email: string; password: string; plan?: User["plan"]; profile?: Record<string, unknown>;
   }) => Promise<void>;
 
+  /** Accepts a team invitation and signs the new teammate in. */
+  acceptInvite: (token: string, name: string, password: string) => Promise<User>;
   logout: () => void;
   updateUser: (patch: Partial<Pick<User, "name" | "phone" | "business" | "accountType" | "email" | "plan" | "role" | "avatarUrl">>) => void;
   changePassword: (current: string, next: string) => Promise<void>;
@@ -186,6 +191,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSessionNotice("");
   }, []);
 
+  const acceptInvite = useCallback<AuthValue["acceptInvite"]>(async (inviteToken, name, password) => {
+    clearToken();
+    if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
+    const { token, user: me } = await apiPost<{ token: string; user: User }>(`/api/invites/${encodeURIComponent(inviteToken)}/accept`, { name: name.trim(), password });
+    setToken(token);
+    setActiveToken(token);
+    setUser(me);
+    setSessionNotice("");
+    return me;
+  }, []);
+
   const logout = useCallback(() => {
     // Revoke the server session (best-effort — local sign-out proceeds regardless).
     apiPost("/api/auth/logout").catch(() => undefined);
@@ -216,8 +232,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword],
 
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;

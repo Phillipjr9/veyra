@@ -29,7 +29,7 @@ import {
 import { logAdminAction } from "./audit.js";
 import { validateApplication, rowToApplication, memberIdentity, submissionFor, PROFILE_COLUMNS } from "./identity.js";
 import { seed } from "./seed.js";
-import { sendMail, mailDelivers, passwordResetMail, applicationReceivedMail, kycDecisionMail, supportReceivedMail, supportReplyMail, supportInboxMail } from "./mail.js";
+import { sendMail, mailDelivers, passwordResetMail, applicationReceivedMail, kycDecisionMail, supportReceivedMail, supportReplyMail, supportInboxMail, teamInviteMail } from "./mail.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
 import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
@@ -38,7 +38,36 @@ import { loadPrices, loadMarkets, tradableQuote, loadCandles, isCandleRange, CAN
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
   accountType: "personal" | "business"; status: string; business: string;
+  /**
+   * Team access: when a teammate is signed in, `id` (and the account fields)
+   * are the business OWNER's — every /api/me route then acts on the shared
+   * business — while `loginId` is the teammate's own user id, used for
+   * anything that belongs to the person (password, sessions, audit actor).
+   */
+  loginId?: string;
+  teamRole?: TeamRole;
 };
+export type TeamRole = "Admin" | "Member" | "Bookkeeper";
+
+/**
+ * What each team role may do on the owner's account. Allow-list: anything not
+ * listed is refused. Identity-bound routes (the owner's ID application,
+ * passkeys and device sessions) are never available to teammates.
+ */
+const TEAM_NEVER = /^\/api\/me\/(profile|kyc|passkeys|sessions)(\/|$)/;
+const TEAM_ALL_WRITE = /^\/api\/me\/(notifications|support)(\/|$)/;
+const TEAM_MEMBER_WRITE = /^\/api\/me\/(transfers|deposits|holdings\/trade|cards|invoices|payees|scheduled|pockets|budgets|disputes|scout\/apply|perks)(\/|$)/;
+const TEAM_ADMIN_WRITE = /^\/api\/me\/(team|preferences|rewards\/redeem)(\/|$)/;
+export function teamAllows(method: string, path: string, role: TeamRole): boolean {
+  if (path.startsWith("/api/auth/")) return true; // me / logout / change-password — scoped to the login below
+  if (!path.startsWith("/api/me/")) return false;
+  if (TEAM_NEVER.test(path)) return false;
+  if (method === "GET" || method === "HEAD") return true;
+  if (TEAM_ALL_WRITE.test(path)) return true;
+  if (role === "Bookkeeper") return false;
+  if (TEAM_MEMBER_WRITE.test(path)) return true;
+  return role === "Admin" && TEAM_ADMIN_WRITE.test(path);
+}
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -120,7 +149,7 @@ export function createApp(dbPath?: string) {
   /** Full user shape — mirrors the frontend User model (used by /api/auth/me). */
   function fullUser(userId: string) {
     const row = db.prepare(
-      "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at FROM users WHERE id = ?",
+      "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at, team_owner_id, team_role FROM users WHERE id = ?",
     ).get(userId) as Record<string, unknown> | undefined;
     if (!row) return null;
     // The account the user just opened, so the sign-up response is already
@@ -133,6 +162,7 @@ export function createApp(dbPath?: string) {
       business: String(row.business ?? ""), accountType: row.account_type as "personal" | "business",
       avatarUrl: String(row.avatar_url ?? "/images/avatar-3d-default.svg"),
       role: row.role as string, plan: row.plan as "Starter" | "Pro", createdAt: row.created_at as number,
+      ...(row.team_owner_id ? { teamRole: row.team_role as TeamRole, teamOwnerId: String(row.team_owner_id) } : {}),
       bankDetails: {
         accountNumber: String(account?.account_number ?? ""),
         routingNumber: String(account?.routing_number ?? ""),
@@ -173,8 +203,23 @@ export function createApp(dbPath?: string) {
     if (!session || session.revoked || session.expires_at < Date.now()) {
       return void res.status(401).json({ error: "Session revoked — sign in again.", code: "session_revoked" });
     }
-    const user = loadUser(payload.sub);
+    let user = loadUser(payload.sub);
     if (!user) return void res.status(401).json({ error: "Account no longer exists.", code: "no_account" });
+    const team = db.prepare(
+      `SELECT u.team_owner_id, u.team_role, m.status AS member_status FROM users u
+       LEFT JOIN team_members m ON m.member_user_id = u.id AND m.user_id = u.team_owner_id
+       WHERE u.id = ? AND u.team_owner_id IS NOT NULL`,
+    ).get(user.id) as { team_owner_id: string; team_role: TeamRole; member_status: string | null } | undefined;
+    if (team) {
+      const owner = loadUser(team.team_owner_id);
+      if (!owner || team.member_status !== "active") {
+        return void res.status(401).json({ error: "Your access to this business was removed.", code: "team_removed" });
+      }
+      if (!teamAllows(req.method, req.path, team.team_role)) {
+        return void res.status(403).json({ error: `Your team role (${team.team_role}) can't do this — ask the account owner.`, code: "team_role" });
+      }
+      user = { ...owner, name: user.name, email: user.email, loginId: user.id, teamRole: team.team_role };
+    }
     if (process.env.NODE_ENV !== "production" && via === "x-veyra-token") {
       // Worth knowing in dev: it means a proxy between the browser and this
       // process is eating the Authorization header.
@@ -707,16 +752,18 @@ export function createApp(dbPath?: string) {
   }));
 
   app.get("/api/auth/me", requireAuth, wrap((req, res) => {
-    res.json({ user: fullUser(req.user!.id) });
+    res.json({ user: fullUser(req.user!.loginId ?? req.user!.id) });
   }));
 
   app.post("/api/auth/change-password", requireAuth, wrap(async (req, res) => {
     const current = String(req.body?.current ?? "");
     const next = String(req.body?.next ?? "");
     if (next.length < 8) return void res.status(400).json({ error: "Use at least 8 characters." });
-    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(req.user!.id) as { password_hash: string };
+    // Always the signed-in person's own password — never a team owner's.
+    const loginId = req.user!.loginId ?? req.user!.id;
+    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(loginId) as { password_hash: string };
     if (!verifyPassword(current, row.password_hash)) return void res.status(400).json({ error: "Your current password is incorrect." });
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(next), req.user!.id);
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(next), loginId);
     res.json({ ok: true });
   }));
 
@@ -1455,28 +1502,108 @@ export function createApp(dbPath?: string) {
 
   /* ---------- team ---------- */
 
+  const INVITE_TTL_MS = 7 * 86_400_000;
+  const hashInvite = (token: string) => createHash("sha256").update(token).digest("hex");
+
   app.post("/api/me/team", requireAuth, requireApproved, wrap((req, res) => {
     const name = String(req.body?.name ?? "").trim();
-    const email = String(req.body?.email ?? "").trim();
+    const email = String(req.body?.email ?? "").trim().toLowerCase();
     const role = String(req.body?.role ?? "Member");
     const monthlyLimit = dollarsToCents(req.body?.monthlyLimit ?? 0);
     if (!name || !email) return void res.status(400).json({ error: "Name and email are required." });
+    if (!/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "Enter a valid email address." });
     if (!["Admin", "Member", "Bookkeeper"].includes(role)) return void res.status(400).json({ error: "Invalid role." });
+    if (req.user!.accountType !== "business") return void res.status(400).json({ error: "Team access is available on business accounts." });
+    if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
+      return void res.status(409).json({ error: "That email already has a Veyra login. Invite a different address." });
+    }
+    if (db.prepare("SELECT 1 FROM team_members WHERE user_id = ? AND email = ? COLLATE NOCASE AND status != 'removed'").get(req.user!.id, email)) {
+      return void res.status(409).json({ error: "That person is already on your team or has a pending invite." });
+    }
+    if (!rateLimit(`invite:${req.user!.id}`, 30, 60 * 60_000)) return void res.status(429).json({ error: "Too many invites — try again in an hour." });
     const id = rid("tm");
+    const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
     db.prepare(
-      `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'invited')`,
-    ).run(id, req.user!.id, name, email, role, role === "Bookkeeper" ? 0 : 1, monthlyLimit);
+      `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status, invite_token_hash, invite_expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'invited', ?, ?)`,
+    ).run(id, req.user!.id, name, email, role, role === "Bookkeeper" ? 0 : 1, monthlyLimit, hashInvite(token), now() + INVITE_TTL_MS);
+    const business = req.user!.business || req.user!.name;
+    void sendMail(teamInviteMail(email, name, req.user!.name, business, role, token));
     notify(req.user!.id, "security", `Invite sent to ${name}`, `${role} · ${monthlyLimit ? `${centsToDecimal(monthlyLimit)} monthly limit` : "view-only access"}.`);
-    res.status(201).json({ member: { id, name, email, role, cardCount: role === "Bookkeeper" ? 0 : 1, monthlyLimit: monthlyLimit / 100, status: "invited" } });
+    // Without a mail provider the link would only exist in an email that never
+    // leaves the server, so development hands it back for the owner to share.
+    const inviteUrl = process.env.NODE_ENV !== "production" && !mailDelivers() ? `/#/invite/accept?token=${token}` : undefined;
+    res.status(201).json({
+      member: { id, name, email, role, cardCount: role === "Bookkeeper" ? 0 : 1, monthlyLimit: monthlyLimit / 100, status: "invited" },
+      ...(inviteUrl ? { inviteUrl } : {}),
+    });
   }));
 
   app.delete("/api/me/team/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
-    const member = db.prepare("SELECT role FROM team_members WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { role: string } | undefined;
+    const member = db.prepare("SELECT role, member_user_id FROM team_members WHERE id = ? AND user_id = ?").get(id, req.user!.id) as
+      { role: string; member_user_id: string | null } | undefined;
     if (!member) return void res.status(404).json({ error: "Team member not found." });
     if (member.role === "Owner") return void res.status(400).json({ error: "The account owner cannot be removed." });
-    db.prepare("DELETE FROM team_members WHERE id = ? AND user_id = ?").run(id, req.user!.id);
+    if (member.member_user_id && member.member_user_id === req.user!.loginId) {
+      return void res.status(400).json({ error: "You can't remove yourself — ask the account owner." });
+    }
+    inTransaction(db, () => {
+      db.prepare("DELETE FROM team_members WHERE id = ? AND user_id = ?").run(id, req.user!.id);
+      // Their login stops working immediately: requireAuth requires an active
+      // team_members row, and every live session is revoked.
+      if (member.member_user_id) db.prepare("UPDATE sessions SET revoked = 1 WHERE user_id = ?").run(member.member_user_id);
+    });
     res.json({ ok: true });
+  }));
+
+  /** A pending, unexpired invite by its raw token. */
+  function pendingInvite(token: string) {
+    if (!/^[a-f0-9]{32,128}$/i.test(token)) return undefined;
+    return db.prepare(
+      `SELECT m.*, o.name AS owner_name, o.business AS owner_business, o.plan AS owner_plan
+       FROM team_members m JOIN users o ON o.id = m.user_id
+       WHERE m.invite_token_hash = ? AND m.status = 'invited' AND m.invite_expires_at > ?`,
+    ).get(hashInvite(token), now()) as Record<string, unknown> | undefined;
+  }
+
+  app.get("/api/invites/:token", wrap((req, res) => {
+    const invite = pendingInvite(String(req.params.token));
+    if (!invite) return void res.status(404).json({ error: "This invitation is invalid, already used, or expired. Ask for a new one." });
+    res.json({ invite: {
+      name: String(invite.name), email: String(invite.email), role: String(invite.role),
+      business: String(invite.owner_business || invite.owner_name), invitedBy: String(invite.owner_name),
+      expiresAt: Number(invite.invite_expires_at),
+    } });
+  }));
+
+  app.post("/api/invites/:token/accept", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`invite-accept:${ip}`, 20, 60 * 60_000)) return void res.status(429).json({ error: "Too many attempts — try again later." });
+    const invite = pendingInvite(String(req.params.token));
+    if (!invite) return void res.status(404).json({ error: "This invitation is invalid, already used, or expired. Ask for a new one." });
+    const name = String(req.body?.name ?? "").trim() || String(invite.name);
+    const password = String(req.body?.password ?? "");
+    if (name.length < 2 || name.length > 80) return void res.status(400).json({ error: "Enter your name." });
+    if (password.length < 8) return void res.status(400).json({ error: "Use at least 8 characters for your password." });
+    const email = String(invite.email);
+    if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
+      return void res.status(409).json({ error: "That email already has a Veyra login." });
+    }
+    const id = rid("u");
+    const ownerId = String(invite.user_id);
+    inTransaction(db, () => {
+      db.prepare(
+        `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at, team_owner_id, team_role)
+         VALUES (?, ?, ?, '', ?, 'business', 'user', ?, ?, 'active', ?, ?, ?)`,
+      ).run(id, name, email, String(invite.owner_business ?? ""), String(invite.owner_plan ?? "Pro"), hashPassword(password), now(), ownerId, String(invite.role));
+      db.prepare("UPDATE team_members SET status = 'active', name = ?, member_user_id = ?, invite_token_hash = NULL, invite_expires_at = NULL WHERE id = ?")
+        .run(name, id, String(invite.id));
+    });
+    const tokenId = randomUUID();
+    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(tokenId, id, now(), now() + TOKEN_TTL_MS);
+    notify(ownerId, "security", `${name} joined your team`, `${String(invite.role)} access is now active. You can remove it any time from Team.`);
+    res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: { ...fullUser(id), status: "active" } });
   }));
 
   /* ---------- savings pockets (money ops) ---------- */
@@ -1767,7 +1894,7 @@ export function createApp(dbPath?: string) {
     ).all();
     res.json({
       totals: {
-        customers: one("SELECT COUNT(*) AS n FROM users WHERE role = 'user'"),
+        customers: one("SELECT COUNT(*) AS n FROM users WHERE role = 'user' AND team_owner_id IS NULL"),
         openAccounts: one("SELECT COUNT(*) AS n FROM accounts"),
         totalBalanceCents: one("SELECT COALESCE(SUM(balance_cents),0) AS n FROM accounts"),
         pendingCents: one("SELECT COALESCE(SUM(pending_cents),0) AS n FROM accounts"),
@@ -1793,7 +1920,7 @@ export function createApp(dbPath?: string) {
        LEFT JOIN accounts a ON a.user_id = u.id
        LEFT JOIN kyc_records k ON k.user_id = u.id
        LEFT JOIN identity_profiles p ON p.user_id = u.id
-       WHERE u.role = 'user'
+       WHERE u.role = 'user' AND u.team_owner_id IS NULL
        ORDER BY u.created_at DESC`,
     ).all() as Array<Record<string, unknown>>;
     const filtered = q
@@ -2148,7 +2275,7 @@ export function createApp(dbPath?: string) {
 
   app.get("/api/admin/staff", requireAuth, requirePerm("staff.manage"), wrap((_req, res) => {
     const staff = db.prepare("SELECT id, name, email, role, status FROM users WHERE role != 'user' ORDER BY role").all();
-    const members = db.prepare("SELECT id, name, email, account_type FROM users WHERE role = 'user' ORDER BY created_at DESC LIMIT 50").all();
+    const members = db.prepare("SELECT id, name, email, account_type FROM users WHERE role = 'user' AND team_owner_id IS NULL ORDER BY created_at DESC LIMIT 50").all();
     res.json({ staff, members });
   }));
 
@@ -2233,7 +2360,7 @@ export function createApp(dbPath?: string) {
     if (!["all", "business", "personal", "unverified"].includes(String(audience))) {
       return void res.status(400).json({ error: "audience must be all, business, personal or unverified." });
     }
-    const targets = db.prepare("SELECT id, account_type FROM users WHERE role = 'user'").all() as Array<{ id: string; account_type: string }>;
+    const targets = db.prepare("SELECT id, account_type FROM users WHERE role = 'user' AND team_owner_id IS NULL").all() as Array<{ id: string; account_type: string }>;
     const audienceFilter = (u: { id: string; account_type: string }) => {
       if (audience === "business") return u.account_type === "business";
       if (audience === "personal") return u.account_type === "personal";
@@ -2679,7 +2806,7 @@ export function createApp(dbPath?: string) {
     const subject = sales ? `Sales enquiry${company ? ` — ${company}` : ""}` : `${category} — website message`;
     const actor = systemActorId();
     if (!actor) return void res.status(503).json({ error: "Support is not available right now — please email us instead." });
-    const member = db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE AND role = 'user'").get(email) as { id: string } | undefined;
+    const member = db.prepare("SELECT COALESCE(team_owner_id, id) AS id FROM users WHERE email = ? COLLATE NOCASE AND role = 'user'").get(email) as { id: string } | undefined;
     const thread = sales ? `${message}\n\nCompany: ${company || "—"} · Team size: ${teamSize || "—"}` : message;
     const id = `ops_${randomUUID()}`;
     const stamp = now();
@@ -2750,7 +2877,7 @@ export function createApp(dbPath?: string) {
              p.dob, p.ssn, p.city, p.state, p.id_type, p.legal_name, p.owner_name, p.submitted_at
       FROM users u LEFT JOIN accounts a ON a.user_id = u.id
       LEFT JOIN identity_profiles p ON p.user_id = u.id
-      WHERE u.role = 'user' OR u.role IS NULL
+      WHERE (u.role = 'user' OR u.role IS NULL) AND u.team_owner_id IS NULL
       ORDER BY u.created_at
     `).all() as Array<Record<string, unknown>>).map(a => ({
       userId: String(a.id), name: String(a.name), email: String(a.email), business: String(a.business ?? ""),

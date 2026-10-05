@@ -76,7 +76,9 @@ export type Invoice = {
 };
 
 export type BankAccountDetails = { accountNumber: string; routingNumber: string; bankName: string; accountType: string; holder: string };
-export type TeamMember = { id: string; name: string; email: string; role: "Owner" | "Admin" | "Member" | "Bookkeeper"; cardCount: number; monthlyLimit: number; status: "active" | "invited" };
+export type TeamMember = { id: string; name: string; email: string; role: "Owner" | "Admin" | "Member" | "Bookkeeper"; cardCount: number; monthlyLimit: number; status: "active" | "invited";
+  /** Dev only: shareable accept link when no mail provider is configured. */
+  inviteUrl?: string };
 export type Perk = { id: string; partner: string; category: string; value: string; description: string; code: string; status: "available" | "redeemed" };
 export type NotificationItem = { id: string; title: string; detail: string; time: number; read: boolean; type: "scout" | "card" | "transfer" | "security" | "invoice" | "info" };
 export type Preferences = { twoFactor: boolean; loginAlerts: boolean; scoutAuto: boolean; weeklyDigest: boolean };
@@ -1200,7 +1202,14 @@ function useAccountState() {
       syncPost(
         "/api/me/team",
         { name: member.name, email: member.email, role: member.role, monthlyLimit: member.monthlyLimit },
-        (result) => adoptId(member.id, (result as { member?: { id?: string } } | null)?.member?.id),
+        (result) => {
+          const r = result as { member?: { id?: string }; inviteUrl?: string } | null;
+          if (r?.inviteUrl) {
+            const url = `${window.location.origin}${window.location.pathname}${r.inviteUrl.replace(/^\//, "")}`;
+            commit(a => ({ ...a, team: a.team.map(m => (m.id === member.id ? { ...m, inviteUrl: url } : m)) }));
+          }
+          adoptId(member.id, r?.member?.id);
+        },
       );
       return member;
     },

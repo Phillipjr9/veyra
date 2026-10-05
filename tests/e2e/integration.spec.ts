@@ -449,3 +449,35 @@ test("support is a real conversation: member → staff Operations queue → memb
   await expect(visitor.locator(".form-success")).toContainText(/reference is VS-[0-9A-F]{8}/);
   await visitor.close();
 });
+
+test("team invite: owner invites from Team, invitee accepts and lands in the shared business", async ({ page, browser }) => {
+  await login(page, "business");
+  await page.goto("/#/app/team");
+  await page.getByRole("button", { name: "Invite member" }).click();
+  const email = `teammate.${Date.now()}@veyra.test`;
+  await page.locator("#tm-name").fill("Tess Mate");
+  await page.locator("#tm-email").fill(email);
+  await page.locator("#tm-role").selectOption("Member");
+  const sent = page.waitForResponse(r => r.url().endsWith("/api/me/team") && r.request().method() === "POST");
+  await page.getByRole("button", { name: "Send invite" }).click();
+  const res = await sent;
+  expect(res.status()).toBe(201);
+  const { inviteUrl } = await res.json() as { inviteUrl: string };
+  expect(inviteUrl).toMatch(/^\/#\/invite\/accept\?token=[a-f0-9]+$/);
+  await expect(page.getByRole("button", { name: "Copy invite link for Tess Mate" })).toBeVisible();
+
+  const ctx = await browser.newContext();
+  const guest = await ctx.newPage();
+  await guest.goto(inviteUrl);
+  await expect(guest.getByRole("heading", { name: /^Join .+ on Veyra$/ })).toBeVisible();
+  await expect(guest.locator(".invite-summary")).toContainText(email);
+  await guest.locator("#inv-pass").fill("teammate-pass-1");
+  await guest.getByRole("button", { name: "Accept invitation" }).click();
+  await expect(guest).toHaveURL(/#\/app$/);
+  await expect(guest.locator("h1").first()).toBeVisible();
+  await guest.goto("/#/app/team");
+  await expect(guest.locator(".team-row").filter({ hasText: email })).toContainText(/active/i);
+  // A Member can't manage the team.
+  await expect(guest.getByRole("button", { name: "Invite member" })).toHaveCount(0);
+  await ctx.close();
+});

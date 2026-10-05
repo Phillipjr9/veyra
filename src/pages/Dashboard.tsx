@@ -7,7 +7,7 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Building2, CalendarClock, CandlestickChart, Check, Clock, Copy, CreditCard,
   Download, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, TrendingUp, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, TrendingUp, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Link2,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, VirtualCard, ease } from "../components/common";
 import { Footer } from "../components/Chrome";
@@ -1797,6 +1797,9 @@ export function RewardsPage() {
    ============================================================ */
 export function TeamPage() {
   const { account, inviteTeamMember, removeTeamMember } = useAcct();
+  const { user: me } = useAuth();
+  // Teammates: only an Admin may invite or remove people (the server enforces it too).
+  const canManage = !me?.teamRole || me.teamRole === "Admin";
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<{ name: string; email: string; role: TeamMember["role"]; limit: number }>({ name: "", email: "", role: "Member", limit: 5000 });
@@ -1823,7 +1826,7 @@ export function TeamPage() {
   return (
     <div className="app-page">
       <PageHeader eyebrow="Roles, permissions and per-person spend limits" title="Team">
-        <button type="button" className="solid-btn" onClick={() => setOpen(true)}><UserPlus size={15} /> Invite member</button>
+        {canManage && <button type="button" className="solid-btn" onClick={() => setOpen(true)}><UserPlus size={15} /> Invite member</button>}
       </PageHeader>
       <div className="kpi-row">
         <motion.div className="kpi" {...rise(0)}><span>Members</span><AnimatedNumber value={members.length} className="kpi-value" /><small>{members.filter(m => m.status === "invited").length} pending invites</small></motion.div>
@@ -1842,7 +1845,13 @@ export function TeamPage() {
                 <div className="team-limit"><b>{m.monthlyLimit ? money(m.monthlyLimit, false) : "View only"}</b><small>{m.cardCount} {m.cardCount === 1 ? "card" : "cards"}</small></div>
                 <span className={`status-pill team-status ${m.status}`}>{m.status === "active" ? <span className="dot" /> : <Mail size={11} />}{m.status}</span>
                 <div className="team-act">
-                  {m.role !== "Owner" && (
+                  {m.status === "invited" && m.inviteUrl && canManage && (
+                    <button type="button" className="icon-btn" aria-label={`Copy invite link for ${m.name}`} title="Copy invite link"
+                      onClick={async () => toast(await copyText(m.inviteUrl!) ? { tone: "success", title: "Invite link copied", description: "No mail provider is set up, so share this link yourself." } : { tone: "error", title: "Couldn't copy the link" })}>
+                      <Link2 size={14} />
+                    </button>
+                  )}
+                  {m.role !== "Owner" && canManage && m.email.toLowerCase() !== me?.email.toLowerCase() && (
                     <button type="button" className="icon-btn" onClick={() => onRemove(m)} aria-label={`Remove ${m.name}`}><Trash2 size={14} /></button>
                   )}
                 </div>

@@ -197,3 +197,16 @@ export function supportInboxMail(to: string, reference: string, subject: string,
     ${btn("Open the operations queue", link)}
   `, `New support request ${reference} from ${from}\n\n${subject}\n\n${body}\n\nOperations queue: ${link}`);
 }
+
+/** Invitation for a teammate to join a business on Veyra. */
+export function teamInviteMail(to: string, name: string, inviter: string, business: string, role: string, token: string, cfg = mailConfig()): OutgoingMail {
+  const link = `${cfg.appUrl}/#/invite/accept?token=${encodeURIComponent(token)}`;
+  return build(to, "team-invite", `${inviter} invited you to ${business} on Veyra`, `Join as ${role}. This invitation expires in 7 days.`, `
+    ${eyebrow("Team invitation")}
+    ${h1(`Join ${business} on Veyra`)}
+    ${p(`Hi ${firstName(name)} — ${inviter} has invited you to ${business}'s Veyra business account as ${role === "Admin" ? "an" : "a"} ${role}.`)}
+    ${details([["Business", business], ["Your role", role], ["Invited by", inviter], ["Expires", "In 7 days"]])}
+    ${btn("Accept invitation", link)}
+    ${note("You'll choose your own password — you never need the account owner's. If you weren't expecting this, you can ignore it.")}
+  `, `Hi ${firstName(name)},\n\n${inviter} invited you to ${business} on Veyra as ${role}.\n\nAccept: ${link}\n\nThis invitation expires in 7 days.`);
+}
