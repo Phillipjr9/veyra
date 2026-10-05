@@ -308,7 +308,8 @@ funds) to the status columns.
 - **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
-  rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications
+  rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications,
+  digital asset holdings (`GET /api/me/holdings`, `POST /api/me/holdings/trade`)
 - **Admin** — `GET /api/admin/state` (console aggregate: users, accounts, ledger, disputes,
   KYC queue, audit, role matrix, settings) `· overview · members · staff · roles · audit`,
   member detail/adjust/status, KYC request/queue/decision, risk dispute queue + advance,
@@ -498,6 +499,108 @@ v2 adds `invoices`, `team_members`, `savings_pockets`, `payees`,
 card model, so every member feature is server-backed). `server/src/state.ts`
 builds each member's Account snapshot straight from these tables.
 
+## Digital assets (crypto)
+
+Members can hold BTC, ETH, SOL and USDC alongside their deposit account, and
+buy or sell with their checking balance. `Accounts & savings` carries the
+panel; `GET /api/me/holdings` and `POST /api/me/holdings/trade` are the API.
+
+> ### ⚠ This is licensable activity in New York
+>
+> Veyra holds the assets, so this is custody. Under **23 NYCRR 200.2(q)** both
+> *storing, holding, or maintaining custody or control of virtual currency on
+> behalf of others* and *buying and selling virtual currency as a customer
+> business* are Virtual Currency Business Activity, and require a **BitLicense**
+> or a **limited-purpose trust charter** to serve a single New York resident.
+>
+> Veyra is a financial technology product, **not a bank**, so the NY Banking Law
+> charter exemption does not apply. The §200.2(q) software carve-out — *"the
+> development and dissemination of software in and of itself does not constitute
+> Virtual Currency Business Activity"* — covers a self-custody wallet, **not a
+> hosted one holding other people's assets**. This is the hosted kind.
+>
+> Ballpark: $5,000 application fee, **12–30+ months**, **$500K–$2M+** in the
+> first year, a **$500,000** minimum surety bond, capital set case-by-case by
+> the Superintendent, a CISO under Part 500, 7-year retention and biennial
+> examination. Fewer than 50 entities hold one. NYDFS issued cease-and-desist
+> orders with **$100K–$500K** penalties to unlicensed platforms serving New
+> Yorkers in early 2026.
+>
+> Federal rules have moved the other way — OCC Interpretive Letters 1170, 1184,
+> 1186 and 1188 permit national banks to custody crypto, execute customer
+> trades as riskless principal and outsource the work — but those are *bank*
+> powers, and state licensing still binds a fintech.
+>
+> **`CRYPTO_TRADING_ENABLED` is unset by default, which means ON in development
+> and OFF in production.** That is an interlock, not an opinion: the feature is
+> built and demonstrable, and switching it on for real customers should be a
+> deliberate act taken with counsel. Viewing holdings is never gated — reading a
+> balance is not a licensable activity.
+
+**Nothing here is FDIC insured**, and the UI says so on the panel and in the
+trade dialog.
+
+### Why holdings are a parallel structure
+
+A deposit balance is authoritative: the number *is* what the bank owes you. A
+crypto balance is a quantity whose worth is a market quote that changes every
+second. Merging them yields one confident number that is wrong between every
+two ticks, so they stay separate objects in the schema, the API and the UI —
+holdings never roll into "Total across Veyra".
+
+### Base units are TEXT, not INTEGER
+
+`holdings.units` stores an integer count of the asset's smallest unit as a
+**string**, and arithmetic happens in JS with `bigint`. This is forced, not
+stylistic: SQLite INTEGER is 64-bit and 1 ETH is 10¹⁸ wei, so an INTEGER column
+**overflows at 9 ETH**. The consequence is that SQL cannot `SUM()` these
+columns — aggregate in the application. Non-negativity is enforced with
+`CHECK (units NOT LIKE '-%')` plus app-layer checks.
+
+Buys are denominated in dollars and sells in units of the asset. That matches
+how people think about each direction, and it lets a member sell a position to
+exactly zero instead of leaving rounding dust behind.
+
+### The price feed fails soft
+
+`server/src/prices.ts` polls CoinGecko (free, keyless) with a 60s cache and a
+4s timeout. Three rules, because a price feed is the least trustworthy part of
+the system:
+
+1. **A missing price is `null`, never `0`.** A zero is a number, and a number
+   gets multiplied by a balance to produce a confident, wrong valuation. The UI
+   renders "Price unavailable" and flags the total as incomplete.
+2. **A stale price is labelled**, with the time it was fetched.
+3. **Trading refuses to execute on a stale or missing quote** (503). Showing an
+   old number is cosmetic; filling an order at one moves real money at the
+   wrong rate.
+
+A feed that answers but carries nothing usable counts as a failure: the last
+good quotes survive rather than being replaced by nothing.
+
+Tests never touch the network — they point `CRYPTO_PRICES_URL` at a local stub,
+so the real fetch, cache, timeout and staleness logic all still run. For local
+work without egress, `node scripts/dev-prices.mjs` serves the same shape with
+prices that drift.
+
+### Exact money arithmetic
+
+`server/src/money.ts` replaced `Math.round(value * 100)` in `dollarsToCents`.
+That expression disagrees with correct half-up rounding on **1,147 of 200,000**
+three-decimal amounts (**0.57%**), always a cent **low**, because those values
+land just under the midpoint once a binary float gets hold of them:
+
+```
+Math.round(1.005 * 100) === 100   // should be 101
+Math.round(0.145 * 100) ===  14   // should be  15
+Math.round(2.135 * 100) === 213   // should be 214
+```
+
+The replacement parses the decimal string digit by digit into a `bigint` and
+never enters float math. It is exact on all 200,000 values, and **identical to
+the old behaviour on every two-decimal amount** — the rejection contract
+(objects, arrays, booleans, `"12abc"`, empty strings) is unchanged.
+
 ## Scripts
 
 ```bash
@@ -506,7 +609,8 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (278) = 319 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (304) = 345 checks
+node scripts/dev-prices.mjs  # offline crypto price feed (see Digital assets)
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

@@ -30,6 +30,9 @@ import { logAdminAction } from "./audit.js";
 import { validateApplication, rowToApplication, memberIdentity, submissionFor, PROFILE_COLUMNS } from "./identity.js";
 import { seed } from "./seed.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
+import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
+import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
+import { loadPrices, tradableQuote } from "./prices.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -930,6 +933,149 @@ export function createApp(dbPath?: string) {
     } catch (err) {
       fail(res, err, "Transfer failed.");
     }
+  }));
+
+  // --- Digital assets -------------------------------------------------------
+  // Holdings live beside the deposit account, never inside it. See
+  // server/src/assets.ts for why trading is gated, and server/src/money.ts for
+  // why every quantity below is a bigint of base units rather than a number.
+
+  app.get("/api/me/holdings", requireAuth, wrap(async (req, res) => {
+    const assets = listAssets(db);
+    const quotes = await loadPrices();
+    const rows = db.prepare("SELECT asset, units, updated_at FROM holdings WHERE user_id = ?")
+      .all(req.user!.id) as unknown as { asset: string; units: string; updated_at: number }[];
+    const held = new Map(rows.map((row) => [row.asset, row]));
+
+    let totalCents = 0;
+    let priced = true;
+    const holdings = assets.map((asset) => {
+      const row = held.get(asset.code);
+      const units = BigInt(row?.units ?? "0");
+      const quote = quotes.get(asset.code) ?? null;
+      // A missing quote yields null, never 0 — a zero would be silently summed
+      // into the total and render as a confident, wrong valuation.
+      const valueCents = quote ? valueInCents(units, asset.decimals, quote.cents) : null;
+      if (valueCents === null) { if (units > 0n) priced = false; } else totalCents += valueCents;
+      return {
+        asset: asset.code,
+        name: asset.name,
+        kind: asset.kind,
+        decimals: asset.decimals,
+        units: units.toString(),
+        quantity: formatUnitsTrimmed(units, asset.decimals),
+        priceUsd: quote ? centsToDecimal(Number(quote.cents)) : null,
+        valueUsd: valueCents === null ? null : centsToDecimal(valueCents),
+        quotedAt: quote ? quote.fetchedAt : null,
+        updatedAt: row?.updated_at ?? null,
+      };
+    });
+
+    res.json({
+      holdings,
+      // `partial` tells the client that at least one held asset could not be
+      // priced, so the total understates reality and must be labelled.
+      totalUsd: centsToDecimal(totalCents),
+      partial: !priced,
+      tradingEnabled: tradingEnabled(),
+      disclosure: "Digital assets are not FDIC insured and can lose value.",
+    });
+  }));
+
+  app.post("/api/me/holdings/trade", requireAuth, requireApproved, wrap(async (req, res) => {
+    if (!tradingEnabled()) {
+      return void res.status(503).json({ error: "Buying and selling is unavailable.", code: "crypto_disabled" });
+    }
+    const code = String(req.body?.asset ?? "").trim().toUpperCase();
+    const side = req.body?.side;
+    if (side !== "buy" && side !== "sell") {
+      return void res.status(400).json({ error: "side must be 'buy' or 'sell'." });
+    }
+    const asset = assetByCode(db, code);
+    if (!asset) return void res.status(404).json({ error: "Unknown asset.", code: "crypto_unknown_asset" });
+
+    // Buys are denominated in dollars ("$50 of BTC"), sells in units of the
+    // asset ("0.25 BTC"). That matches how people actually think about each
+    // direction, and it means a sell can empty a position exactly rather than
+    // leaving dust behind from a dollar-to-unit conversion.
+    let units: bigint;
+    let cents: number;
+    const quote = await tradableQuote(asset.code);
+    if (!quote) {
+      return void res.status(503).json({ error: `No current price for ${asset.code}.`, code: "crypto_no_price" });
+    }
+    try {
+      if (side === "buy") {
+        cents = dollarsToCents(req.body?.amount ?? 0);
+        if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
+        units = unitsForCents(cents, asset.decimals, quote.cents);
+        if (units <= 0n) return void res.status(400).json({ error: "Amount is too small to buy any of this asset." });
+      } else {
+        units = parseUnits(req.body?.amount ?? 0, asset.decimals);
+        if (units <= 0n) return void res.status(400).json({ error: "Amount must be greater than zero." });
+        cents = valueInCents(units, asset.decimals, quote.cents);
+        if (cents <= 0) return void res.status(400).json({ error: "Amount is too small to sell." });
+      }
+    } catch {
+      return void res.status(400).json({ error: "Invalid amount." });
+    }
+
+    try {
+      inTransaction(db, () => {
+        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?")
+          .get(req.user!.id) as { id: number; balance_cents: number } | undefined;
+        if (!account) throw new BadInputError("No account found.");
+        const current = BigInt((db.prepare("SELECT units FROM holdings WHERE user_id = ? AND asset = ?")
+          .get(req.user!.id, asset.code) as unknown as { units: string } | undefined)?.units ?? "0");
+
+        const nextUnits = side === "buy" ? current + units : current - units;
+        const nextCents = side === "buy" ? account.balance_cents - cents : account.balance_cents + cents;
+        if (side === "buy" && nextCents < 0) throw new BadInputError("Insufficient funds in checking.");
+        if (nextUnits < 0n) throw new BadInputError(`Insufficient ${asset.code}.`);
+
+        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?")
+          .run(nextCents, now(), account.id);
+        db.prepare(
+          `INSERT INTO holdings (user_id, asset, units, updated_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, asset) DO UPDATE SET units = excluded.units, updated_at = excluded.updated_at`,
+        ).run(req.user!.id, asset.code, nextUnits.toString(), now());
+
+        const reference = makeReference();
+        db.prepare(
+          `INSERT INTO holding_transactions (id, user_id, asset, side, units, usd_cents, price_cents, reference, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(rid("hld"), req.user!.id, asset.code, side, units.toString(), cents, quote.cents.toString(), reference, now());
+
+        // The deposit leg also lands in the member's statement. Money leaving a
+        // checking balance with no matching line is how support tickets start.
+        db.prepare(
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+           VALUES (?, ?, ?, ?, 'Investing', 'Internal', ?, 'cleared', ?, ?, ?)`,
+        ).run(
+          rid("txn"), account.id, req.user!.id, `${side === "buy" ? "Bought" : "Sold"} ${asset.code}`,
+          side === "buy" ? -cents : cents, reference,
+          `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} at ${centsToDecimal(Number(quote.cents))}/${asset.code}`,
+          now(),
+        );
+      });
+    } catch (err) {
+      return void fail(res, err, "Trade failed.");
+    }
+
+    notify(
+      req.user!.id,
+      "transaction",
+      side === "buy" ? "Digital asset purchased" : "Digital asset sold",
+      `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} for ${centsToDecimal(cents)}.`,
+    );
+    res.status(201).json({
+      ok: true,
+      asset: asset.code,
+      side,
+      quantity: formatUnitsTrimmed(units, asset.decimals),
+      amountUsd: centsToDecimal(cents),
+      priceUsd: centsToDecimal(Number(quote.cents)),
+    });
   }));
 
   app.get("/api/me/notifications", requireAuth, wrap((req, res) => {

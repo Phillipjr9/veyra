@@ -12,6 +12,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { dollarsToCentsExact, centsToDecimalExact } from "./money.js";
 
 export const DB_PATH = resolve(process.env.DB_PATH ?? "server/veyra.db");
 
@@ -655,6 +656,65 @@ CREATE TABLE passkeys (
 CREATE INDEX idx_passkeys_user ON passkeys(user_id);
 `,
   },
+  {
+    version: 10,
+    sql: `
+-- v10: digital asset holdings. See server/src/money.ts and server/src/assets.ts.
+--
+-- These are deliberately NOT part of the deposit account. A deposit balance is
+-- authoritative — the bank owes you that number. A digital asset balance is a
+-- quantity whose worth is a market quote that changes every second. Putting
+-- them in one column is how a customer ends up arguing about what their
+-- account was worth at 3pm, so they stay separate objects end to end.
+--
+-- units is TEXT, holding an integer count of the asset's smallest unit
+-- (satoshi, wei). It is NOT an INTEGER column, and that is not a style
+-- choice: SQLite INTEGER is 64-bit, ETH has 18 decimals, so an INTEGER column
+-- overflows at 9 ETH. Arithmetic happens in JS with bigint, which also means
+-- SQL cannot SUM this column — aggregate in the application.
+--
+-- The CHECK is a cheap non-negativity guard that works on a decimal string:
+-- a negative amount is the only way to get a leading '-'.
+CREATE TABLE crypto_assets (
+  code       TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  decimals   INTEGER NOT NULL CHECK (decimals >= 0 AND decimals <= 30),
+  kind       TEXT NOT NULL CHECK (kind IN ('crypto','stablecoin')),
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT INTO crypto_assets (code, name, decimals, kind, sort_order) VALUES
+  ('BTC',  'Bitcoin',   8, 'crypto',     1),
+  ('ETH',  'Ethereum', 18, 'crypto',     2),
+  ('SOL',  'Solana',    9, 'crypto',     3),
+  ('USDC', 'USD Coin',  6, 'stablecoin', 4);
+
+CREATE TABLE holdings (
+  user_id    TEXT NOT NULL REFERENCES users(id),
+  asset      TEXT NOT NULL REFERENCES crypto_assets(code),
+  units      TEXT NOT NULL DEFAULT '0' CHECK (units NOT LIKE '-%'),
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, asset)
+);
+CREATE INDEX idx_holdings_user ON holdings(user_id);
+
+-- One row per movement, append-only in practice. usd_cents is the deposit-account
+-- leg and price_cents is the quoted price of one whole unit at execution, both
+-- kept so a trade can be explained months later without a price-history lookup.
+CREATE TABLE holding_transactions (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  asset       TEXT NOT NULL REFERENCES crypto_assets(code),
+  side        TEXT NOT NULL CHECK (side IN ('buy','sell')),
+  units       TEXT NOT NULL,
+  usd_cents   INTEGER NOT NULL,
+  price_cents TEXT NOT NULL,
+  reference   TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX idx_holding_txn_user ON holding_transactions(user_id, created_at DESC);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */
@@ -699,11 +759,21 @@ export class BadInputError extends Error {}
  * Converts a dollar amount to integer cents. Accepts numbers and numeric
  * strings only — objects, arrays, booleans and trailing-garbage strings
  * ("12abc") are rejected instead of being coerced.
+ *
+ * The arithmetic is exact (see money.ts). The previous implementation was
+ * `Math.round(value * 100)`, which disagrees with correct half-up rounding on
+ * 0.57% of three-decimal amounts — always a cent short, because those values
+ * land just below the midpoint once a binary float gets hold of them:
+ *
+ *     Math.round(1.005 * 100) === 100   // should be 101
+ *     Math.round(0.145 * 100) === 14    // should be 15
  */
 export function dollarsToCents(input: number | string): number {
-  const value = typeof input === "string" ? (input.trim() === "" ? NaN : Number(input)) : typeof input === "number" ? input : NaN;
-  if (!Number.isFinite(value)) throw new BadInputError("Invalid amount.");
-  return Math.round(value * 100);
+  try {
+    return dollarsToCentsExact(input);
+  } catch {
+    throw new BadInputError("Invalid amount.");
+  }
 }
 
-export const centsToDecimal = (cents: number) => (cents / 100).toFixed(2);
+export const centsToDecimal = (cents: number) => centsToDecimalExact(cents);

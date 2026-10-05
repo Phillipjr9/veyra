@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -23,6 +23,7 @@ import {
   suggestPasskeyLabel, passkeyErrorMessage, isPasskeyCancellation, type Passkey,
 } from "../../lib/passkey";
 import { useAuth } from "../../lib/auth";
+import { fetchHoldings, tradeHolding, quoteAge, type Holding, type HoldingsResponse } from "../../lib/holdings";
 import { BackButton } from "../../components/BackButton";
 import { lockScroll } from "../../lib/scrollLock";
 import {
@@ -2250,6 +2251,8 @@ export function AccountsPage() {
         {!account.savingsPockets.length && <EmptyState icon={<PiggyBank size={18} />} title="No savings pockets" text="Create one for a goal, reserve or rainy day." />}
       </div>
 
+      <HoldingsPanel />
+
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New savings pocket" subtitle="Name a goal and set a target. You can move money after it is created.">
         <form className="dash-form" onSubmit={create}>
           <label htmlFor="pocket-name">Pocket name</label><input id="pocket-name" required maxLength={32} placeholder="Emergency fund" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
@@ -2263,6 +2266,126 @@ export function AccountsPage() {
         <form className="dash-form" onSubmit={transfer}><label htmlFor="saving-amount">Amount</label><div className="amount-input"><span>$</span><input autoFocus id="saving-amount" type="number" min="1" step="0.01" required value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" /></div><div className="quick-row">{[50, 100, 250, 500].map(value => <button type="button" key={value} onClick={() => setAmount(String(value))}>{money(value, false)}</button>)}</div><div className="modal-actions"><button type="button" className="ghost-btn" onClick={() => setMove(null)}>Cancel</button><button type="submit" className="solid-btn">Move money</button></div></form>
       </Modal>
     </div>
+  );
+}
+
+/* ============================================================
+   Digital assets
+   ============================================================ */
+/**
+ * Holdings sit below savings pockets, visually separated, and never roll into
+ * the "Total across Veyra" figure above. That separation is the whole point:
+ * a checking balance is money the bank owes you, while a holding is a quantity
+ * whose worth is a market quote that was true a minute ago. Merging them would
+ * produce a single confident number that is wrong between every two ticks.
+ *
+ * An unpriced asset renders as "Price unavailable", never as $0.00 — a zero is
+ * a number people believe.
+ */
+function HoldingsPanel() {
+  const toast = useToast();
+  const [data, setData] = useState<HoldingsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [trade, setTrade] = useState<{ holding: Holding; side: "buy" | "sell" } | null>(null);
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setData(await fetchHoldings()); } catch { /* panel stays hidden rather than erroring the page */ }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!trade || busy) return;
+    const value = amount.trim();
+    if (!value || Number.parseFloat(value) <= 0) return toast({ tone: "error", title: "Enter an amount above zero" });
+    setBusy(true);
+    try {
+      const result = await tradeHolding(trade.holding.asset, trade.side, value);
+      setTrade(null); setAmount("");
+      toast({
+        tone: "success",
+        title: `${result.side === "buy" ? "Bought" : "Sold"} ${result.quantity} ${result.asset}`,
+        description: `${result.amountUsd} at ${result.priceUsd} per ${result.asset}.`,
+      });
+      await load();
+    } catch (err) {
+      toast({ tone: "error", title: "Trade didn't go through", description: err instanceof Error ? err.message : undefined });
+    } finally { setBusy(false); }
+  };
+
+  if (loading || !data) return null;
+  const owned = data.holdings.filter(h => h.units !== "0");
+
+  return (
+    <>
+      <div className="savings-head holdings-head">
+        <div><h2>Digital assets</h2><p>Held separately from your deposit account. {data.disclosure}</p></div>
+        <span>{owned.length ? `${owned.length} held` : "None held"}</span>
+      </div>
+
+      {data.partial && (
+        <p className="holdings-warning"><AlertTriangle size={14} /> A price feed is unavailable, so the total below is incomplete.</p>
+      )}
+
+      <div className="holdings-grid">
+        {data.holdings.map((holding, index) => (
+          <motion.article key={holding.asset} className="holding-card"
+            initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * .04, duration: .35, ease }}>
+            <div className="holding-top">
+              <span className="holding-code">{holding.asset}</span>
+              <span className={`chip ${holding.kind === "stablecoin" ? "chip-green" : ""}`}>{holding.kind === "stablecoin" ? "Stablecoin" : "Crypto"}</span>
+            </div>
+            <strong className="holding-name">{holding.name}</strong>
+            <div className="holding-value">
+              {holding.valueUsd === null
+                ? <span className="holding-unpriced">Price unavailable</span>
+                : <><b>{holding.valueUsd}</b><small>{holding.quantity} {holding.asset}</small></>}
+            </div>
+            <div className="holding-price">
+              {holding.priceUsd ? <>{holding.priceUsd} per {holding.asset} <em>{quoteAge(holding.quotedAt)}</em></> : <>No current quote</>}
+            </div>
+            {data.tradingEnabled ? (
+              <div className="holding-actions">
+                <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "buy" }); setAmount(""); }} disabled={!holding.priceUsd}>Buy</button>
+                <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "sell" }); setAmount(""); }} disabled={!holding.priceUsd || holding.units === "0"}>Sell</button>
+              </div>
+            ) : <p className="holding-locked">View only</p>}
+          </motion.article>
+        ))}
+      </div>
+
+      <Modal
+        open={!!trade} onClose={() => { setTrade(null); setAmount(""); }}
+        title={trade ? `${trade.side === "buy" ? "Buy" : "Sell"} ${trade.holding.asset}` : ""}
+        subtitle={trade
+          ? trade.side === "buy"
+            ? `Funded from checking at ${trade.holding.priceUsd} per ${trade.holding.asset}.`
+            : `You hold ${trade.holding.quantity} ${trade.holding.asset}. Proceeds return to checking.`
+          : ""}
+      >
+        <form className="dash-form" onSubmit={submit}>
+          {/* Buys are entered in dollars and sells in units, so selling a whole
+              position lands on exactly zero instead of leaving rounding dust. */}
+          <label htmlFor="trade-amount">{trade?.side === "buy" ? "Amount to spend" : `Amount of ${trade?.holding.asset ?? ""}`}</label>
+          <div className="amount-input">
+            {trade?.side === "buy" && <span>$</span>}
+            <input autoFocus id="trade-amount" type="number" min="0" step="any" required value={amount}
+              onChange={e => setAmount(e.target.value)} placeholder={trade?.side === "buy" ? "0.00" : "0.00000000"} />
+          </div>
+          {trade?.side === "buy"
+            ? <div className="quick-row">{[25, 50, 100, 250].map(v => <button type="button" key={v} onClick={() => setAmount(String(v))}>{money(v, false)}</button>)}</div>
+            : <div className="quick-row"><button type="button" onClick={() => setAmount(trade?.holding.quantity ?? "")}>Sell all</button></div>}
+          <p className="holding-disclosure">Digital assets are not FDIC insured, are not deposits, and can lose value.</p>
+          <div className="modal-actions">
+            <button type="button" className="ghost-btn" onClick={() => { setTrade(null); setAmount(""); }}>Cancel</button>
+            <button type="submit" className="solid-btn" disabled={busy}>{busy ? "Working…" : trade?.side === "buy" ? "Buy" : "Sell"}</button>
+          </div>
+        </form>
+      </Modal>
+    </>
   );
 }
 

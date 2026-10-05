@@ -22,6 +22,7 @@ const CLIENT_FILES = [
   "src/lib/authConfig.ts",
   "src/lib/federated.ts",
   "src/lib/passkey.ts",
+  "src/lib/holdings.ts",
   "src/lib/store.tsx",
   "src/pages/Dashboard.tsx",
   "src/pages/SuperAdmin.tsx",

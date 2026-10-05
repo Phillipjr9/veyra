@@ -29,6 +29,8 @@ import { createApp } from "./app.js";
 import { describeRecaptcha, recaptchaConfig } from "./recaptcha.js";
 import { describeFederated } from "./federated.js";
 import { describeWebauthn } from "./webauthn.js";
+import { describeCrypto } from "./assets.js";
+import { describePrices } from "./prices.js";
 import { seedDemoAccounts, DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD, DEMO_PASSWORD } from "./demo.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -71,6 +73,8 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(describeRecaptcha());
   console.log(describeFederated());
   console.log(describeWebauthn());
+  console.log(describeCrypto());
+  console.log(describePrices());
 
   if (isProduction) {
     console.log("Mode: production (members sign up through the API)");

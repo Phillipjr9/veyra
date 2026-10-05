@@ -22,6 +22,10 @@ import { resetRateLimits } from "../src/security.js";
 import { resetRecaptchaConfig } from "../src/recaptcha.js";
 import { resetFederatedConfig } from "../src/federated.js";
 import { resetWebauthnConfig } from "../src/webauthn.js";
+import { resetPrices } from "../src/prices.js";
+import {
+  dollarsToCentsExact, centsToDecimalExact, parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents,
+} from "../src/money.js";
 import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1473,6 +1477,173 @@ try {
   let operationTimelineImmutable = false;
   try { db.prepare("UPDATE operation_case_events SET detail = 'tampered' WHERE case_id = ?").run(opsCaseId); } catch { operationTimelineImmutable = true; }
   expect("operation case event timeline is append-only at the DB layer", operationTimelineImmutable);
+
+  /* ---------- exact money arithmetic ---------- */
+  // The decimal engine is unit-tested here rather than in a separate runner so
+  // it shares the one command everything else is gated on.
+  {
+    const eq = (label: string, got: unknown, want: unknown) =>
+      expect(label, Object.is(got, want) || String(got) === String(want), `got ${got}, want ${want}`);
+
+    // The bug this replaced: Math.round(v * 100) disagrees with correct half-up
+    // rounding on 0.57% of three-decimal amounts, always a cent low, because
+    // the binary float lands just under the midpoint.
+    eq("$1.005 rounds up to 101c (float path gave 100)", dollarsToCentsExact("1.005"), 101);
+    eq("$0.145 rounds up to 15c (float path gave 14)", dollarsToCentsExact("0.145"), 15);
+    eq("$2.135 rounds up to 214c (float path gave 213)", dollarsToCentsExact("2.135"), 214);
+    eq("$8.115 still rounds to 812c", dollarsToCentsExact("8.115"), 812);
+    eq("negative amounts round away from zero", dollarsToCentsExact("-1.005"), -101);
+    eq("whole dollars are untouched", dollarsToCentsExact(250), 25000);
+    eq("exponent notation expands", dollarsToCentsExact("1e3"), 100000);
+    eq("cents render with two places", centsToDecimalExact(5), "0.05");
+
+    for (const bad of ["", "12abc", "abc", {}, [], true, null, undefined, NaN, Infinity]) {
+      let threw = false;
+      try { dollarsToCentsExact(bad as never); } catch { threw = true; }
+      expect(`rejects ${JSON.stringify(bad) ?? String(bad)} as an amount`, threw);
+    }
+
+    // 18-decimal assets are exactly why units are TEXT + bigint: one ETH is
+    // 10^18 wei, and a SQLite INTEGER column overflows at 9 ETH.
+    eq("1 ETH is 10^18 wei", parseUnits("1", 18), 10n ** 18n);
+    eq("ETH survives a round trip", formatUnitsTrimmed(parseUnits("0.123456789012345678", 18), 18), "0.123456789012345678");
+    eq("excess precision is rounded, not truncated", parseUnits("0.000000005", 8), 1n);
+    eq("trailing zeros are trimmed for display", formatUnitsTrimmed(10n ** 18n, 18), "1");
+    eq("1c of BTC at $100k is 10 satoshi", unitsForCents(1, 8, 10_000_000n), 10n);
+    eq("buying truncates rather than inventing units", unitsForCents(100, 8, 3_333_333n), 3000n);
+    eq("valuation is exact at 18 decimals", valueInCents(parseUnits("0.5", 18), 18, 400_000n), 200_000);
+    let zeroPriceThrew = false;
+    try { unitsForCents(100, 8, 0n); } catch { zeroPriceThrew = true; }
+    expect("a zero price is refused rather than dividing by it", zeroPriceThrew);
+  }
+
+  /* ---------- digital asset holdings ---------- */
+  // The price feed is stubbed over real HTTP, same as reCAPTCHA and JWKS:
+  // the cache, timeout, parsing and staleness logic all run for real, only the
+  // far end is ours. Tests never touch the network.
+  {
+    let priceBody: unknown = { bitcoin: { usd: 100000 }, ethereum: { usd: 4000 }, solana: { usd: 200 }, "usd-coin": { usd: 1 } };
+    let priceStatus = 200;
+    const priceStub = createServer((_req, res) => {
+      res.writeHead(priceStatus, { "content-type": "application/json" });
+      res.end(JSON.stringify(priceBody));
+    });
+    await new Promise<void>(r => priceStub.listen(0, "127.0.0.1", r));
+    const priceUrl = `http://127.0.0.1:${(priceStub.address() as any).port}/prices`;
+    const restore = { ...process.env };
+
+    try {
+      process.env.CRYPTO_PRICES_URL = priceUrl;
+      process.env.CRYPTO_TRADING_ENABLED = "1";
+      process.env.CRYPTO_PRICES_TTL_MS = "50";
+      resetPrices();
+
+      const start = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
+      const empty = await api("GET", "/api/me/holdings", rae);
+      expect("holdings list every registered asset, starting at zero", empty.status === 200 &&
+        empty.json.holdings.length === 4 && empty.json.holdings.every((h: any) => h.units === "0") &&
+        empty.json.totalUsd === "0.00" && empty.json.partial === false);
+      expect("holdings are quoted with a price and a timestamp", empty.json.holdings
+        .every((h: any) => h.priceUsd !== null && typeof h.quotedAt === "number"));
+      expect("holdings carry the not-insured disclosure", /not FDIC insured/i.test(empty.json.disclosure));
+      expect("holdings require a session (401)", (await api("GET", "/api/me/holdings")).status === 401);
+
+      const buy = await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "buy", amount: "250" });
+      expect("buying debits checking and credits the holding", buy.status === 201 &&
+        buy.json.quantity === "0.0025" && buy.json.amountUsd === "250.00");
+      const afterBuy = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
+      expect("the deposit leg left checking exactly once", start - afterBuy === 25000);
+      // A balance that moves with no matching statement line is how support
+      // tickets start, so the USD leg must be visible in transactions too.
+      const statement = (await api("GET", "/api/me/transactions", rae)).json.transactions;
+      expect("the purchase appears in the member's statement", statement.some((t: any) =>
+        t.merchant === "Bought BTC" && t.amount.cents === -25000));
+
+      const held = await api("GET", "/api/me/holdings", rae);
+      const btc = held.json.holdings.find((h: any) => h.asset === "BTC");
+      expect("the holding reports units, quantity and value", btc.units === "250000" &&
+        btc.quantity === "0.0025" && btc.valueUsd === "250.00" && held.json.totalUsd === "250.00");
+
+      expect("selling more than is held is refused (400)", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "sell", amount: "1" })).status === 400);
+      expect("buying beyond the checking balance is refused (400)", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: "99999999" })).status === 400);
+      expect("an unknown asset is a 404", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "DOGE", side: "buy", amount: "10" })).status === 404);
+      expect("an invalid side is a 400", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "hodl", amount: "10" })).status === 400);
+      expect("a zero amount is a 400", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: "0" })).status === 400);
+      expect("a negative amount is a 400", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: "-50" })).status === 400);
+      expect("a malformed amount is a 400, not a 500", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: { $gt: 0 } })).status === 400);
+      expect("holdings are per-member, never shared", (await api("GET", "/api/me/holdings", alex))
+        .json.holdings.every((h: any) => h.units === "0"));
+
+      // Selling the exact displayed quantity must land on zero. If the client
+      // round-tripped through a float this would leave dust behind.
+      const sellAll = await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "sell", amount: btc.quantity });
+      expect("selling the full quantity empties the position", sellAll.status === 201 &&
+        (await api("GET", "/api/me/holdings", rae)).json.holdings.find((h: any) => h.asset === "BTC").units === "0");
+      const afterSell = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
+      expect("a round trip at one price returns the money exactly", afterSell === start);
+
+      // 18-decimal asset end to end — the case an INTEGER column could not hold.
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "ETH", side: "buy", amount: "40" });
+      const eth = (await api("GET", "/api/me/holdings", rae)).json.holdings.find((h: any) => h.asset === "ETH");
+      expect("an 18-decimal holding survives the full round trip", eth.units === "10000000000000000" &&
+        eth.quantity === "0.01" && eth.valueUsd === "40.00");
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "ETH", side: "sell", amount: eth.quantity });
+
+      /* a dead feed must degrade, never invent a zero */
+      priceStatus = 500;
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      const dark = await api("GET", "/api/me/holdings", rae);
+      expect("an unreachable feed yields null prices, never 0.00", dark.status === 200 &&
+        dark.json.holdings.every((h: any) => h.priceUsd === null && h.valueUsd === null));
+      expect("trading is refused without a price (503)", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: "50" })).status === 503);
+
+      // A feed that answers but carries nothing usable is a failed feed: the
+      // last good quotes must survive rather than being replaced by nothing.
+      priceStatus = 200; priceBody = { bitcoin: { usd: 100000 } };
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      await api("GET", "/api/me/holdings", rae);
+      priceBody = {};
+      await new Promise(r => setTimeout(r, 60));
+      const kept = await api("GET", "/api/me/holdings", rae);
+      expect("an empty feed response keeps the last known price", kept.json.holdings
+        .find((h: any) => h.asset === "BTC").priceUsd === "100000.00");
+
+      // A member holding an asset the feed cannot price must be told the total
+      // is incomplete rather than shown a smaller, confident number.
+      priceBody = { bitcoin: { usd: 100000 }, ethereum: { usd: 4000 }, solana: { usd: 200 }, "usd-coin": { usd: 1 } };
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "SOL", side: "buy", amount: "100" });
+      priceBody = { bitcoin: { usd: 100000 } };
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      const partial = await api("GET", "/api/me/holdings", rae);
+      expect("an unpriced holding flags the total as partial", partial.json.partial === true);
+
+      /* the licensing interlock */
+      process.env.CRYPTO_TRADING_ENABLED = "0";
+      const locked = await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "buy", amount: "50" });
+      expect("trading off returns 503 with crypto_disabled", locked.status === 503 && locked.json.code === "crypto_disabled");
+      expect("holdings stay readable when trading is off",
+        (await api("GET", "/api/me/holdings", rae)).json.tradingEnabled === false);
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
+      }
+      resetPrices();
+      await new Promise<void>(r => priceStub.close(() => r()));
+    }
+  }
 
   /* ---------- admin aggregate state ---------- */
   const adminState = await api("GET", "/api/admin/state", admin);
