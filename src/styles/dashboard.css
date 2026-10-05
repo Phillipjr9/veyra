@@ -1174,10 +1174,19 @@
 .holdings-warning svg { flex: none; }
 .holdings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px,1fr)); gap: 16px; }
 .holding-card { display: flex; flex-direction: column; min-height: 186px; padding: 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--white); }
-.holding-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.holding-top { display: flex; align-items: center; gap: 11px; }
+.holding-id { min-width: 0; margin-right: auto; display: flex; flex-direction: column; gap: 1px; }
 .holding-code { font: 600 13px var(--display); letter-spacing: .04em; }
-.holding-name { margin-top: 12px; font: 500 13px var(--display); color: var(--muted); }
-.holding-value { margin-top: 6px; min-height: 40px; }
+.holding-name { font: 500 12px var(--display); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The mark carries a drop-shadow rather than sitting in a tinted chip: these
+   are rendered 3D objects with their own lighting, and a flat background
+   plate behind them reads as a sticker on a sticker. */
+.holding-mark { flex: none; width: 38px; height: 38px; display: block; }
+.holding-mark img { width: 100%; height: 100%; display: block; filter: drop-shadow(0 3px 6px rgba(24,23,29,.22)); transition: transform .35s var(--ease); }
+.holding-card:hover .holding-mark img { transform: translateY(-2px) scale(1.07); }
+
+.holding-value { margin-top: 14px; min-height: 40px; }
 .holding-value b { display: block; font: 600 24px var(--display); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
 .holding-value small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* An absent price is stated, never rendered as a zero a member would believe. */
@@ -1189,3 +1198,9 @@
 .holding-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .holding-locked { margin: auto 0 0; padding-top: 14px; font-size: 11.5px; color: var(--muted); }
 .holding-disclosure { margin: 2px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+
+/* Asset confirmation row at the top of the buy/sell dialog. */
+.trade-asset { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); }
+.trade-asset img { flex: none; width: 42px; height: 42px; display: block; filter: drop-shadow(0 3px 7px rgba(24,23,29,.24)); }
+.trade-asset strong { display: block; font: 600 14px var(--display); }
+.trade-asset small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }

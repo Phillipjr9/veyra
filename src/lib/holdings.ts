@@ -61,6 +61,32 @@ export function quoteAge(quotedAt: number | null): string | null {
 }
 
 /**
+ * 3D rendered mark per asset, keyed by code.
+ *
+ * These are stylised interpretations rendered for Veyra, not official brand
+ * assets pulled from each project's press kit. Bitcoin's mark is effectively
+ * public domain and Ethereum's is published for free use, but Solana and USDC
+ * are trademarks of their respective owners — swap in the official artwork
+ * before this is used commercially.
+ */
+const ASSET_ICONS: Record<string, string> = {
+  BTC: "/images/icon-btc-3d.webp",
+  ETH: "/images/icon-eth-3d.webp",
+  SOL: "/images/icon-sol-3d.webp",
+  USDC: "/images/icon-usdc-3d.webp",
+};
+
+/**
+ * The mark for an asset, falling back to the generic coin.
+ *
+ * The registry lives in the database, so a migration can add an asset before
+ * anyone draws its logo. Falling back keeps that card rendering instead of
+ * leaving a broken image where a balance should be.
+ */
+export const assetIcon = (code: string): string =>
+  ASSET_ICONS[code.toUpperCase()] ?? "/images/icon-crypto-3d.webp";
+
+/**
  * Shared holdings state for any surface that needs it.
  *
  * A failed refresh keeps the last good snapshot rather than blanking the UI —

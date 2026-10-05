@@ -23,7 +23,7 @@ import {
   suggestPasskeyLabel, passkeyErrorMessage, isPasskeyCancellation, type Passkey,
 } from "../../lib/passkey";
 import { useAuth } from "../../lib/auth";
-import { tradeHolding, quoteAge, useHoldings, type Holding } from "../../lib/holdings";
+import { tradeHolding, quoteAge, useHoldings, assetIcon, type Holding } from "../../lib/holdings";
 import { BackButton } from "../../components/BackButton";
 import { lockScroll } from "../../lib/scrollLock";
 import {
@@ -2384,10 +2384,15 @@ function HoldingsPanel() {
           <motion.article key={holding.asset} className="holding-card"
             initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * .04, duration: .35, ease }}>
             <div className="holding-top">
-              <span className="holding-code">{holding.asset}</span>
+              <span className="holding-mark">
+                <img src={assetIcon(holding.asset)} alt="" aria-hidden="true" width={128} height={128} loading="lazy" decoding="async" />
+              </span>
+              <div className="holding-id">
+                <span className="holding-code">{holding.asset}</span>
+                <strong className="holding-name">{holding.name}</strong>
+              </div>
               <span className={`chip ${holding.kind === "stablecoin" ? "chip-green" : ""}`}>{holding.kind === "stablecoin" ? "Stablecoin" : "Crypto"}</span>
             </div>
-            <strong className="holding-name">{holding.name}</strong>
             <div className="holding-value">
               {holding.valueUsd === null
                 ? <span className="holding-unpriced">Price unavailable</span>
@@ -2416,6 +2421,18 @@ function HoldingsPanel() {
           : ""}
       >
         <form className="dash-form" onSubmit={submit}>
+          {/* The mark is repeated here on purpose: this is the last screen
+              before money moves, and confirming which asset you're about to
+              trade shouldn't depend on reading three letters. */}
+          {trade && (
+            <div className="trade-asset">
+              <img src={assetIcon(trade.holding.asset)} alt="" aria-hidden="true" width={128} height={128} decoding="async" />
+              <div>
+                <strong>{trade.holding.name}</strong>
+                <small>{trade.holding.priceUsd ? `${trade.holding.priceUsd} per ${trade.holding.asset}` : "No current quote"}</small>
+              </div>
+            </div>
+          )}
           {/* Buys are entered in dollars and sells in units, so selling a whole
               position lands on exactly zero instead of leaving rounding dust. */}
           <label htmlFor="trade-amount">{trade?.side === "buy" ? "Amount to spend" : `Amount of ${trade?.holding.asset ?? ""}`}</label>
