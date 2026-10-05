@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { Apple as AppleIcon, ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
@@ -78,12 +78,24 @@ function PasswordField({ value, onChange, id, placeholder = "••••••�
   );
 }
 
-/** Icon per provider. Neutral marks, matching the rest of the auth screen. */
-const PROVIDER_ICON: Record<string, typeof Globe> = {
-  google: Globe,
-  apple: AppleIcon,
-  microsoft: Building2,
+/**
+ * 3D provider marks, in the same rendered style as the shield icons used
+ * across the dashboard. Served from public/images rather than inlined: at
+ * ~2.5 kB each they are smaller than the base64 of themselves would be, and
+ * the browser caches them independently of the bundle.
+ */
+const PROVIDER_ICON: Record<string, string> = {
+  google: "/images/icon-google-3d.webp",
+  apple: "/images/icon-apple-3d.webp",
+  microsoft: "/images/icon-microsoft-3d.webp",
 };
+const PASSKEY_ICON = "/images/icon-passkey-3d.webp";
+
+/** 22px, not the 17px the lucide marks used — a 3D render needs the room. */
+function ProviderMark({ src, label }: { src: string; label: string }) {
+  return <img className="auth-provider-mark" src={src} alt="" aria-hidden="true"
+    width={22} height={22} loading="lazy" decoding="async" title={label} />;
+}
 
 function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "", passkeyBusy = false }: {
   /** What the server offers. Empty renders nothing but the passkey button. */
@@ -100,18 +112,20 @@ function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "", pa
     <>
       <div className="auth-provider-stack">
         {providers.map(({ id, label }) => {
-          const Icon = PROVIDER_ICON[id] ?? Globe;
+          const mark = PROVIDER_ICON[id];
           const busy = busyProvider === id;
           return (
             <button key={id} type="button" className={`auth-provider-button ${id}`}
               onClick={() => onProvider(id as ProviderId)} disabled={busyAnywhere}>
-              {busy ? <Loader2 size={18} className="spin" /> : <Icon size={18} />}
+              {busy ? <Loader2 size={18} className="spin" />
+                : mark ? <ProviderMark src={mark} label={label} />
+                : <Globe size={18} />}
               <span>{busy ? `Waiting for ${label}…` : `Continue with ${label}`}</span>
             </button>
           );
         })}
         <button type="button" className="auth-provider-button passkey" onClick={onPasskey} disabled={busyAnywhere}>
-          {passkeyBusy ? <Loader2 size={18} className="spin" /> : <KeyRound size={18} />}
+          {passkeyBusy ? <Loader2 size={18} className="spin" /> : <ProviderMark src={PASSKEY_ICON} label="Passkey" />}
           <span>{passkeyBusy ? "Waiting for your device…" : "Use passkey"}</span>
         </button>
       </div>
