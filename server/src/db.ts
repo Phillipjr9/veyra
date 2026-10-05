@@ -92,6 +92,9 @@ function migrate(db: DatabaseSync): void {
     [5, tableExists("operation_cases")],
     [6, tableExists("identity_profiles")],
     [7, columnExists("kyc_records", "review_state")],
+    [8, columnExists("users", "status_reason")],
+    [9, columnExists("users", "totp_secret_encrypted")],
+    [10, tableExists("totp_recovery_codes")],
   ];
   const recordApplied = db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)");
   for (const [version, present] of presentButUnapplied) {
@@ -396,7 +399,7 @@ CREATE INDEX idx_sec_sessions_user ON security_sessions(user_id);
 
 CREATE TABLE preferences (
   user_id       TEXT PRIMARY KEY REFERENCES users(id),
-  two_factor    INTEGER NOT NULL DEFAULT 1,
+  two_factor    INTEGER NOT NULL DEFAULT 0,
   login_alerts  INTEGER NOT NULL DEFAULT 1,
   scout_auto    INTEGER NOT NULL DEFAULT 1,
   weekly_digest INTEGER NOT NULL DEFAULT 0
@@ -585,6 +588,59 @@ ALTER TABLE kyc_records ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
 ALTER TABLE kyc_records ADD COLUMN review_reqs_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE kyc_records ADD COLUMN reviewed_by TEXT;
 ALTER TABLE kyc_records ADD COLUMN reviewed_at INTEGER;
+`,
+  },
+  {
+    version: 8,
+    sql: `
+-- v8: why an account is suspended.
+--
+-- The status column has always said *that* an account is restricted; the member
+-- dashboard now says *why*, and the console picks the reason from a catalogue
+-- instead of typing one. The stored text is the sentence the member reads, kept
+-- as written at suspend time so a later edit to the catalogue cannot change
+-- history.
+ALTER TABLE users ADD COLUMN status_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN status_changed_at INTEGER;
+ALTER TABLE users ADD COLUMN status_changed_by TEXT;
+`,
+  },
+  {
+    version: 9,
+    sql: `
+-- v9: real authenticator-backed two-step sign-in and revocable device sessions.
+-- Old preference-only 2FA switches never gated authentication, so turn them
+-- off rather than claim an account is protected without an enrolled secret.
+ALTER TABLE users ADD COLUMN totp_secret_encrypted TEXT;
+ALTER TABLE users ADD COLUMN totp_pending_secret_encrypted TEXT;
+ALTER TABLE users ADD COLUMN totp_pending_expires_at INTEGER;
+ALTER TABLE security_sessions ADD COLUMN auth_token_id TEXT;
+ALTER TABLE security_sessions ADD COLUMN device_key TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_security_sessions_auth_token ON security_sessions(auth_token_id) WHERE auth_token_id IS NOT NULL;
+CREATE TABLE login_challenges (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_login_challenges_expiry ON login_challenges(expires_at);
+DELETE FROM security_sessions;
+    UPDATE preferences SET two_factor = 0;
+`,
+  },
+  {
+    version: 10,
+    sql: `
+-- v10: one-time hashed account recovery codes for authenticator lockout recovery.
+CREATE TABLE totp_recovery_codes (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (user_id, code_hash)
+);
+CREATE INDEX idx_totp_recovery_codes_user ON totp_recovery_codes(user_id);
 `,
   },
 ];

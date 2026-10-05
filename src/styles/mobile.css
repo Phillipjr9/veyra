@@ -126,6 +126,23 @@
      pathologically long balance being clipped in an 8-figure edge case. */
   .app-topbar .topbar-amount { font-size: 14.5px; }
 
+  /* The suspension banner is the first thing on the page: icon beside the
+     title, actions full width underneath, so the reason keeps its line length
+     and the buttons stay a thumb's width apart. */
+  .suspension-banner {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 12px;
+    padding: 14px;
+    border-radius: 14px;
+  }
+  .suspension-banner-icon { width: 36px; height: 36px; border-radius: 11px; }
+  .suspension-banner-actions { grid-column: 1 / -1; }
+  .suspension-banner .suspension-banner-actions > .solid-btn.sm,
+  .suspension-banner .suspension-banner-actions > .ghost-btn.sm {
+    flex: 1 1 0;
+    min-height: 44px;
+  }
+
   /* The hero mock cards deliberately hang off their frame; ~10px matters on a
      phone and the clip was cutting off their rounded edge. */
   @media (max-width: 700px) {
@@ -182,3 +199,46 @@
 /* Anything still wider than the phone clips rather than making the page
    pan sideways — the audit in this file's commit message is the real guard. */
 html, body { overflow-x: clip; }
+
+@media (max-width: 720px) {
+  .security-page-heading { align-items: flex-start; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+  .security-page-heading p { margin-top: 6px; font-size: 12px; }
+  .security-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 11px; }
+  .security-summary-item { gap: 8px; padding: 11px 10px; border-radius: 13px; }
+  .security-summary-item:last-child { grid-column: 1 / -1; }
+  .security-summary-icon { width: 32px; height: 32px; border-radius: 10px; }
+  .security-summary-item small { font-size: 10px; }
+  .security-summary-item strong { font-size: 12px; }
+  .security-content-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .security-panel, .security-center--personal .security-panel { padding: 15px; border-radius: 17px; }
+  .security-sessions-panel { grid-column: auto; }
+  .security-sessions-heading { flex-wrap: wrap; }
+  .security-sessions-heading > .security-secondary-button { width: 100%; margin-top: 2px; }
+  .security-session-row { grid-template-columns: 36px minmax(0,1fr); align-items: start; gap: 9px 10px; padding: 13px 0; }
+  .security-device-icon { width: 35px; height: 35px; border-radius: 10px; }
+  .security-session-actions { grid-column: 2; justify-content: flex-start; }
+  .security-trust-button, .security-revoke-button { min-height: 44px; flex: 1; }
+  .security-session-info > small { white-space: normal; overflow-wrap: anywhere; }
+  .security-emergency-action { grid-template-columns: 34px minmax(0,1fr) auto; gap: 8px; }
+  .security-emergency-action > button { min-width: 73px; min-height: 44px; padding-inline: 9px; }
+  .security-confirm-box { margin-left: 0; }
+  .security-confirm-box > div { flex-wrap: wrap; }
+  .security-confirm-box > div > button { min-height: 44px; flex: 1; }
+  .security-form-actions { flex-wrap: wrap; }
+  .security-form-actions > button { min-height: 44px; flex: 1; }
+  .security-recovery-heading .security-secondary-button { min-height: 44px; }
+  .security-recovery-actions > button { min-height: 44px; flex: 1; }
+  .security-primary-button, .security-secondary-button, .security-danger-button { min-height: 44px; }
+  .security-switch { min-height: 30px; }
+  .security-settings-link { grid-template-columns: 20px minmax(0,1fr) auto; }
+}
+@media (max-width: 380px) {
+  .security-summary-grid { grid-template-columns: minmax(0,1fr); }
+  .security-summary-item:last-child { grid-column: auto; }
+  .security-panel-heading { align-items: flex-start; }
+  .security-status-tag { margin-left: auto; }
+  .security-page-heading h1 { font-size: 27px; }
+  .security-secret { font-size: 10px; letter-spacing: .02em; }
+  .security-emergency-action { grid-template-columns: 32px minmax(0,1fr); }
+  .security-emergency-action > button, .security-emergency-action > svg:last-child { grid-column: 2; justify-self: start; margin-top: 3px; }
+}

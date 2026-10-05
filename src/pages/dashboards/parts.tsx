@@ -9,9 +9,10 @@
  */
 import type { ReactNode, RefObject } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Bell, CreditCard, FileText, Info, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Bell, CreditCard, FileText, Info, ShieldAlert, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { ease } from "../../components/common";
-import { shortDate, type NotificationItem } from "../../lib/store";
+import { shortDate, useAcct, type NotificationItem } from "../../lib/store";
 
 export type NavItem = { to: string; label: string; icon: ReactNode; end?: boolean; badge?: string };
 export type NavGroup = { title: string; items: NavItem[] };
@@ -170,5 +171,61 @@ export function Delta({ value, suffix = "%" }: { value: number; suffix?: string 
       {up ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
       {up ? "+" : ""}{value.toFixed(1)}{suffix}
     </span>
+  );
+}
+
+/* ============================================================
+   Account suspension banner
+   ============================================================ */
+
+/**
+ * The suspension notice, pinned to the top of the member's own dashboard the
+ * moment an admin restricts the account — and only then.
+ *
+ * This is one of the few banners that is deliberately *not* dismissible: the
+ * member's outgoing transfers are blocked, so the reason has to stay in front
+ * of them until the hold is lifted. The wording is exactly what the operator
+ * chose in the console (the server stored that sentence at suspend time), the
+ * account type decides whether it says "account" or "business account", and
+ * every route out of the state is offered: contact support, review security,
+ * and the account status page.
+ */
+export function SuspensionBanner() {
+  const { account, user } = useAcct();
+  if (!account || account.accountStatus !== "restricted") return null;
+
+  const business = user?.accountType === "business";
+  const reason = account.statusReason?.trim()
+    || "Your account is on hold while our compliance team reviews it.";
+  const effectiveDate = account.statusChangedAt ? shortDate(account.statusChangedAt) : null;
+
+  return (
+    <motion.section
+      className="suspension-banner"
+      role="alert"
+      aria-label="Account suspended"
+      initial={{ opacity: 0, y: -10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease }}
+    >
+      <span className="suspension-banner-icon" aria-hidden="true">
+        <ShieldAlert size={20} />
+      </span>
+      <div className="suspension-banner-copy">
+        <strong>{business ? "Your business account is suspended" : "Your account is suspended"}</strong>
+        <p className="suspension-banner-reason">{reason}</p>
+        <span className="suspension-banner-note">
+          Outgoing transfers and sends are paused{business ? " for this business" : ""} while we review. Money can still
+          be received, and your balance is untouched.
+        </span>
+        <em className="suspension-banner-meta">
+          {effectiveDate ? `Suspension effective ${effectiveDate}` : "Suspension currently active"}
+        </em>
+      </div>
+      <div className="suspension-banner-actions">
+        <Link to="/app/support-desk" className="solid-btn sm">Contact support</Link>
+        <Link to="/app/security" className="ghost-btn sm">Review security</Link>
+      </div>
+    </motion.section>
   );
 }

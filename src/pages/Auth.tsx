@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
-import { useAuth } from "../lib/auth";
+import { useAuth, type User } from "../lib/auth";
 import { apiGet, describeAuthError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { useToast } from "../components/Toast";
@@ -171,7 +171,7 @@ function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]
 }
 
 export function LoginPage() {
-  const { login, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
+  const { login, verifyLoginCode, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
 
   const toast = useToast();
   const navigate = useNavigate();
@@ -182,14 +182,28 @@ export function LoginPage() {
   const [errorHint, setErrorHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState("");
+  const [challengeId, setChallengeId] = useState("");
+  const [challengeEmail, setChallengeEmail] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
   const demos = useDemoAccounts();
+
+  function finishSignIn(me: User) {
+    const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
+    navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
+  }
 
   async function signIn(asEmail: string, asPassword: string) {
     setError(""); setErrorHint("");
     try {
-      const me = await login(asEmail, asPassword);
-      const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
-      navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
+      const result = await login(asEmail, asPassword);
+      if ("twoFactorRequired" in result) {
+        setChallengeId(result.challengeId);
+        setChallengeEmail(asEmail.trim());
+        setVerificationCode("");
+        setPassword("");
+        return;
+      }
+      finishSignIn(result);
 
     } catch (err) {
       // Say what happened AND what to do about it: the server's own wording, a
@@ -204,8 +218,22 @@ export function LoginPage() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
-    await signIn(email, password);
-    setBusy(false);
+    if (!challengeId) {
+      await signIn(email, password);
+      setBusy(false);
+      return;
+    }
+
+    setError(""); setErrorHint("");
+    try {
+      finishSignIn(await verifyLoginCode(challengeId, verificationCode.trim()));
+    } catch (err) {
+      const described = describeAuthError(err, "verify your sign-in code");
+      setError(described.message);
+      setErrorHint(described.status ? `${described.hint} (HTTP ${described.status})` : described.hint);
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** One click: show the credentials in the form, then sign in with them. */
@@ -273,16 +301,42 @@ export function LoginPage() {
         </div>
       )}
 
-      {demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
+      {!challengeId && demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
 
-
-      <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
+      {!challengeId && <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />}
 
       <form className="auth-form" onSubmit={submit}>
-        <label htmlFor="email">Email</label>
-        <input id="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
-        <div className="label-row"><label htmlFor="password">Password</label><Link to="/forgot-password">Forgot?</Link></div>
-        <PasswordField id="password" value={password} onChange={setPassword} autoComplete="current-password" />
+        {challengeId ? (
+          <>
+            <div className="auth-code-prompt">
+              <ShieldCheck size={21} />
+              <div>
+                <strong>Verify it’s you</strong>
+                <small>Enter a six-digit authenticator code or one of your unused recovery codes for {challengeEmail}.</small>
+              </div>
+            </div>
+            <label htmlFor="authenticator-code">Authenticator or recovery code</label>
+            <input
+              id="authenticator-code"
+              type="text"
+              inputMode="text"
+              autoComplete="one-time-code"
+              maxLength={24}
+              required
+              autoFocus
+              placeholder="123456 or ABCD-EFGH-JKLM"
+              value={verificationCode}
+              onChange={e => setVerificationCode(e.target.value.toUpperCase().replace(/[^A-Z0-9 -]/g, "").slice(0, 24))}
+            />
+          </>
+        ) : (
+          <>
+            <label htmlFor="email">Email</label>
+            <input id="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+            <div className="label-row"><label htmlFor="password">Password</label><Link to="/forgot-password">Forgot?</Link></div>
+            <PasswordField id="password" value={password} onChange={setPassword} autoComplete="current-password" />
+          </>
+        )}
         {error && (
           <div className="form-error" role="alert">
             <strong>{error}</strong>
@@ -290,9 +344,13 @@ export function LoginPage() {
           </div>
         )}
         <button className="auth-submit" type="submit" disabled={busy}>
-          {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Signing in…" : "Sign in"}
+          {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Signing in…" : challengeId ? "Verify and sign in" : "Sign in"}
         </button>
-        {storageBlocked() && (
+        {challengeId ? (
+          <button type="button" className="auth-code-back" disabled={busy} onClick={() => {
+            setChallengeId(""); setChallengeEmail(""); setVerificationCode(""); setError(""); setErrorHint("");
+          }}>Use a different account</button>
+        ) : storageBlocked() && (
           <p className="auth-storage-note">
             This browser blocks web storage (preview frames and private mode often do), so sign-in works for this
             tab only — a reload asks again.

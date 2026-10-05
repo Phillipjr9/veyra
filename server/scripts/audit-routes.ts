@@ -58,6 +58,7 @@ const BASELINE: Policy[] = [
   // see demoLoginsEnabled() in server/src/demo.ts.
   { method: "GET", path: "/api/demo/accounts", auth: false, perm: null },
   { method: "POST", path: "/api/auth/login", auth: false, perm: null },
+  { method: "POST", path: "/api/auth/login/verify", auth: false, perm: null },
   { method: "POST", path: "/api/auth/register", auth: false, perm: null },
   { method: "POST", path: "/api/auth/forgot-password", auth: false, perm: null },
   { method: "POST", path: "/api/auth/reset-password", auth: false, perm: null },
@@ -107,7 +108,12 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/me/scout/apply", auth: true, perm: null },
   { method: "POST", path: "/api/me/perks/:id/redeem", auth: true, perm: null },
   { method: "POST", path: "/api/me/sessions/:id/revoke", auth: true, perm: null },
+  { method: "POST", path: "/api/me/sessions/revoke-others", auth: true, perm: null },
   { method: "PATCH", path: "/api/me/sessions/:id", auth: true, perm: null },
+  { method: "POST", path: "/api/me/security/two-factor/setup", auth: true, perm: null },
+  { method: "POST", path: "/api/me/security/two-factor/confirm", auth: true, perm: null },
+  { method: "POST", path: "/api/me/security/two-factor/recovery-codes/regenerate", auth: true, perm: null },
+  { method: "POST", path: "/api/me/security/two-factor/disable", auth: true, perm: null },
 
   // Admin console: each operation requires its own explicit permission.
   { method: "GET", path: "/api/admin/overview", auth: true, perm: "dashboard.view" },
@@ -139,6 +145,9 @@ const BASELINE: Policy[] = [
   // The ledger file opens with either permission; every other report kind
   // additionally requires reports.view inside the handler.
   { method: "GET", path: "/api/admin/reports/:kind.csv", auth: true, perm: ["reports.view", "transactions.export"] },
+  // The reason picker reads exactly the catalogue the status route validates
+  // against, so it rides on the same permission as applying a restriction.
+  { method: "GET", path: "/api/admin/members/status-reasons", auth: true, perm: "accounts.set_status" },
   { method: "GET", path: "/api/admin/settings", auth: true, perm: "settings.manage" },
   { method: "PUT", path: "/api/admin/settings", auth: true, perm: "settings.manage" },
 ];
@@ -302,7 +311,10 @@ const fillPath = (path: string) => path.replace(/:kind/g, "transactions").replac
 
 /** Bodies differ per route; only the gate matters here. */
 const bodyFor = (route: Declared): unknown => {
-  if (route.path.endsWith("/paid") || route.path.endsWith("/remind") || route.path.endsWith("/pay")) return undefined;
+  if (route.path.endsWith("/paid") || route.path.endsWith("/remind") || route.path.endsWith("/pay") || route.path.endsWith("/revoke-others")) return undefined;
+  if (route.path.endsWith("/auth/login/verify")) return { challengeId: "missing", code: "000000" };
+  if (route.path.endsWith("/two-factor/setup")) return { password: "wrong-password" };
+  if (route.path.endsWith("/two-factor/confirm") || route.path.endsWith("/two-factor/disable")) return { password: "wrong-password", code: "000000" };
   if (route.path.endsWith("/kyc/submit")) return { legalName: "Audit", documents: [{ key: "id", label: "ID", name: "id.png" }] };
   if (route.path.endsWith("/preferences")) return { key: "twoFactor", value: true };
   if (route.path.endsWith("/roles")) return { role: "support", permissions: [] };
@@ -440,6 +452,7 @@ const isolationTargets: Array<[string, string, unknown]> = [
  */
 const selfScopedTargets: Array<[string, string, unknown]> = [
   ["POST", "/api/me/cards/freeze-all", undefined],
+  ["POST", "/api/me/sessions/revoke-others", undefined],
   ["POST", "/api/me/notifications/read-all", undefined],
   ["POST", "/api/me/rewards/redeem", undefined],
 ];

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { motion, AnimatePresence, useInView, useScroll, useTransform } from "motion/react";
+import { motion, AnimatePresence, useInView, useReducedMotion, useScroll, useTransform } from "motion/react";
 import {
   ArrowRight, BadgeCheck, BarChart3, Bot, Check, ChevronDown, CircleDollarSign,
   Cloud, CreditCard, Headphones, Landmark, ReceiptText, Send, ShieldCheck,
   Sparkles, TrendingUp, WalletCards, Zap, LockKeyhole
 } from "lucide-react";
 import { AnimatedMoney, Btn, Logo, Reveal, ease } from "./components/common";
+import { VeyraMark } from "./components/VeyraMark";
 import { useAuth } from "./lib/auth";
 
 const txns = [
@@ -63,17 +64,45 @@ function HeroFinancialUI() {
   );
 }
 
-const RATES: Record<string, number> = { Advertising: .055, Software: .05, Travel: .04, "General business": .03 };
+const HERO_REWARD_RATE = .055;
+
+function HeroRewardVisual({ reducedMotion }: { reducedMotion: boolean }) {
+  return (
+    <div className="hero-reward-visual">
+      <div className="hero-reward-copy">
+        <span>SMART REWARDS</span>
+        <strong>Up to <b>5.5%</b></strong>
+        <small>cash back on eligible spend</small>
+      </div>
+      <div className={`hero-reward-stage ${reducedMotion ? "is-static" : ""}`} aria-hidden="true">
+        <div className="hero-reward-halo" />
+        <div className="hero-reward-orbit hero-reward-orbit-a"><i /></div>
+        <div className="hero-reward-orbit hero-reward-orbit-b"><i /></div>
+        <motion.div className="hero-reward-card"
+          animate={reducedMotion ? { y: 0, rotateX: 9, rotateY: -12 } : { y: [0, -5, 0], rotateX: [9, 3, 9], rotateY: [-12, 7, -12] }}
+          transition={{ duration: reducedMotion ? 0 : 7, repeat: reducedMotion ? 0 : Infinity, ease: "easeInOut" }}>
+          <div className="hero-reward-card-wordmark"><VeyraMark /><span>VEYRA</span></div>
+          <span className="hero-reward-card-chip" />
+          <div className="hero-reward-card-rate"><small>CASH BACK</small><b>5.5%</b></div>
+        </motion.div>
+        <motion.div className="hero-reward-coin"
+          animate={reducedMotion ? { y: 0, z: 18, rotateY: -12 } : { y: [0, -4, 0], z: [16, 24, 16], rotateY: [-18, 162, 342] }}
+          transition={{ duration: reducedMotion ? 0 : 5.5, repeat: reducedMotion ? 0 : Infinity, ease: "easeInOut" }}>
+          <CircleDollarSign size={15} />
+        </motion.div>
+      </div>
+    </div>
+  );
+}
 
 function HeroCalculator() {
   const [spend, setSpend] = useState(12500);
-  const [category, setCategory] = useState("Advertising");
-  const annual = spend * RATES[category] * 12;
+  const reducedMotion = useReducedMotion() ?? false;
+  const annual = spend * HERO_REWARD_RATE * 12;
   return (
     <motion.div className="hero-calc" initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .8, delay: .4, ease }}>
       <div className="hero-calc-form">
-        <label htmlFor="hero-cat">Top spend category</label>
-        <div className="select-wrap"><select id="hero-cat" value={category} onChange={e => setCategory(e.target.value)}>{Object.keys(RATES).map(x => <option key={x}>{x}</option>)}</select><ChevronDown /></div>
+        <HeroRewardVisual reducedMotion={reducedMotion} />
         <label htmlFor="hero-spend">Monthly business spend <output>${spend.toLocaleString()}</output></label>
         <input id="hero-spend" type="range" min="1000" max="100000" step="500" value={spend} onChange={e => setSpend(Number(e.target.value))} style={{ "--range": `${(spend - 1000) / 990}%` } as React.CSSProperties} />
       </div>

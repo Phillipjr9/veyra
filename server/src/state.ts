@@ -37,9 +37,11 @@ const dollars = (cents: number) => Math.round(cents) / 100;
 /** Loads a column value as nullable string. */
 const s = (v: unknown) => (v == null ? undefined : String(v));
 
-export function buildMemberState(db: DatabaseSync, userId: string): Record<string, unknown> | null {
-  const user = db.prepare("SELECT name, business, account_type, status FROM users WHERE id = ?").get(userId) as
-    | { name: string; business: string; account_type: string; status: string }
+export function buildMemberState(db: DatabaseSync, userId: string, currentTokenId?: string): Record<string, unknown> | null {
+  const user = db.prepare(
+    "SELECT name, business, account_type, status, status_reason, status_changed_at, status_changed_by, totp_secret_encrypted FROM users WHERE id = ?",
+  ).get(userId) as
+    | { name: string; business: string; account_type: string; status: string; status_reason: string | null; status_changed_at: number | null; status_changed_by: string | null; totp_secret_encrypted: string | null }
     | undefined;
   if (!user) return null;
   const account = db.prepare("SELECT * FROM accounts WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
@@ -125,6 +127,7 @@ export function buildMemberState(db: DatabaseSync, userId: string): Record<strin
   }));
 
   const prefs = db.prepare("SELECT * FROM preferences WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
+  const recoveryCodesRemaining = Number((db.prepare("SELECT COUNT(*) AS count FROM totp_recovery_codes WHERE user_id = ?").get(userId) as { count: number }).count);
 
   const pockets = (db.prepare("SELECT * FROM savings_pockets WHERE user_id = ?").all(userId) as Array<Record<string, unknown>>).map(p => ({
     id: String(p.id),
@@ -173,13 +176,17 @@ export function buildMemberState(db: DatabaseSync, userId: string): Record<strin
     updatedAt: d.updated_at as number,
   }));
 
-  const sessions = (db.prepare("SELECT * FROM security_sessions WHERE user_id = ? ORDER BY last_active DESC").all(userId) as Array<Record<string, unknown>>).map(x => ({
+  const sessions = (db.prepare(`
+    SELECT ss.* FROM security_sessions ss JOIN sessions s ON s.token_id = ss.auth_token_id AND s.user_id = ss.user_id
+    WHERE ss.user_id = ? AND s.revoked = 0 AND s.expires_at > ?
+    ORDER BY ss.last_active DESC
+  `).all(userId, Date.now()) as Array<Record<string, unknown>>).map(x => ({
     id: String(x.id),
     device: String(x.device),
     browser: String(x.browser),
-    location: String(x.location),
+    location: String(x.location ?? ""),
     lastActive: x.last_active as number,
-    current: x.current === 1,
+    current: typeof currentTokenId === "string" && x.auth_token_id === currentTokenId,
     trusted: x.trusted === 1,
   }));
 
@@ -246,11 +253,12 @@ export function buildMemberState(db: DatabaseSync, userId: string): Record<strin
     perks,
     notifications,
     preferences: {
-      twoFactor: prefs?.two_factor !== 0,
+      twoFactor: prefs?.two_factor === 1 && Boolean(user.totp_secret_encrypted),
       loginAlerts: prefs?.login_alerts !== 0,
       scoutAuto: prefs?.scout_auto !== 0,
       weeklyDigest: prefs?.weekly_digest === 1,
     },
+    recoveryCodesRemaining,
     savingsPockets: pockets,
     payees,
     scheduledPayments: scheduled,
@@ -260,5 +268,10 @@ export function buildMemberState(db: DatabaseSync, userId: string): Record<strin
     scoutApplied: JSON.parse(String(account?.scout_applied_json ?? "[]")),
     kyc,
     accountStatus: user.status === "restricted" ? "restricted" : "active",
+    // Why the account is on hold — the member's dashboard banner reads this
+    // verbatim, so it is the sentence an admin chose when suspending, not a code.
+    statusReason: user.status_reason || undefined,
+    statusChangedAt: user.status_changed_at ?? undefined,
+    statusChangedBy: user.status_changed_by || undefined,
   };
 }

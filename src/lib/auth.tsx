@@ -16,6 +16,9 @@ export type User = {
   createdAt: number;
 };
 
+export type LoginChallenge = { twoFactorRequired: true; challengeId: string; expiresIn: number };
+export type LoginResult = User | LoginChallenge;
+
 type AuthValue = {
   user: User | null;
   ready: boolean;
@@ -33,7 +36,8 @@ type AuthValue = {
   dismissSessionNotice: () => void;
   /** Forgets this browser's session entirely (every token store) and returns to the form. */
   resetSession: () => void;
-  login: (email: string, password: string) => Promise<User>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  verifyLoginCode: (challengeId: string, code: string) => Promise<User>;
   /** `profile` carries the full account application (see server/src/identity.ts). */
   signup: (input: {
     name: string; phone?: string; business?: string; accountType: User["accountType"];
@@ -114,13 +118,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     dismissSessionNotice();
   }, [dismissSessionNotice]);
 
-  const login = useCallback(async (email: string, password: string): Promise<User> => {
+  const login = useCallback(async (email: string, password: string): Promise<LoginResult> => {
     // A leftover token must not ride along with a sign-in attempt: if the server
     // rejected the request, the automatic 401 handling would clear the session
     // and claim it "ended" — confusing when the real cause is a typed password.
     clearToken();
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
-    const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
+    const result = await apiPost<{
+      token?: string; user?: User; twoFactorRequired?: true; challengeId?: string; expiresIn?: number;
+    }>("/api/auth/login", { email: email.trim(), password });
+    if (result.twoFactorRequired && result.challengeId) {
+      return { twoFactorRequired: true, challengeId: result.challengeId, expiresIn: result.expiresIn ?? 300 };
+    }
+    if (!result.token || !result.user) throw new Error("The server did not complete sign-in. Try again.");
+    setToken(result.token);
+    setActiveToken(result.token);
+    setUser(result.user);
+    return result.user;
+  }, []);
+
+  const verifyLoginCode = useCallback(async (challengeId: string, code: string): Promise<User> => {
+    const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/login/verify", { challengeId, code });
     setToken(token);
     setActiveToken(token);
     setUser(me);
@@ -169,8 +187,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, verifyLoginCode, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, verifyLoginCode, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
 
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;

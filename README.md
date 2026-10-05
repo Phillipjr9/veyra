@@ -167,8 +167,8 @@ server/
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   153-check integration suite (boots the real server)
-  scripts/audit-routes.ts  69 routes × 6 identities gate/isolation audit
+  scripts/test-api.ts   220-check integration suite (boots the real server)
+  scripts/audit-routes.ts  85 routes × 6 identities gate/isolation audit (+22 isolation/validation probes)
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -212,7 +212,7 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 153-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 220-check integration suite (fresh DB, ephemeral port)
 npm run check:routes      # fails if a server route has no caller in the app
 npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
@@ -223,8 +223,10 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Concern | Implementation |
 |---|---|
 | Passwords | scrypt (`s2$salt$hash`), never plaintext or reversible |
-| Sessions | HS256 bearer tokens (12 h) with a `sessions` table — logout and admin revocation kill them instantly |
-| Login abuse | In-memory rate limit: 8 attempts / 60 s per IP (login and password-reset requests) |
+| Sessions | HS256 bearer tokens (12 h) with a `sessions` table — per-device revocation and “sign out others” invalidate credentials immediately; password changes revoke other sessions |
+| Two-step sign-in | RFC 6238 authenticator secrets encrypted with AES-256-GCM; enrollment is password-and-code-confirmed and issues ten one-time recovery codes (SHA-256 hashes stored). Codes work once at sign-in or to disable MFA; regeneration requires the password and current authenticator code. Login challenges expire after five minutes. |
+| Device identity | Persistent `X-Veyra-Device` id groups browser sessions and alerts; it is metadata only, never an authentication or MFA bypass |
+| Login abuse | In-memory rate limits on password and authenticator challenge attempts |
 | RBAC | 17 permissions × 5 roles, resolved **fresh from the DB on every request** (role changes take effect immediately, no re-login) |
 | Money | Integer cents everywhere; every mutation inside `BEGIN IMMEDIATE` |
 | Audit trail | `audit_log` is append-only **by database trigger** — `UPDATE`/`DELETE` raise `ABORT` |
@@ -233,7 +235,7 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Overdrafts | Rejected — balances can never go negative |
 | Card controls | Freeze, per-transaction and monthly limits, merchant/category locks and the online-payments switch are enforced server-side when a card spends |
 | Export scoping | The ledger export opens with `reports.view` or `transactions.export`; the directory, balances and KYC exports stay behind `reports.view` |
-| Secrets | `TOKEN_SECRET` env required in production (refuses to boot on the dev fallback) |
+| Secrets | `TOKEN_SECRET` env required in production (refuses to boot on the dev fallback); keep it stable because it also keys encrypted authenticator secrets |
 | Password reset | Single-use SHA-256-hashed tokens, 30-minute expiry, reset revokes all sessions |
 | Bootstrap | First Super Admin created from `ADMIN_EMAIL` / `ADMIN_PASSWORD` — no seeded accounts in production |
 
@@ -299,11 +301,12 @@ funds) to the status columns.
 
 ### API surface (summary)
 
-- **Auth** — `POST /api/auth/login · register · logout`, `GET /api/auth/me`, `GET /api/health`
+- **Auth** — `POST /api/auth/login · login/verify · register · logout`, `GET /api/auth/me`, `GET /api/health`
 - **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
-  rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications
+  rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications,
+  authenticator setup/confirm/disable, one-time recovery codes (enrollment, password+TOTP regeneration, sign-in and recovery-based disable), live session trust and revocation
 - **Admin** — `GET /api/admin/state` (console aggregate: users, accounts, ledger, disputes,
   KYC queue, audit, role matrix, settings) `· overview · members · staff · roles · audit`,
   member detail/adjust/status, KYC request/queue/decision, risk dispute queue + advance,
@@ -329,7 +332,7 @@ The database schema is created by versioned migrations in `server/src/db.ts`
 `notifications`, `audit_log`, `sessions`, `role_permissions`, `settings`;
 v2 adds `invoices`, `team_members`, `savings_pockets`, `payees`,
 `scheduled_payments`, `perks`, `security_sessions`, `preferences` and the full
-card model, so every member feature is server-backed). `server/src/state.ts`
+card model, so every member feature is server-backed; v9 adds authenticator-backed MFA and revocable device sessions, and v10 adds hashed one-time recovery codes). `server/src/state.ts`
 builds each member's Account snapshot straight from these tables.
 
 ## Scripts
@@ -340,7 +343,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (153) = 194 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (220) = 261 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

@@ -118,6 +118,14 @@ type AdminServerState = {
   settings: Record<string, string>;
 };
 
+/**
+ * One entry in the suspension-reason catalogue served by
+ * `GET /api/admin/members/status-reasons`. `memberText` is the sentence the
+ * member's dashboard banner shows, kept in the API so the picker can preview
+ * exactly what will be stored.
+ */
+type StatusReason = { code: string; label: string; note: string; memberText: string };
+
 export function SuperAdminPage() {
   const { user, logout } = useAuth();
   const toast = useToast();
@@ -131,6 +139,13 @@ export function SuperAdminPage() {
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [tick, setTick] = useState(0);
   const refresh = () => setTick(t => t + 1);
+
+  /** Opens the restrict/restore modal with a clean reason picker. */
+  const openStatusConfirm = (target: PlatformAccount, status: "active" | "restricted") => {
+    setStatusReasonCode("");
+    setStatusReason("");
+    setStatusConfirm({ target, status });
+  };
 
   // Backend API health (real Express + SQLite server — see server/)
   const [apiHealth, setApiHealth] = useState<"checking" | "online" | "offline">("checking");
@@ -178,8 +193,12 @@ export function SuperAdminPage() {
   const [kycReason, setKycReason] = useState("");
   const [kycReview, setKycReview] = useState<KycQueueItem | null>(null);
   const [kycDecisionNote, setKycDecisionNote] = useState("");
-  // Account status
+  // Account status. The reasons come from the API (one catalogue, shared by the
+  // picker and the validator) and the member reads exactly the sentence chosen
+  // here — so the modal shows that sentence before anything is applied.
   const [statusConfirm, setStatusConfirm] = useState<{ target: PlatformAccount; status: "active" | "restricted" } | null>(null);
+  const [statusReasons, setStatusReasons] = useState<StatusReason[] | null>(null);
+  const [statusReasonCode, setStatusReasonCode] = useState("");
   const [statusReason, setStatusReason] = useState("");
   // Staff
   const [staffConfirm, setStaffConfirm] = useState<{ userId: string; name: string; role: Role } | null>(null);
@@ -207,6 +226,19 @@ export function SuperAdminPage() {
   });
   const [caseNote, setCaseNote] = useState("");
   const [caseSaving, setCaseSaving] = useState(false);
+
+  // The reason catalogue is small and rarely changes: fetch it once, the first
+  // time an operator opens the restrict dialog, and keep it for the session.
+  useEffect(() => {
+    if (!statusConfirm || statusConfirm.status !== "restricted" || statusReasons) return;
+    let cancelled = false;
+    apiGet<{ reasons: StatusReason[] }>("/api/admin/members/status-reasons")
+      .then(data => { if (!cancelled) setStatusReasons(data.reasons); })
+      // An empty list is not fatal: "Other" still lets the operator write a
+      // reason, which is what the API accepts in that case too.
+      .catch(() => { if (!cancelled) setStatusReasons([]); });
+    return () => { cancelled = true; };
+  }, [statusConfirm, statusReasons]);
 
   // The backend is the system of record — load the aggregate admin state and
   // install the server's role matrix so can() matches server enforcement.
@@ -371,10 +403,14 @@ export function SuperAdminPage() {
     if (!statusConfirm) return;
     if (!guard("accounts.set_status", "change account status")) return;
     const { target, status } = statusConfirm;
-          apiPost(`/api/admin/members/${target.userId}/status`, { status, reason: statusReason || "Reviewed by compliance." })
+          apiPost(`/api/admin/members/${target.userId}/status`, {
+            status,
+            reasonCode: statusReasonCode,
+            reason: statusReason.trim(),
+          })
         .then(() => {
           toast({ tone: status === "restricted" ? "info" : "success", title: status === "restricted" ? "Account restricted" : "Account restored", description: `${target.name} has been notified.` });
-          setStatusConfirm(null); setStatusReason(""); refresh();
+          setStatusConfirm(null); setStatusReason(""); setStatusReasonCode(""); refresh();
         })
         .catch((err: Error) => toast({ tone: "error", title: "Status change failed", description: err.message }));
   };
@@ -679,7 +715,7 @@ export function SuperAdminPage() {
     if (apiHealth === "offline") items.push({ id: "api-offline", priority: "urgent", tab: "dashboard", title: "API health check is degraded", detail: "The control plane cannot confirm the member ledger is reachable.", owner: "Platform engineering", createdAt: Date.now(), kind: "other" });
     openDisputes.forEach(dispute => items.push({ id: `dispute-${dispute.id}`, priority: dispute.status === "submitted" ? "high" : "review", tab: "risk", title: `Dispute: ${dispute.merchant}`, detail: `${dispute.memberName} · ${money(dispute.amount)} · ${dispute.reason}`, owner: "Risk & fraud", createdAt: dispute.updatedAt, kind: "dispute", sourceType: "dispute", sourceId: dispute.id, userId: dispute.userId }));
     kycQueue.forEach(item => items.push({ id: `kyc-${item.userId}`, priority: item.kyc.status === "in_review" ? "high" : "review", tab: "kyc", title: `Verification: ${item.name}`, detail: `${item.kyc.status.replace("_", " ")} · ${item.kyc.completeness}% complete`, owner: "Compliance", createdAt: item.kyc.lastUpdated, kind: "kyc", sourceType: "kyc", sourceId: item.userId, userId: item.userId }));
-    accounts.filter(account => account.accountStatus === "restricted").forEach(account => items.push({ id: `restricted-${account.userId}`, priority: "high", tab: "customers", title: `Restricted account: ${account.name}`, detail: `${account.email} · ${money(account.balance)} available balance`, owner: "Risk & fraud", createdAt: account.lastActivity, kind: "account", sourceType: "account", sourceId: account.userId, userId: account.userId }));
+    accounts.filter(account => account.accountStatus === "restricted").forEach(account => items.push({ id: `restricted-${account.userId}`, priority: "high", tab: "customers", title: `Restricted account: ${account.name}`, detail: account.statusReason ? `${account.email} · ${account.statusReason}` : `${account.email} · ${money(account.balance)} available balance`, owner: "Risk & fraud", createdAt: account.lastActivity, kind: "account", sourceType: "account", sourceId: account.userId, userId: account.userId }));
     allTxns.filter(transaction => transaction.status === "pending").forEach(transaction => items.push({ id: `pending-${transaction.id}`, priority: "review", tab: "transactions", title: `Pending movement: ${transaction.merchant}`, detail: `${transaction.memberName} · ${money(Math.abs(transaction.amount))} · ${transaction.method ?? "Unknown method"}`, owner: "Payments operations", createdAt: transaction.date, kind: "transaction", sourceType: "transaction", sourceId: transaction.id, userId: transaction.userId }));
     const rank = { urgent: 0, high: 1, review: 2 };
     return items.sort((a, b) => rank[a.priority] - rank[b.priority] || b.createdAt - a.createdAt);
@@ -1107,7 +1143,7 @@ export function SuperAdminPage() {
                               <button type="button" className="ghost-btn sm" onClick={() => { setTargetUser(u); setKycReqs(["identity", "address"]); setKycModal(true); }}><UserCheck size={13} /> Request KYC</button>
                             )}
                             {allow("accounts.set_status") && acct && (
-                              <button type="button" className="ghost-btn sm" onClick={() => setStatusConfirm({ target: acct, status: acct.accountStatus === "restricted" ? "active" : "restricted" })}>
+                              <button type="button" className="ghost-btn sm" onClick={() => openStatusConfirm(acct, acct.accountStatus === "restricted" ? "active" : "restricted")}>
                                 {acct.accountStatus === "restricted" ? "Restore" : "Restrict"}
                               </button>
                             )}
@@ -1158,11 +1194,15 @@ export function SuperAdminPage() {
                       <td><small>{a.cards}{a.frozenCards > 0 ? ` (${a.frozenCards} frozen)` : ""}</small></td>
                       <td><small>{a.txnCount}{a.pendingTxns > 0 ? ` · ${a.pendingTxns} pending` : ""}</small></td>
                       <td>{kycChip(a.kycStatus)}</td>
-                      <td><span className={`status-pill ${a.accountStatus === "restricted" ? "overdue" : "active"}`}><span className="dot" />{a.accountStatus}</span></td>
+                      <td>
+                        <span className={`status-pill ${a.accountStatus === "restricted" ? "overdue" : "active"}`}><span className="dot" />{a.accountStatus}</span>
+                        {/* A second operator should not have to open the audit trail to know why. */}
+                        {a.accountStatus === "restricted" && a.statusReason && <small className="status-reason-note">{a.statusReason}</small>}
+                      </td>
                       <td><small>{a.lastActivity ? ago(a.lastActivity) : "Never"}</small></td>
                       <td className="ta-r">
                         {allow("accounts.set_status") && (
-                          <button type="button" className="ghost-btn sm" onClick={() => setStatusConfirm({ target: a, status: a.accountStatus === "restricted" ? "active" : "restricted" })}>
+                          <button type="button" className="ghost-btn sm" onClick={() => openStatusConfirm(a, a.accountStatus === "restricted" ? "active" : "restricted")}>
                             {a.accountStatus === "restricted" ? "Restore" : "Restrict"}
                           </button>
                         )}
@@ -1836,8 +1876,56 @@ export function SuperAdminPage() {
               </p>
               {statusConfirm.status === "restricted" && (
                 <>
-                  <label htmlFor="adm-status-reason">Reason (required, shown to the member and in the audit trail)</label>
-                  <input id="adm-status-reason" value={statusReason} onChange={e => setStatusReason(e.target.value)} placeholder="e.g. Suspicious transaction pattern under review" />
+                  <label>Reason (required — shown to the member and in the audit trail)</label>
+                  {statusReasons === null ? (
+                    <p className="status-reason-loading">Loading reasons…</p>
+                  ) : (
+                    <div className="status-reason-grid" role="radiogroup" aria-label="Suspension reason">
+                      {statusReasons.map(r => (
+                        <label key={r.code} className={`status-reason-chip ${statusReasonCode === r.code ? "on" : ""}`}>
+                          <input
+                            type="radio"
+                            name="adm-status-reason"
+                            checked={statusReasonCode === r.code}
+                            onChange={() => setStatusReasonCode(r.code)}
+                          />
+                          <strong>{r.label}</strong>
+                          <small>{r.note}</small>
+                        </label>
+                      ))}
+                      <label className={`status-reason-chip ${statusReasonCode === "other" ? "on" : ""}`}>
+                        <input
+                          type="radio"
+                          name="adm-status-reason"
+                          checked={statusReasonCode === "other"}
+                          onChange={() => setStatusReasonCode("other")}
+                        />
+                        <strong>Other — write your own</strong>
+                        <small>For anything the list does not cover. Your words are stored as written.</small>
+                      </label>
+                    </div>
+                  )}
+                  {(() => {
+                    const chosen = statusReasons?.find(r => r.code === statusReasonCode);
+                    if (chosen) {
+                      return <p className="status-reason-preview"><b>The member will read:</b> “{chosen.memberText}”</p>;
+                    }
+                    if (statusReasonCode === "other") {
+                      return (
+                        <>
+                          <label htmlFor="adm-status-reason">Your reason, shown to the member</label>
+                          <textarea
+                            id="adm-status-reason"
+                            rows={3}
+                            value={statusReason}
+                            onChange={e => setStatusReason(e.target.value)}
+                            placeholder="e.g. Your account was used to receive the proceeds of a reported scam, so outgoing transfers are paused while we review it."
+                          />
+                        </>
+                      );
+                    }
+                    return null;
+                  })()}
                 </>
               )}
               <div className="modal-actions">
@@ -1845,7 +1933,10 @@ export function SuperAdminPage() {
                 <button
                   type="button"
                   className={statusConfirm.status === "restricted" ? "danger-btn" : "solid-btn"}
-                  disabled={statusConfirm.status === "restricted" && statusReason.trim().length === 0}
+                  disabled={
+                    statusConfirm.status === "restricted" &&
+                    (!statusReasonCode || (statusReasonCode === "other" && statusReason.trim().length < 8))
+                  }
                   onClick={handleStatusConfirm}
                 >
                   {statusConfirm.status === "restricted" ? "Restrict account" : "Restore account"}
