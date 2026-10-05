@@ -8,6 +8,7 @@ import { useAuth } from "../lib/auth";
 import { apiGet, describeAuthError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { prewarmRecaptcha } from "../lib/recaptcha";
+import { federatedEnabled, FederatedCancelled } from "../lib/federated";
 import { useToast } from "../components/Toast";
 
 /** 3D artwork shown beside the form (desktop) and above it (phones). */
@@ -76,13 +77,17 @@ function PasswordField({ value, onChange, id, placeholder = "••••••�
   );
 }
 
-function AuthProviders({ onGoogle, onPasskey }: { onGoogle: () => void; onPasskey: () => void }) {
+function AuthProviders({ onGoogle, onPasskey, googleBusy = false }: {
+  onGoogle: () => void; onPasskey: () => void;
+  /** Google's popup is a round-trip through another origin — say so while it runs. */
+  googleBusy?: boolean;
+}) {
   return (
     <>
       <div className="auth-provider-stack">
-        <button type="button" className="auth-provider-button google" onClick={onGoogle}>
-          <Globe size={18} />
-          <span>Continue with Google</span>
+        <button type="button" className="auth-provider-button google" onClick={onGoogle} disabled={googleBusy}>
+          {googleBusy ? <Loader2 size={18} className="spin" /> : <Globe size={18} />}
+          <span>{googleBusy ? "Waiting for Google…" : "Continue with Google"}</span>
         </button>
         <button type="button" className="auth-provider-button passkey" onClick={onPasskey}>
           <KeyRound size={18} />
@@ -178,7 +183,7 @@ function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]
 }
 
 export function LoginPage() {
-  const { login, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
+  const { login, loginWithGoogle, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
 
   const toast = useToast();
   const navigate = useNavigate();
@@ -189,15 +194,22 @@ export function LoginPage() {
   const [errorHint, setErrorHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState("");
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleReady, setGoogleReady] = useState(false);
   const demos = useDemoAccounts();
+
+  useEffect(() => { void federatedEnabled().then(setGoogleReady); }, []);
+
+  /** Where a successful sign-in lands, whatever proved the identity. */
+  function afterSignIn(me: { role?: string }) {
+    const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
+    navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
+  }
 
   async function signIn(asEmail: string, asPassword: string) {
     setError(""); setErrorHint("");
     try {
-      const me = await login(asEmail, asPassword);
-      const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
-      navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
-
+      afterSignIn(await login(asEmail, asPassword));
     } catch (err) {
       // Say what happened AND what to do about it: the server's own wording, a
       // hint for the cause, and the status code. "Can't log in" with no reason
@@ -224,12 +236,30 @@ export function LoginPage() {
     setDemoBusy("");
   }
 
-  const handleGoogle = () => {
-    toast({
-      title: "Google sign-in is not configured yet",
-      description: "Add your Google OAuth client and callback before enabling this flow.",
-      tone: "info",
-    });
+  const handleGoogle = async () => {
+    // The server owns whether this is switched on, so a deployment without
+    // Firebase keys still explains itself instead of opening a dead popup.
+    if (!googleReady) {
+      toast({
+        title: "Google sign-in is not configured yet",
+        description: "Set FIREBASE_PROJECT_ID and FIREBASE_API_KEY on the API to enable this flow.",
+        tone: "info",
+      });
+      return;
+    }
+    setError(""); setErrorHint(""); setGoogleBusy(true);
+    try {
+      afterSignIn(await loginWithGoogle());
+    } catch (err) {
+      // Closing the Google window is a decision, not a failure.
+      if (!(err instanceof FederatedCancelled)) {
+        const described = describeAuthError(err, "sign in with Google");
+        setError(described.message);
+        setErrorHint(described.status ? `${described.hint} (HTTP ${described.status})` : described.hint);
+      }
+    } finally {
+      setGoogleBusy(false);
+    }
   };
 
   const handlePasskey = () => {
@@ -283,7 +313,7 @@ export function LoginPage() {
       {demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
 
 
-      <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
+      <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} googleBusy={googleBusy} />
 
       <form className="auth-form" onSubmit={submit}>
         <label htmlFor="email">Email</label>
@@ -356,9 +386,12 @@ export function SignupPage() {
   const business = form.accountType === "business";
 
   const handleGoogle = () => {
+    // Deliberate: federated sign-in never auto-provisions. Opening an account
+    // needs the full application (legal identity, tax ID, address, government
+    // ID), so Google can link to an account but cannot create one.
     toast({
-      title: "Google sign-up is not configured yet",
-      description: "Connect your OAuth provider and callback before enabling Google registration.",
+      title: "Google can't open an account",
+      description: "Opening a Veyra account needs your full application. Complete it below, then link Google from Security.",
       tone: "info",
     });
   };

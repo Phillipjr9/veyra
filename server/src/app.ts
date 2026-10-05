@@ -16,6 +16,7 @@ import { resolve } from "node:path";
 import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError, generateAccountNumber } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
 import { requireRecaptcha, publicRecaptchaConfig, RECAPTCHA_ACTIONS } from "./recaptcha.js";
+import { verifyFirebaseIdToken, federatedConfig, publicFederatedConfig } from "./federated.js";
 import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
@@ -269,7 +270,116 @@ export function createApp(dbPath?: string) {
    * and a stale bundle cannot start withholding tokens the server now demands.
    */
   app.get("/api/auth/config", wrap((_req, res) => {
-    res.json({ recaptcha: publicRecaptchaConfig() });
+    res.json({ recaptcha: publicRecaptchaConfig(), federated: publicFederatedConfig() });
+  }));
+
+  /**
+   * Federated sign-in — Google, via a Firebase ID token.
+   *
+   * Firebase is an identity provider, not the authority: the token only proves
+   * who the caller is. This route maps that onto an existing member and mints
+   * Veyra's own session, so revocation, RBAC and the audit trail are untouched
+   * (see server/src/federated.ts for the full policy and its reasoning).
+   *
+   * Not reCAPTCHA-gated, unlike the password routes: a valid Firebase ID token
+   * is already a strong anti-automation signal, and an invalid one is rejected
+   * by a signature check costing a fraction of a scrypt hash. The per-address
+   * budget below bounds the rest.
+   */
+  app.post("/api/auth/federated", wrap(async (req, res) => {
+    const config = federatedConfig();
+    if (!config.enabled) {
+      return void res.status(503).json({ error: "Google sign-in is not enabled.", code: "federated_disabled" });
+    }
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`federated:${ip}`, 20, 60_000)) {
+      return void res.status(429).json({ error: "Too many attempts — wait a minute, then try again." });
+    }
+
+    const verdict = await verifyFirebaseIdToken(String(req.body?.idToken ?? ""));
+    if (!verdict.ok) {
+      console.warn(`[federated] rejected — ${verdict.detail}`);
+      return void res.status(verdict.status).json({ error: verdict.error, code: "federated_rejected" });
+    }
+    const { subject, email, emailVerified, provider } = verdict.identity;
+
+    // An unverified address must never be able to claim an existing account.
+    if (!emailVerified) {
+      return void res.status(403).json({
+        error: "That Google account's email address isn't verified, so it can't be used to sign in.",
+        code: "federated_unverified",
+      });
+    }
+
+    const existing = db.prepare(
+      "SELECT user_id FROM federated_identities WHERE provider = ? AND subject = ?",
+    ).get("google", subject) as { user_id: string } | undefined;
+
+    let userId: string;
+    let linkedNow = false;
+
+    if (existing) {
+      userId = existing.user_id;
+    } else {
+      // First time this Google account has been seen: it may only attach to an
+      // account that already exists, and only by verified email.
+      if (!email) {
+        return void res.status(403).json({ error: "That Google account did not share an email address.", code: "federated_no_email" });
+      }
+      const match = db.prepare("SELECT id, role FROM users WHERE email = ? COLLATE NOCASE").get(email) as
+        | { id: string; role: string }
+        | undefined;
+      // No auto-provisioning: opening an account needs the full application.
+      if (!match) {
+        return void res.status(404).json({
+          error: "No Veyra account uses that email address. Open an account first, then link Google from your security settings.",
+          code: "federated_no_account",
+        });
+      }
+      if (match.role !== "user" && !config.allowStaff) {
+        return void res.status(403).json({
+          error: "Staff accounts sign in with a password. Contact an administrator if you need this changed.",
+          code: "federated_staff_blocked",
+        });
+      }
+      try {
+        db.prepare(
+          "INSERT INTO federated_identities (provider, subject, user_id, email, linked_at) VALUES (?, ?, ?, ?, ?)",
+        ).run("google", subject, match.id, email, now());
+      } catch {
+        // The UNIQUE(provider, user_id) index: this member already has a
+        // different Google account attached.
+        return void res.status(409).json({
+          error: "This account is already linked to a different Google account.",
+          code: "federated_already_linked",
+        });
+      }
+      userId = match.id;
+      linkedNow = true;
+    }
+
+    const user = loadUser(userId);
+    if (!user) return void res.status(404).json({ error: "That account no longer exists.", code: "federated_no_account" });
+
+    db.prepare("UPDATE federated_identities SET last_used_at = ? WHERE provider = ? AND subject = ?")
+      .run(now(), "google", subject);
+
+    // Attaching a new way into the account is security-relevant, so the member
+    // is told the first time it happens.
+    if (linkedNow) {
+      notify(userId, "security", "Google sign-in linked to your account",
+        `You can now sign in with Google (${email}). If this wasn't you, change your password and contact support immediately.`);
+    }
+
+    const tokenId = randomUUID();
+    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .run(tokenId, userId, now(), now() + TOKEN_TTL_MS);
+    res.json({
+      token: signToken({ sub: userId, jti: tokenId, role: user.role }),
+      user: publicUser(user),
+      linked: linkedNow,
+      provider,
+    });
   }));
 
   app.post("/api/auth/login", requireRecaptcha(RECAPTCHA_ACTIONS.login), wrap((req, res) => {

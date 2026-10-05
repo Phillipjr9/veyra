@@ -17,26 +17,15 @@
  * are required.
  */
 
-export type RecaptchaActionKey = "login" | "register" | "forgotPassword";
+import { authConfig, AUTH_CONFIG_OFF, type AuthConfig, type RecaptchaActionKey } from "./authConfig";
 
-type RecaptchaConfig = {
-  enabled: boolean;
-  provider: "v3" | "enterprise" | "off";
-  siteKey: string;
-  actions: Record<RecaptchaActionKey, string>;
-};
+export type { RecaptchaActionKey };
 
-const DISABLED: RecaptchaConfig = {
-  enabled: false,
-  provider: "off",
-  siteKey: "",
-  actions: { login: "login", register: "register", forgotPassword: "forgot_password" },
-};
+type RecaptchaConfig = AuthConfig["recaptcha"];
 
 /** `grecaptcha.execute` occasionally never settles; sign-in must not hang on it. */
 const EXECUTE_TIMEOUT_MS = 8000;
 const SCRIPT_TIMEOUT_MS = 8000;
-const CONFIG_TIMEOUT_MS = 4000;
 
 type Grecaptcha = {
   ready: (cb: () => void) => void;
@@ -60,36 +49,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   });
 }
 
-/* ---------- configuration (fetched once per page load) ---------- */
-
-let configPromise: Promise<RecaptchaConfig> | null = null;
-
-export function recaptchaConfig(): Promise<RecaptchaConfig> {
-  if (configPromise) return configPromise;
-  configPromise = (async () => {
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), CONFIG_TIMEOUT_MS);
-      const res = await fetch("/api/auth/config", { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!res.ok) return DISABLED;
-      const body = (await res.json()) as { recaptcha?: Partial<RecaptchaConfig> };
-      const recaptcha = body?.recaptcha;
-      if (!recaptcha?.enabled || !recaptcha.siteKey) return DISABLED;
-      return {
-        enabled: true,
-        provider: recaptcha.provider === "enterprise" ? "enterprise" : "v3",
-        siteKey: recaptcha.siteKey,
-        actions: { ...DISABLED.actions, ...(recaptcha.actions ?? {}) },
-      };
-    } catch {
-      // Unreachable API: the sign-in attempt itself is the better probe, and
-      // it will surface the real error through the normal path.
-      return DISABLED;
-    }
-  })();
-  return configPromise;
-}
+/** The reCAPTCHA slice of the shared auth configuration. */
+const recaptchaConfig = async (): Promise<RecaptchaConfig> => (await authConfig()).recaptcha;
 
 /* ---------- script loading ---------- */
 
@@ -159,7 +120,7 @@ export async function recaptchaToken(key: RecaptchaActionKey): Promise<string | 
   const api = await loadScript(config);
   if (!api) return null;
 
-  const action = config.actions[key] ?? DISABLED.actions[key];
+  const action = config.actions[key] ?? AUTH_CONFIG_OFF.recaptcha.actions[key];
   try {
     return await withTimeout(api.execute(config.siteKey, { action }), EXECUTE_TIMEOUT_MS);
   } catch {

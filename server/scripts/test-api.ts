@@ -20,6 +20,7 @@ import { createApp } from "../src/app.js";
 import { applicationFor } from "./fixtures.js";
 import { resetRateLimits } from "../src/security.js";
 import { resetRecaptchaConfig } from "../src/recaptcha.js";
+import { resetFederatedConfig } from "../src/federated.js";
 import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -980,6 +981,168 @@ try {
       resetRateLimits();
     }
     expect("the gate is fully off again for the rest of the suite", (await attempt()).status === 401);
+  }
+
+  /* ---------- federated sign-in (Google via Firebase) ---------- */
+  //
+  // Real RSA keys, real RS256 signatures, a real JWKS endpoint — only Google's
+  // hostname is swapped out. The crypto under test is genuinely exercised and
+  // the suite stays offline.
+  {
+    const { generateKeyPairSync, createSign, createHmac } = await import("node:crypto");
+    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const KID = "test-key-1";
+    const PROJECT = "veyra-test-project";
+    const jwk = { ...publicKey.export({ format: "jwk" }), kid: KID, alg: "RS256", use: "sig" };
+
+    // A second, unpublished key: signatures from it must never verify.
+    const foreign = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+
+    let jwksHits = 0;
+    const jwksServer = createServer((_req, res) => {
+      jwksHits++;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ keys: [jwk] }));
+    });
+    await new Promise<void>(r => jwksServer.listen(0, "127.0.0.1", () => r()));
+    const jwksUrl = `http://127.0.0.1:${(jwksServer.address() as { port: number }).port}/jwk`;
+
+    const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const nowSec = Math.floor(Date.now() / 1000);
+    const idToken = (over: Record<string, unknown> = {}, opts: { kid?: string; alg?: string; key?: any } = {}) => {
+      const header = b64({ alg: opts.alg ?? "RS256", kid: opts.kid ?? KID, typ: "JWT" });
+      const body = b64({
+        iss: `https://securetoken.google.com/${PROJECT}`,
+        aud: PROJECT,
+        sub: "google-uid-aurelia",
+        auth_time: nowSec - 30, iat: nowSec - 30, exp: nowSec + 3600,
+        email: "aurelia@federated.test", email_verified: true, name: "Aurelia Vance",
+        firebase: { sign_in_provider: "google.com", identities: {} },
+        ...over,
+      });
+      const signature = createSign("RSA-SHA256").update(`${header}.${body}`).sign(opts.key ?? privateKey);
+      return `${header}.${body}.${signature.toString("base64url")}`;
+    };
+
+    const post = (idTokenValue: string) => api("POST", "/api/auth/federated", undefined, { idToken: idTokenValue });
+    const restore = { ...process.env };
+    try {
+      // Off until configured.
+      resetFederatedConfig();
+      const off = await post(idToken());
+      expect("federated sign-in is off until configured (503)", off.status === 503 && off.json.code === "federated_disabled");
+      const offConfig = await api("GET", "/api/auth/config");
+      expect("config advertises federated sign-in as off",
+        offConfig.json.federated.enabled === false && offConfig.json.federated.firebase === null);
+
+      process.env.FIREBASE_PROJECT_ID = PROJECT;
+      process.env.FIREBASE_API_KEY = "web-api-key";
+      process.env.FIREBASE_JWKS_URL = jwksUrl;
+      delete process.env.FEDERATED_ALLOW_STAFF;
+      resetFederatedConfig();
+
+      const onConfig = await api("GET", "/api/auth/config");
+      expect("config publishes the Firebase web config for the browser",
+        onConfig.json.federated.enabled === true &&
+        onConfig.json.federated.providers.includes("google") &&
+        onConfig.json.federated.firebase.projectId === PROJECT &&
+        onConfig.json.federated.firebase.authDomain === `${PROJECT}.firebaseapp.com`);
+
+      // No Veyra account uses that address yet: sign-in must refuse rather
+      // than quietly opening one.
+      const orphan = await post(idToken());
+      expect("an unknown email is refused, not auto-provisioned (404)",
+        orphan.status === 404 && orphan.json.code === "federated_no_account" &&
+        !db.prepare("SELECT 1 FROM users WHERE email = ?").get("aurelia@federated.test"));
+
+      // Now open a real account through the normal application flow.
+      const aurelia = await register("Aurelia Vance", "aurelia@federated.test", "member-pass-9", { accountType: "personal" });
+      expect("the member exists before linking", aurelia.status === 201);
+
+      const firstLink = await post(idToken());
+      expect("a verified Google identity links to the matching member and signs in",
+        firstLink.status === 200 && firstLink.json.linked === true &&
+        firstLink.json.user.email === "aurelia@federated.test" && typeof firstLink.json.token === "string");
+      expect("the session it mints is a real Veyra session",
+        (await api("GET", "/api/me/state", firstLink.json.token)).status === 200);
+      expect("the member is told a new way into the account was added",
+        Boolean(db.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND title LIKE 'Google sign-in linked%'")
+          .get(aurelia.json.user.id)));
+
+      const secondUse = await post(idToken());
+      expect("a returning identity signs in without re-linking",
+        secondUse.status === 200 && secondUse.json.linked === false);
+      expect("exactly one link row exists for that identity",
+        (db.prepare("SELECT COUNT(*) AS n FROM federated_identities WHERE user_id = ?").get(aurelia.json.user.id) as { n: number }).n === 1);
+
+      // Matching is by subject, not email: a changed email still signs in.
+      const renamed = await post(idToken({ email: "aurelia.vance@federated.test" }));
+      expect("matching is by stable subject, so a changed email still signs in",
+        renamed.status === 200 && renamed.json.user.email === "aurelia@federated.test");
+
+      /* ---- forgery and claim checks ---- */
+      const unverified = await post(idToken({ sub: "google-uid-other", email_verified: false, email: "aurelia@federated.test" }));
+      expect("an unverified email cannot claim an existing account (403)",
+        unverified.status === 403 && unverified.json.code === "federated_unverified");
+
+      expect("a token for another Firebase project is rejected (aud)",
+        (await post(idToken({ aud: "someone-elses-project" }))).status === 401);
+      expect("a token from another issuer is rejected (iss)",
+        (await post(idToken({ iss: "https://securetoken.google.com/evil" }))).status === 401);
+      expect("an expired token is rejected", (await post(idToken({ exp: nowSec - 3600 }))).status === 401);
+      expect("a token issued in the future is rejected", (await post(idToken({ iat: nowSec + 7200 }))).status === 401);
+      expect("a token signed by an unpublished key is rejected",
+        (await post(idToken({}, { key: foreign }))).status === 401);
+      expect("a token naming an unknown key id is rejected",
+        (await post(idToken({}, { kid: "not-a-real-kid" }))).status === 401);
+
+      // alg confusion: the classic JWT forgery. Both must die on the algorithm
+      // check, before any key is consulted.
+      const noneHeader = b64({ alg: "none", kid: KID, typ: "JWT" });
+      const noneBody = b64({ iss: `https://securetoken.google.com/${PROJECT}`, aud: PROJECT, sub: "x",
+        iat: nowSec, exp: nowSec + 3600, email: "aurelia@federated.test", email_verified: true });
+      expect('alg "none" is rejected', (await post(`${noneHeader}.${noneBody}.`)).status === 401);
+      const hsHeader = b64({ alg: "HS256", kid: KID, typ: "JWT" });
+      const hsSig = createHmac("sha256", publicKey.export({ type: "spki", format: "pem" }) as string)
+        .update(`${hsHeader}.${noneBody}`).digest("base64url");
+      expect("an HS256 token signed with the public key is rejected (alg confusion)",
+        (await post(`${hsHeader}.${noneBody}.${hsSig}`)).status === 401);
+
+      const tampered = idToken().split(".");
+      tampered[1] = b64({ iss: `https://securetoken.google.com/${PROJECT}`, aud: PROJECT, sub: "google-uid-aurelia",
+        iat: nowSec, exp: nowSec + 3600, email: "ops@veyra.test", email_verified: true });
+      expect("a tampered payload breaks the signature", (await post(tampered.join("."))).status === 401);
+      expect("garbage is rejected without a crash", (await post("not-a-jwt")).status === 400);
+
+      /* ---- linking rules ---- */
+      const secondGoogle = await post(idToken({ sub: "google-uid-second", email: "aurelia@federated.test" }));
+      expect("a member holds at most one Google identity (409)",
+        secondGoogle.status === 409 && secondGoogle.json.code === "federated_already_linked");
+
+      const staffAttempt = await post(idToken({ sub: "google-uid-ops", email: "ops@veyra.test" }));
+      expect("staff accounts cannot be unlocked by Google by default (403)",
+        staffAttempt.status === 403 && staffAttempt.json.code === "federated_staff_blocked");
+
+      // Asserted before the reset below, which deliberately empties the cache.
+      // Every verification above — including the unknown-kid probe, whose
+      // forced refetch is throttled — was served from one fetch.
+      expect("Google's signing keys are fetched once and cached, not per request", jwksHits === 1);
+
+      process.env.FEDERATED_ALLOW_STAFF = "1";
+      resetFederatedConfig();
+      const staffAllowed = await post(idToken({ sub: "google-uid-ops", email: "ops@veyra.test" }));
+      expect("FEDERATED_ALLOW_STAFF=1 opens it to staff deliberately",
+        staffAllowed.status === 200 && staffAllowed.json.user.role === "superadmin");
+      expect("clearing the config refetches the keys", jwksHits === 2);
+    } finally {
+      for (const key of ["FIREBASE_PROJECT_ID", "FIREBASE_API_KEY", "FIREBASE_JWKS_URL",
+        "FIREBASE_AUTH_DOMAIN", "FEDERATED_ALLOW_STAFF"]) {
+        if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
+      }
+      resetFederatedConfig();
+      await new Promise<void>(r => jwksServer.close(() => r()));
+      resetRateLimits();
+    }
   }
 
   /* ---------- durable operations casework ---------- */

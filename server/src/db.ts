@@ -587,6 +587,37 @@ ALTER TABLE kyc_records ADD COLUMN reviewed_by TEXT;
 ALTER TABLE kyc_records ADD COLUMN reviewed_at INTEGER;
 `,
   },
+  {
+    version: 8,
+    sql: `
+-- v8: federated sign-in links (Google via Firebase, see server/src/federated.ts).
+--
+-- Firebase is an identity provider, never the authority: this table only
+-- records that an external subject is allowed to sign in AS an existing member.
+-- There is no password here and no account is ever created from one of these
+-- rows — opening an account still requires the full application in
+-- identity_profiles.
+--
+-- PRIMARY KEY (provider, subject): one external identity can unlock exactly one
+-- Veyra account, so a Google account cannot be pointed at a second member.
+-- UNIQUE (provider, user_id): and a member holds at most one identity per
+-- provider, so "which Google account opens this?" has one answer.
+--
+-- email is stored as it was at link time for the audit story only. Matching
+-- after the first link is by subject, which is stable — an email is not.
+CREATE TABLE federated_identities (
+  provider    TEXT NOT NULL,
+  subject     TEXT NOT NULL,
+  user_id     TEXT NOT NULL REFERENCES users(id),
+  email       TEXT NOT NULL DEFAULT '',
+  linked_at   INTEGER NOT NULL,
+  last_used_at INTEGER,
+  PRIMARY KEY (provider, subject)
+);
+CREATE UNIQUE INDEX idx_federated_user ON federated_identities(provider, user_id);
+CREATE INDEX idx_federated_lookup ON federated_identities(user_id);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

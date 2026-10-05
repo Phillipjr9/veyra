@@ -164,12 +164,13 @@ server/
     db.ts               SQLite (WAL, FK on): migrations, audit triggers, tx helper
     security.ts         scrypt hashing, HS256 tokens, rate limiter, TOKEN_SECRET
     recaptcha.ts        reCAPTCHA v3 / Enterprise verifier for the anonymous routes
+    federated.ts        Firebase ID token verification + Google account linking
     rbac.ts             Server-authoritative permission matrix (DB overrides)
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   208-check integration suite (boots the real server)
-  scripts/audit-routes.ts  79 routes × 6 identities gate/isolation audit
+  scripts/test-api.ts   235-check integration suite (boots the real server)
+  scripts/audit-routes.ts  80 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -213,7 +214,7 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 208-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 235-check integration suite (fresh DB, ephemeral port)
 npm run check:routes      # fails if a server route has no caller in the app
 npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
@@ -227,6 +228,7 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Sessions | HS256 bearer tokens (12 h) with a `sessions` table — logout and admin revocation kill them instantly |
 | Login abuse | In-memory rate limit: 8 attempts / 60 s per IP (login and password-reset requests) |
 | Bot defence | reCAPTCHA v3 / Enterprise on sign in, sign up and password recovery — action-bound, score-thresholded, off until configured (see **reCAPTCHA** below) |
+| Federated sign-in | Firebase ID tokens verified against Google's JWKS (RS256, alg pinned, full claim set). Links to existing members only — never auto-provisions, and excludes staff by default |
 | RBAC | 17 permissions × 5 roles, resolved **fresh from the DB on every request** (role changes take effect immediately, no re-login) |
 | Money | Integer cents everywhere; every mutation inside `BEGIN IMMEDIATE` |
 | Audit trail | `audit_log` is append-only **by database trigger** — `UPDATE`/`DELETE` raise `ABORT` |
@@ -301,7 +303,7 @@ funds) to the status columns.
 
 ### API surface (summary)
 
-- **Auth** — `POST /api/auth/login · register · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA settings), `GET /api/health`
+- **Auth** — `POST /api/auth/login · register · federated · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA + Google settings), `GET /api/health`
 - **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
@@ -335,7 +337,7 @@ mint). The in-memory budgets in `security.ts` throttle one address; reCAPTCHA
 is what answers a distributed run from many.
 
 **It is off until configured** — no site key means every check is a
-pass-through, so development, CI and the 208-check suite run without a Google
+pass-through, so development, CI and the 235-check suite run without a Google
 round-trip. Pick one provider:
 
 | Provider | Variables | Endpoint |
@@ -375,6 +377,56 @@ whether tokens are required. If the script is blocked (ad blocker, strict
 extension, corporate proxy) the client sends no token and the **server**
 decides — `src/lib/recaptcha.ts` never pre-emptively blocks the member.
 
+### Federated sign-in (Google, via Firebase)
+
+Firebase is an identity **provider** here, never the authority. The browser
+runs the Google flow and receives a Firebase ID token; `POST /api/auth/federated`
+verifies it, maps it onto an **existing** member, and mints Veyra's own session.
+Everything downstream is untouched — the `sessions` table still revokes
+instantly, RBAC is still read fresh from the database on every request, and the
+audit trail still records what staff did. Only the credential check moves.
+
+Off unless `FIREBASE_PROJECT_ID` is set. All of `FIREBASE_PROJECT_ID`,
+`FIREBASE_API_KEY` and `FIREBASE_AUTH_DOMAIN` are public values (the Firebase
+web config ships in the page) — **no service-account key is required**, because
+ID tokens are verified against Google's published JWKS with `node:crypto`
+rather than `firebase-admin`.
+
+**Verification.** A Firebase ID token is an RS256 JWT. Every claim Google
+documents is checked: `alg` (pinned to RS256, so `alg: none` and HS256
+confusion both die before a key is consulted), `kid` against the cached JWKS,
+the signature, `exp`, `iat`, `auth_time`, `aud`, `iss` and `sub`. Keys are
+cached for 6 h, refetched on an unknown `kid`, and that refetch is throttled so
+a bad `kid` can't be used to hammer Google.
+
+**Linking policy** — the part that matters:
+
+| Rule | Behaviour |
+|---|---|
+| Unverified email | Refused (403). An unverified address must never claim an account. |
+| Known `(provider, subject)` | Signs in as the linked member. Matching is by subject — stable — not email. |
+| Unknown subject, verified email matches a member | Links once, and the member is notified. |
+| Unknown subject, no matching member | **Refused (404). Never auto-provisions.** |
+| Member already has a different Google account | Refused (409) — one identity per member per provider. |
+| Staff / Super Admin | Refused (403) unless `FEDERATED_ALLOW_STAFF=1`. |
+
+No auto-provisioning is deliberate: opening a bank account requires the full
+application (legal identity, tax ID, address, government ID — see
+`identity.ts`). Clicking "Continue with Google" cannot conjure one. The sign-up
+screen says so rather than offering a button that can't work.
+
+Staff exclusion is also deliberate: the console can move $10M per adjustment,
+so letting a third-party IdP unlock it widens the blast radius to whoever holds
+that Google account. Flip it on only if your operators are on managed Workspace
+identities.
+
+**Client cost.** `firebase` is loaded through a dynamic `import()`, so it stays
+out of the initial parse. Note that `vite-plugin-singlefile` inlines dynamic
+chunks, so in the production build it is paid upfront regardless: **+47 kB
+gzipped** (736 → 783 kB). If that matters more than the convenience, swap the
+import in `src/lib/federated.ts` for the gstatic ESM CDN build and it drops to
+zero for deployments that never enable it.
+
 > The v3 badge is left visible, which is how Google's terms are satisfied by
 > default. To hide it you must instead display the attribution text ("This site
 > is protected by reCAPTCHA and the Google
@@ -398,7 +450,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (208) = 249 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (235) = 276 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

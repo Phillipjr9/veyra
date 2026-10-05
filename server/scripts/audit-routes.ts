@@ -63,6 +63,11 @@ const BASELINE: Policy[] = [
   // ship inside the page, while the secret/API key never leaves the server.
   { method: "GET", path: "/api/auth/config", auth: false, perm: null },
   { method: "POST", path: "/api/auth/login", auth: false, perm: null },
+  // Exchanges a verified Firebase ID token for a Veyra session. Public because
+  // it IS a sign-in route; the token is the credential. It can only attach to
+  // an account that already exists (never auto-provisions) and refuses staff
+  // accounts unless FEDERATED_ALLOW_STAFF=1 — see server/src/federated.ts.
+  { method: "POST", path: "/api/auth/federated", auth: false, perm: null },
   { method: "POST", path: "/api/auth/register", auth: false, perm: null },
   { method: "POST", path: "/api/auth/forgot-password", auth: false, perm: null },
   { method: "POST", path: "/api/auth/reset-password", auth: false, perm: null },
