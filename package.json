@@ -16,7 +16,10 @@
     "typecheck": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit",
     "typecheck:server": "tsc -p server/tsconfig.json --noEmit",
     "demo:seed": "tsx scripts/seed-demo.ts",
-    "dev:all": "bash scripts/dev.sh"
+    "dev:all": "bash scripts/dev.sh",
+    "test:e2e": "npm run build && playwright test",
+    "typecheck:e2e": "tsc -p tsconfig.playwright.json",
+    "verify": "npm test && npm run typecheck && npm run typecheck:e2e && npm run test:e2e"
   },
   "dependencies": {
     "@types/express": "^5.0.6",
@@ -34,6 +37,7 @@
     "tailwind-merge": "3.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "4.1.17",
     "@types/node": "22.19.17",
     "@types/react": "19.2.7",

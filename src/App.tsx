@@ -19,7 +19,7 @@ import {
   ScoutAIPage, TeamPage, PerksPage, StatementsPage,
   AccountsPage, BillsPage, DisputesPage, SecurityCenterPage, KYCPage
 } from "./pages/Dashboard";
-import { ClassicApp } from "./pages/dashboards/ClassicDashboard";
+import { ClassicApp, MarketsPage } from "./pages/dashboards/ClassicDashboard";
 import { useAcct } from "./lib/store";
 import { SuperAdminPage } from "./pages/SuperAdmin";
 import { ApplicationStatusPage } from "./pages/ApplicationStatus";
@@ -130,6 +130,7 @@ function Shell() {
         >
           <Route index element={<Overview />} />
           <Route path="accounts" element={<AccountsPage />} />
+          <Route path="markets" element={<MarketsPage />} />
           <Route path="cards" element={<CardsPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="transfers" element={<PaymentsPage />} />

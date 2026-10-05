@@ -299,8 +299,7 @@ export function LoginPage() {
     setPasskeyBusy(true);
     setError("");
     try {
-      const me = await loginWithPasskey();
-      navigate(me.role === "user" ? "/app" : "/admin", { replace: true });
+      afterSignIn(await loginWithPasskey());
     } catch (err) {
       // Backing out of the OS prompt is a decision, not a failure.
       if (isPasskeyCancellation(err)) return;

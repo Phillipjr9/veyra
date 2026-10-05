@@ -4,7 +4,7 @@ import { Link, Navigate, useLocation, useNavigate, useOutlet, useSearchParams } 
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
-  AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
+  AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Building2, CalendarClock, CandlestickChart, Check, Clock, Copy, CreditCard,
   Download, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
   Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, TrendingUp, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X,
 } from "lucide-react";
@@ -20,6 +20,8 @@ import { InvoiceDetailModal } from "../components/InvoiceDetailModal";
 import { NotificationsMenu, NOTE_ROUTES } from "./dashboards/parts";
 import { PersonalChrome, PersonalOverview } from "./dashboards/PersonalDashboard";
 import { BusinessChrome } from "./dashboards/BusinessDashboard";
+// Keep member capabilities shared while retaining each dashboard's own chrome.
+import { HoldingsPanel, PasskeysPanel } from "./dashboards/ClassicDashboard";
 import { Camera } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { lockScroll } from "../lib/scrollLock";
@@ -86,6 +88,7 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app", label: "Overview", icon: <LayoutDashboard size={18} />, end: true },
       { to: "/app/accounts", label: "Accounts", icon: <PiggyBank size={18} /> },
       { to: "/app/cards", label: "Cards", icon: <CreditCard size={18} /> },
+      { to: "/app/markets", label: "Markets", icon: <CandlestickChart size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Transfers", icon: <Send size={18} /> },
       { to: "/app/invoices", label: "Invoicing", icon: <ReceiptText size={18} /> },
@@ -121,6 +124,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app", label: "Overview", icon: <LayoutDashboard size={18} />, end: true },
       { to: "/app/accounts", label: "Savings goals", icon: <PiggyBank size={18} /> },
       { to: "/app/cards", label: "Cards", icon: <CreditCard size={18} /> },
+      { to: "/app/markets", label: "Markets", icon: <CandlestickChart size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
@@ -1985,7 +1989,7 @@ export function AccountsPage() {
           <div className="account-card-actions"><Link to="/app/transfers" className="account-action"><Send size={14} /> Send</Link><Link to="/app/transactions" className="account-action"><BarChart3 size={14} /> Activity</Link></div>
         </motion.section>
         <motion.section className="account-summary-card" {...rise(1)}>
-          <span>Total across Veyra</span><AnimatedMoney value={netWorth} className="account-summary-value" cents fromZero />
+          <span>Total cash</span><AnimatedMoney value={netWorth} className="account-summary-value" cents fromZero />
           <div><span>In checking</span><b>{money(account.balance)}</b></div><div><span>In savings pockets</span><b>{money(saved)}</b></div>
         </motion.section>
       </div>
@@ -2009,6 +2013,8 @@ export function AccountsPage() {
         </AnimatePresence>
         {!account.savingsPockets.length && <EmptyState icon={<PiggyBank size={18} />} title="No savings pockets" text="Create one for a goal, reserve or rainy day." />}
       </div>
+
+      <HoldingsPanel />
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New savings pocket" subtitle="Name a goal and set a target. You can move money after it is created.">
         <form className="dash-form" onSubmit={create}>
@@ -2742,6 +2748,7 @@ export function SecurityCenterPage() {
         <section className="panel"><div className="panel-head"><div><h2>Sign-in protection</h2><span className="panel-sub">Recommended settings</span></div></div><Toggle checked={prefs.twoFactor} onChange={value => { setPreference("twoFactor", value); toast({ tone: "info", title: `Two-factor authentication ${value ? "on" : "off"}` }); }} label="Two-factor authentication" description="Require a one-time code on new devices." /><Toggle checked={prefs.loginAlerts} onChange={value => { setPreference("loginAlerts", value); toast({ tone: "info", title: `Login alerts ${value ? "on" : "off"}` }); }} label="New device alerts" description="Notify me when a new browser signs in." /><div className="security-tip"><Lock size={15} /><span>Your password is stored server-side as a scrypt hash — never in plain text.</span></div></section>
         <section className="panel emergency-panel"><div className="panel-head"><div><h2>Emergency controls</h2><span className="panel-sub">Use these if something feels wrong</span></div></div><button type="button" className="emergency-action" onClick={() => setConfirmFreeze(true)}><Snowflake size={18} /><span><b>Freeze every card</b><small>Immediately decline new purchases on all cards.</small></span><ArrowRight size={15} /></button><Link className="emergency-action" to="/app/disputes"><ShieldAlert size={18} /><span><b>Report a transaction</b><small>Open and track a card-purchase dispute.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/kyc"><UserRound size={18} /><span><b>Review KYC</b><small>Check your identity verification status and next steps.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/settings"><KeyRound size={18} /><span><b>Change password</b><small>Update your account password.</small></span><ArrowRight size={15} /></Link></section>
       </div>
+      <PasskeysPanel />
       <section className="panel sessions-panel"><div className="panel-head"><div><h2>Devices & sessions</h2><span className="panel-sub">Sign out a device you no longer use or recognize</span></div></div><div className="session-list">{account.sessions.map(session => <div className="session-row" key={session.id}><span className="session-icon">{session.browser.toLowerCase().includes("mobile") ? <Smartphone size={17} /> : <Monitor size={17} />}</span><div className="session-main"><strong>{session.device} {session.current && <span className="chip chip-green">This device</span>}</strong><small>{session.browser} · {session.location} · {timeAgo(session.lastActive)}</small></div><button type="button" className={`trust-btn ${session.trusted ? "trusted" : ""}`} onClick={() => toggleTrustedSession(session.id)}>{session.trusted ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}{session.trusted ? "Trusted" : "Untrusted"}</button>{!session.current && <button type="button" className="ghost-btn sm" onClick={() => { revokeSession(session.id); toast({ tone: "success", title: `${session.device} signed out` }); }}>Sign out</button>}</div>)}</div></section>
       <Modal open={confirmFreeze} onClose={() => setConfirmFreeze(false)} title="Freeze every card?" subtitle="All new card purchases will be declined until you unfreeze cards individually."><div className="freeze-confirm"><Snowflake size={30} /><p>This does not close cards or cancel transfers that are already processing.</p><div className="modal-actions"><button type="button" className="ghost-btn" onClick={() => setConfirmFreeze(false)}>Cancel</button><button type="button" className="danger-btn" onClick={() => { freezeAllCards(); setConfirmFreeze(false); toast({ tone: "info", title: "All cards frozen" }); }}>Freeze all cards</button></div></div></Modal>
     </div>

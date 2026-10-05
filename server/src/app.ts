@@ -2684,8 +2684,9 @@ export function createApp(dbPath?: string) {
   if (existsSync(distIndex)) {
     app.use(express.static(resolve("dist"), { index: false }));
     app.use((req, res, next) => {
-      if (req.method !== "GET" || req.path.startsWith("/api")) return next();
-      res.sendFile(distIndex);
+      if ((req.method !== "GET" && req.method !== "HEAD") || req.path.startsWith("/api")) return next();
+      // Root the SPA file explicitly: a hidden ancestor of cwd must not hide index.html.
+      res.sendFile("index.html", { root: resolve("dist") });
     });
   }
 

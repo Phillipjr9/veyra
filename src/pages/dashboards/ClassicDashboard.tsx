@@ -14,6 +14,7 @@ import { Confetti, ETA, useMoneyFlow, ZelleLogo, type SendMethod } from "../../c
 import { useToast } from "../../components/Toast";
 import { ScoutQuickDrawer, ScoutAIPage as ScoutWorkspace } from "../../components/ScoutAIAssistant";
 import { CommandPalette } from "../../components/CommandPalette";
+import { MoneyPlanPage } from "../../components/MoneyPlan";
 import { MobileCheckDepositModal } from "../../components/MobileCheckDeposit";
 import { ZelleHubModal } from "../../components/ZelleHubModal";
 import { InvoiceDetailModal } from "../../components/InvoiceDetailModal";
@@ -134,6 +135,7 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/transfers", label: "Transfers", icon: <Send size={18} /> },
       { to: "/app/invoices", label: "Invoicing", icon: <ReceiptText size={18} /> },
       { to: "/app/bills", label: "Bills & scheduled", icon: <CalendarClock size={18} /> },
+      { to: "/app/plan", label: "Cash plan", icon: <TrendingUp size={18} /> },
     ],
   },
   {
@@ -168,6 +170,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
+      { to: "/app/plan", label: "Money plan", icon: <TrendingUp size={18} /> },
     ],
   },
   {
@@ -2161,7 +2164,8 @@ export function MarketsPage() {
   const [onlyTradeable, setOnlyTradeable] = useState(false);
   // Deep link from a holding card: /app/markets?asset=BTC opens that chart.
   const [params, setParams] = useSearchParams();
-  const [open, setOpen] = useState<string | null>(params.get("asset"));
+  // The URL is the source of truth, including navigation within this page.
+  const open = params.get("asset")?.toUpperCase() || null;
   const [range, setRange] = useState<CandleRange>("7d");
   const { candles, loading: candlesLoading } = useCandles(open, range);
 
@@ -2187,9 +2191,9 @@ export function MarketsPage() {
 
   // Keep the URL honest so the open chart survives a refresh or a shared link.
   const show = (code: string | null) => {
-    setOpen(code);
-    if (code) params.set("asset", code); else params.delete("asset");
-    setParams(params, { replace: true });
+    const next = new URLSearchParams(params);
+    if (code) next.set("asset", code); else next.delete("asset");
+    setParams(next, { replace: true });
   };
 
   const sortBy = (next: MarketSort) => {
@@ -2604,8 +2608,9 @@ function CryptoStat({ index }: { index: number }) {
  * An unpriced asset renders as "Price unavailable", never as $0.00 — a zero is
  * a number people believe.
  */
-function HoldingsPanel() {
+export function HoldingsPanel() {
   const toast = useToast();
+  const { refreshAccount } = useAcct();
   const { data, loading, reload } = useHoldings();
   const [trade, setTrade] = useState<{ holding: Holding; side: "buy" | "sell" } | null>(null);
   const [amount, setAmount] = useState("");
@@ -2626,7 +2631,13 @@ function HoldingsPanel() {
         title: `${result.side === "buy" ? "Bought" : "Sold"} ${result.quantity} ${result.asset}`,
         description: `${result.amountUsd} at ${result.priceUsd} per ${result.asset}.`,
       });
-      await reload();
+      // Crypto has its own ledger, but a trade also moves checking money.
+      // Reconcile both snapshots so every balance and transaction view agrees.
+      // A read failure after a successful trade must not claim the trade failed.
+      await Promise.all([reload(), refreshAccount()]).catch(() => {
+        toast({ tone: "info", title: "Trade completed — refresh your balance",
+          description: "We couldn't reload your checking balance. Refresh the page before making another trade." });
+      });
     } catch (err) {
       toast({ tone: "error", title: "Trade didn't go through", description: err instanceof Error ? err.message : undefined });
     } finally { setBusy(false); }
@@ -3440,7 +3451,7 @@ export function KYCPage() {
  * private half never leaves the member's device. This panel is where they are
  * added and removed; the ceremony itself lives in src/lib/passkey.ts.
  */
-function PasskeysPanel() {
+export function PasskeysPanel() {
   const toast = useToast();
   const [keys, setKeys] = useState<Passkey[] | null>(null);
   const [canAdd, setCanAdd] = useState(false);
@@ -3770,6 +3781,7 @@ export function ClassicApp() {
         <Route path="bills" element={<BillsPage />} />
         <Route path="scout" element={<ScoutWorkspace />} />
         <Route path="markets" element={<MarketsPage />} />
+        <Route path="plan" element={<MoneyPlanPage />} />
         <Route path="rewards" element={<RewardsPage />} />
         <Route path="perks" element={<PerksPage />} />
         <Route path="statements" element={<StatementsPage />} />

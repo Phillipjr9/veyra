@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app.js";
 import { applicationFor } from "./fixtures.js";
+import { createPriceFixture } from "./price-fixture.js";
 import { resetRateLimits } from "../src/security.js";
 
 process.env.ADMIN_EMAIL = "audit-admin@veyra.test";
@@ -227,6 +228,12 @@ const declared: Declared[] = rawRoutes.map((match, index) => {
 /* ---------- boot ---------- */
 
 const tmp = mkdtempSync(join(tmpdir(), "veyra-audit-"));
+// Permission probes must never depend on CoinGecko availability or its quota.
+const priceFixture = createPriceFixture();
+await new Promise<void>(resolve => priceFixture.listen(0, "0.0.0.0", resolve));
+const pricePort = (priceFixture.address() as { port: number }).port;
+process.env.CRYPTO_PRICES_URL = `http://127.0.0.1:${pricePort}/prices`;
+process.env.CRYPTO_OHLC_URL = `http://127.0.0.1:${pricePort}/ohlc/{id}?days={days}`;
 const { app, db } = createApp(join(tmp, "audit.db"));
 const httpServer = await new Promise<import("node:http").Server>(resolve => {
   const s = app.listen(0, "127.0.0.1", () => resolve(s));
@@ -563,5 +570,6 @@ console.log(total === 0
   ? `\n✓ all ${routeCount} routes enforce their declared gates, isolate member data, and scope staff routes to members`
   : `\n${total} finding(s) — see above\n`);
 
+priceFixture.close();
 httpServer.close();
 process.exit(total === 0 ? 0 : 1);
