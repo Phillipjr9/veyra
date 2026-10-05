@@ -15,6 +15,12 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError, generateAccountNumber } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
+import { requireRecaptcha, publicRecaptchaConfig, RECAPTCHA_ACTIONS } from "./recaptcha.js";
+import { verifyFirebaseIdToken, federatedConfig, publicFederatedConfig, PROVIDER_REGISTRY } from "./federated.js";
+import {
+  webauthnConfig, issueChallenge, verifyRegistration, verifyAuthentication,
+  registrationOptions, authenticationOptions,
+} from "./webauthn.js";
 import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
@@ -24,6 +30,9 @@ import { logAdminAction } from "./audit.js";
 import { validateApplication, rowToApplication, memberIdentity, submissionFor, PROFILE_COLUMNS } from "./identity.js";
 import { seed } from "./seed.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
+import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
+import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
+import { loadPrices, loadMarkets, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -211,6 +220,28 @@ export function createApp(dbPath?: string) {
       .run(rid("n"), userId, type, title, detail, now());
 
   /**
+   * Passkeys as the browser sees them. The public key, algorithm and signature
+   * counter stay server-side: they are useless to the UI and listing them
+   * would only widen what a stolen session can read.
+   */
+  type PasskeyRow = {
+    id: string; label: string; transports: string; backed_up: number;
+    created_at: number; last_used_at: number | null;
+  };
+  const shapePasskey = (row: PasskeyRow) => ({
+    id: row.id,
+    label: row.label,
+    transports: row.transports ? row.transports.split(",").filter(Boolean) : [],
+    /** Synced to a provider keychain, so it survives losing the device. */
+    syncedToCloud: row.backed_up === 1,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+  });
+  const passkeyRow = (id: string) => shapePasskey(db.prepare(
+    "SELECT id, label, transports, backed_up, created_at, last_used_at FROM passkeys WHERE id = ?",
+  ).get(id) as PasskeyRow);
+
+  /**
    * Member-management routes operate on member accounts only. Staff and Super
    * Admin accounts are not member surface: an operator with customer
    * permissions must not be able to credit, debit or restrict a colleague
@@ -258,7 +289,308 @@ export function createApp(dbPath?: string) {
 
   /* ============================== auth routes ============================== */
 
-  app.post("/api/auth/login", wrap((req, res) => {
+  /**
+   * Public client configuration, read before the sign-in form is usable.
+   *
+   * The site key is public by design (it ships in the page that renders the
+   * widget), but *whether* reCAPTCHA is enforced is a server fact. Serving it
+   * from here rather than a build-time VITE_ variable means the browser and
+   * the API can never disagree: turning the gate on does not need a rebuild,
+   * and a stale bundle cannot start withholding tokens the server now demands.
+   */
+  app.get("/api/auth/config", wrap((_req, res) => {
+    res.json({ recaptcha: publicRecaptchaConfig(), federated: publicFederatedConfig() });
+  }));
+
+  /**
+   * Federated sign-in — Google, via a Firebase ID token.
+   *
+   * Firebase is an identity provider, not the authority: the token only proves
+   * who the caller is. This route maps that onto an existing member and mints
+   * Veyra's own session, so revocation, RBAC and the audit trail are untouched
+   * (see server/src/federated.ts for the full policy and its reasoning).
+   *
+   * Not reCAPTCHA-gated, unlike the password routes: a valid Firebase ID token
+   * is already a strong anti-automation signal, and an invalid one is rejected
+   * by a signature check costing a fraction of a scrypt hash. The per-address
+   * budget below bounds the rest.
+   */
+  app.post("/api/auth/federated", wrap(async (req, res) => {
+    const config = federatedConfig();
+    if (!config.enabled) {
+      return void res.status(503).json({ error: "Federated sign-in is not enabled.", code: "federated_disabled" });
+    }
+    const ip = req.ip ?? "unknown";
+    // 60/min per address. Each request costs one cached-key signature verify,
+    // so the budget is about bounding abuse, not protecting scarce work — and
+    // a whole office behind one NAT address must not trip it.
+    if (!rateLimit(`federated:${ip}`, 60, 60_000)) {
+      return void res.status(429).json({ error: "Too many attempts — wait a minute, then try again." });
+    }
+
+    const verdict = await verifyFirebaseIdToken(String(req.body?.idToken ?? ""));
+    if (!verdict.ok) {
+      console.warn(`[federated] rejected — ${verdict.detail}`);
+      return void res.status(verdict.status).json({ error: verdict.error, code: "federated_rejected" });
+    }
+    const { subject, email, emailVerified, providerId, privateRelay } = verdict.identity;
+    const providerLabel = PROVIDER_REGISTRY[providerId].label;
+
+    // An unverified address must never be able to claim an existing account.
+    if (!emailVerified) {
+      return void res.status(403).json({
+        error: `That ${providerLabel} account's email address isn't verified, so it can't be used to sign in.`,
+        code: "federated_unverified",
+      });
+    }
+
+    const existing = db.prepare(
+      "SELECT user_id FROM federated_identities WHERE provider = ? AND subject = ?",
+    ).get(providerId, subject) as { user_id: string } | undefined;
+
+    let userId: string;
+    let linkedNow = false;
+
+    if (existing) {
+      userId = existing.user_id;
+    } else {
+      // First time this Google account has been seen: it may only attach to an
+      // account that already exists, and only by verified email.
+      if (!email) {
+        return void res.status(403).json({ error: `That ${providerLabel} account did not share an email address.`, code: "federated_no_email" });
+      }
+      // Apple's "Hide My Email" mints a per-app relay address, which by design
+      // matches nothing. Saying "no account found" would send someone hunting
+      // for a problem that isn't theirs.
+      if (privateRelay) {
+        return void res.status(409).json({
+          error: "Apple is hiding your email address, so we can't match it to your Veyra account. Sign in with your email and password, then choose \"Share My Email\" when linking Apple.",
+          code: "federated_private_relay",
+        });
+      }
+      const match = db.prepare("SELECT id, role FROM users WHERE email = ? COLLATE NOCASE").get(email) as
+        | { id: string; role: string }
+        | undefined;
+      // No auto-provisioning: opening an account needs the full application.
+      if (!match) {
+        return void res.status(404).json({
+          error: "No Veyra account uses that email address. Open an account first, then link Google from your security settings.",
+          code: "federated_no_account",
+        });
+      }
+      if (match.role !== "user" && !config.allowStaff) {
+        return void res.status(403).json({
+          error: "Staff accounts sign in with a password. Contact an administrator if you need this changed.",
+          code: "federated_staff_blocked",
+        });
+      }
+      try {
+        db.prepare(
+          "INSERT INTO federated_identities (provider, subject, user_id, email, linked_at) VALUES (?, ?, ?, ?, ?)",
+        ).run(providerId, subject, match.id, email, now());
+      } catch {
+        // The UNIQUE(provider, user_id) index: this member already has a
+        // different account attached for this same provider.
+        return void res.status(409).json({
+          error: `This account is already linked to a different ${providerLabel} account.`,
+          code: "federated_already_linked",
+        });
+      }
+      userId = match.id;
+      linkedNow = true;
+    }
+
+    const user = loadUser(userId);
+    if (!user) return void res.status(404).json({ error: "That account no longer exists.", code: "federated_no_account" });
+
+    db.prepare("UPDATE federated_identities SET last_used_at = ? WHERE provider = ? AND subject = ?")
+      .run(now(), providerId, subject);
+
+    // Attaching a new way into the account is security-relevant, so the member
+    // is told the first time it happens.
+    if (linkedNow) {
+      notify(userId, "security", `${providerLabel} sign-in linked to your account`,
+        `You can now sign in with ${providerLabel} (${email}). If this wasn't you, change your password and contact support immediately.`);
+    }
+
+    const tokenId = randomUUID();
+    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .run(tokenId, userId, now(), now() + TOKEN_TTL_MS);
+    res.json({
+      token: signToken({ sub: userId, jti: tokenId, role: user.role }),
+      user: publicUser(user),
+      linked: linkedNow,
+      provider: providerId,
+    });
+  }));
+
+  /* ---------- passkeys (WebAuthn) ----------
+   *
+   * Four ceremonies. Two are public because signing in necessarily happens
+   * before there is a session; two require one because a passkey is added to
+   * an account that already exists.
+   *
+   * The security story lives in server/src/webauthn.ts. What matters here is
+   * that a challenge is minted server-side, consumed exactly once, and the
+   * user it belongs to is read from the challenge rather than the request.
+   */
+
+  app.post("/api/auth/passkey/challenge", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`passkey-challenge:${ip}`, 60, 60_000)) {
+      return void res.status(429).json({ error: "Too many attempts — wait a minute, then try again." });
+    }
+    // No email is asked for and none is accepted. The browser already knows
+    // which passkeys it holds for this site, so requiring one would add an
+    // enumeration oracle for nothing.
+    res.json({ challenge: issueChallenge("login"), ...authenticationOptions() });
+  }));
+
+  app.post("/api/auth/passkey/login", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`passkey-login:${ip}`, 30, 60_000)) {
+      return void res.status(429).json({ error: "Too many attempts — wait a minute, then try again." });
+    }
+    const { id, clientDataJSON, authenticatorData, signature } = req.body ?? {};
+    if (!id || !clientDataJSON || !authenticatorData || !signature) {
+      return void res.status(400).json({ error: "That sign-in was incomplete. Try again.", code: "passkey_incomplete" });
+    }
+
+    const stored = db.prepare(
+      "SELECT id, user_id, public_key, alg, sign_count FROM passkeys WHERE id = ?",
+    ).get(String(id)) as { id: string; user_id: string; public_key: string; alg: number; sign_count: number } | undefined;
+    // Same wording as a bad signature: whether a credential ID is known is not
+    // something an unauthenticated caller should be able to probe.
+    if (!stored) {
+      console.warn(`[passkey] rejected — unknown credential ${String(id).slice(0, 16)}…`);
+      return void res.status(401).json({ error: "That passkey isn't registered here.", code: "passkey_unknown" });
+    }
+
+    const verdict = verifyAuthentication({
+      clientDataJSON: String(clientDataJSON),
+      authenticatorData: String(authenticatorData),
+      signature: String(signature),
+      credential: {
+        credentialId: stored.id, publicKeyJwk: stored.public_key,
+        alg: stored.alg, signCount: stored.sign_count,
+      },
+    });
+    if (!verdict.ok) {
+      console.warn(`[passkey] rejected — ${verdict.detail}`);
+      return void res.status(verdict.status).json({ error: verdict.error, code: "passkey_rejected" });
+    }
+
+    const user = loadUser(stored.user_id);
+    if (!user) return void res.status(404).json({ error: "That account no longer exists.", code: "passkey_no_account" });
+    if (user.status === "suspended") {
+      return void res.status(403).json({ error: "This account is suspended. Contact support.", code: "passkey_suspended" });
+    }
+
+    db.prepare("UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE id = ?")
+      .run(verdict.value.signCount, now(), stored.id);
+
+    // A counter that went backwards is the one signal WebAuthn gives that a
+    // credential may have been copied. It is too unreliable to block on (see
+    // webauthn.ts), but the member should hear about it.
+    if (verdict.value.clonedWarning) {
+      console.warn(`[passkey] sign counter did not advance for credential ${stored.id.slice(0, 16)}… — possible clone`);
+      notify(user.id, "security", "Unusual passkey activity",
+        "A passkey on your account reported a counter that did not advance, which can indicate a copied device. " +
+        "If you did not just sign in, remove your passkeys and change your password.");
+    }
+
+    const tokenId = randomUUID();
+    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .run(tokenId, user.id, now(), now() + TOKEN_TTL_MS);
+    res.json({ token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: publicUser(user) });
+  }));
+
+  app.post("/api/me/passkeys/challenge", requireAuth, wrap((req, res) => {
+    const me = req.user!;
+    const existing = db.prepare("SELECT id FROM passkeys WHERE user_id = ?").all(me.id) as Array<{ id: string }>;
+    const user = loadUser(me.id);
+    res.json({
+      // The challenge carries the user id, so the registration that follows
+      // cannot be pointed at a different account by editing the request.
+      challenge: issueChallenge("register", me.id),
+      ...registrationOptions(
+        { id: me.id, email: me.email, name: user?.name ?? me.email },
+        existing.map(row => row.id),
+      ),
+    });
+  }));
+
+  app.post("/api/me/passkeys", requireAuth, wrap((req, res) => {
+    const me = req.user!;
+    const { clientDataJSON, attestationObject, transports, label } = req.body ?? {};
+    if (!clientDataJSON || !attestationObject) {
+      return void res.status(400).json({ error: "That passkey was incomplete. Try again.", code: "passkey_incomplete" });
+    }
+
+    const verdict = verifyRegistration({
+      clientDataJSON: String(clientDataJSON),
+      attestationObject: String(attestationObject),
+    });
+    if (!verdict.ok) {
+      console.warn(`[passkey] registration rejected — ${verdict.detail}`);
+      return void res.status(verdict.status).json({ error: verdict.error, code: "passkey_rejected" });
+    }
+    // The challenge was issued to a session; this request arrived on one. If
+    // they disagree, someone is replaying a challenge across accounts.
+    if (verdict.value.userId !== me.id) {
+      console.warn(`[passkey] registration rejected — challenge belongs to ${verdict.value.userId}, not ${me.id}`);
+      return void res.status(403).json({ error: "That passkey could not be verified. Try again.", code: "passkey_rejected" });
+    }
+
+    const taken = db.prepare("SELECT user_id FROM passkeys WHERE id = ?").get(verdict.value.credentialId) as
+      | { user_id: string } | undefined;
+    if (taken) {
+      return void res.status(409).json({
+        error: taken.user_id === me.id
+          ? "That passkey is already on your account."
+          : "That passkey is already registered to another account.",
+        code: "passkey_duplicate",
+      });
+    }
+
+    const clean = String(label ?? "").trim().slice(0, 60) || "Passkey";
+    db.prepare(
+      `INSERT INTO passkeys (id, user_id, public_key, alg, sign_count, transports, aaguid, backed_up, label, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      verdict.value.credentialId, me.id, verdict.value.publicKeyJwk, verdict.value.alg,
+      verdict.value.signCount,
+      Array.isArray(transports) ? transports.map(String).join(",").slice(0, 120) : "",
+      verdict.value.aaguid, verdict.value.backedUp ? 1 : 0, clean, now(),
+    );
+
+    notify(me.id, "security", "Passkey added",
+      `"${clean}" can now sign in to your account. If this wasn't you, remove it and change your password immediately.`);
+    res.status(201).json({ passkey: passkeyRow(verdict.value.credentialId) });
+  }));
+
+  app.get("/api/me/passkeys", requireAuth, wrap((req, res) => {
+    const rows = db.prepare(
+      "SELECT id, label, transports, backed_up, created_at, last_used_at FROM passkeys WHERE user_id = ? ORDER BY created_at DESC",
+    ).all(req.user!.id) as PasskeyRow[];
+    res.json({ passkeys: rows.map(shapePasskey), rpId: webauthnConfig().rpId });
+  }));
+
+  app.delete("/api/me/passkeys/:id", requireAuth, wrap((req, res) => {
+    const me = req.user!;
+    // Scoped by user_id as well as id: a credential ID from another account
+    // must read as "not found", not as someone else's row.
+    const row = db.prepare("SELECT id, label FROM passkeys WHERE id = ? AND user_id = ?")
+      .get(String(req.params.id), me.id) as { id: string; label: string } | undefined;
+    if (!row) return void res.status(404).json({ error: "That passkey isn't on your account." });
+
+    db.prepare("DELETE FROM passkeys WHERE id = ? AND user_id = ?").run(row.id, me.id);
+    notify(me.id, "security", "Passkey removed",
+      `"${row.label}" can no longer sign in to your account.`);
+    res.json({ ok: true });
+  }));
+
+  app.post("/api/auth/login", requireRecaptcha(RECAPTCHA_ACTIONS.login), wrap((req, res) => {
     const ip = req.ip ?? "unknown";
     const { email, password } = req.body ?? {};
     if (typeof email !== "string" || typeof password !== "string") {
@@ -292,7 +624,7 @@ export function createApp(dbPath?: string) {
     res.json({ token, user: publicUser(user) });
   }));
 
-  app.post("/api/auth/register", wrap((req, res) => {
+  app.post("/api/auth/register", requireRecaptcha(RECAPTCHA_ACTIONS.register), wrap((req, res) => {
     const { name, email, password, accountType, business, phone, plan, profile } = req.body ?? {};
     if (typeof name !== "string" || !name.trim()) return void res.status(400).json({ error: "Name is required." });
     if (typeof email !== "string" || !/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "A valid email is required." });
@@ -390,7 +722,7 @@ export function createApp(dbPath?: string) {
   // same generic response (never reveals whether the email exists). The token
   // is stored hashed with a 30-minute expiry and is single-use. Delivery of
   // the email requires an SMTP provider (see README).
-  app.post("/api/auth/forgot-password", wrap((req, res) => {
+  app.post("/api/auth/forgot-password", requireRecaptcha(RECAPTCHA_ACTIONS.forgotPassword), wrap((req, res) => {
     const ip = req.ip ?? "unknown";
     if (!rateLimit(`forgot:${ip}`)) return void res.status(429).json({ error: "Too many attempts — try again in a minute." });
     const email = String(req.body?.email ?? "").trim().toLowerCase();
@@ -601,6 +933,212 @@ export function createApp(dbPath?: string) {
     } catch (err) {
       fail(res, err, "Transfer failed.");
     }
+  }));
+
+  // --- Digital assets -------------------------------------------------------
+  // Holdings live beside the deposit account, never inside it. See
+  // server/src/assets.ts for why trading is gated, and server/src/money.ts for
+  // why every quantity below is a bigint of base units rather than a number.
+
+  app.get("/api/me/holdings", requireAuth, wrap(async (req, res) => {
+    const assets = listAssets(db);
+    const quotes = await loadPrices();
+    const rows = db.prepare("SELECT asset, units, updated_at FROM holdings WHERE user_id = ?")
+      .all(req.user!.id) as unknown as { asset: string; units: string; updated_at: number }[];
+    const held = new Map(rows.map((row) => [row.asset, row]));
+
+    let totalCents = 0;
+    let priced = true;
+    const holdings = assets.map((asset) => {
+      const row = held.get(asset.code);
+      const units = BigInt(row?.units ?? "0");
+      const quote = quotes.get(asset.code) ?? null;
+      // A missing quote yields null, never 0 — a zero would be silently summed
+      // into the total and render as a confident, wrong valuation.
+      const valueCents = quote ? valueInCents(units, asset.decimals, quote.cents) : null;
+      if (valueCents === null) { if (units > 0n) priced = false; } else totalCents += valueCents;
+      return {
+        asset: asset.code,
+        name: asset.name,
+        kind: asset.kind,
+        decimals: asset.decimals,
+        units: units.toString(),
+        quantity: formatUnitsTrimmed(units, asset.decimals),
+        priceUsd: quote ? centsToDecimal(Number(quote.cents)) : null,
+        valueUsd: valueCents === null ? null : centsToDecimal(valueCents),
+        quotedAt: quote ? quote.fetchedAt : null,
+        updatedAt: row?.updated_at ?? null,
+      };
+    });
+
+    res.json({
+      holdings,
+      // `partial` tells the client that at least one held asset could not be
+      // priced, so the total understates reality and must be labelled.
+      totalUsd: centsToDecimal(totalCents),
+      partial: !priced,
+      tradingEnabled: tradingEnabled(),
+      disclosure: "Digital assets are not FDIC insured and can lose value.",
+    });
+  }));
+
+  app.post("/api/me/holdings/trade", requireAuth, requireApproved, wrap(async (req, res) => {
+    if (!tradingEnabled()) {
+      return void res.status(503).json({ error: "Buying and selling is unavailable.", code: "crypto_disabled" });
+    }
+    const code = String(req.body?.asset ?? "").trim().toUpperCase();
+    const side = req.body?.side;
+    if (side !== "buy" && side !== "sell") {
+      return void res.status(400).json({ error: "side must be 'buy' or 'sell'." });
+    }
+    const asset = assetByCode(db, code);
+    if (!asset) return void res.status(404).json({ error: "Unknown asset.", code: "crypto_unknown_asset" });
+
+    // Buys are denominated in dollars ("$50 of BTC"), sells in units of the
+    // asset ("0.25 BTC"). That matches how people actually think about each
+    // direction, and it means a sell can empty a position exactly rather than
+    // leaving dust behind from a dollar-to-unit conversion.
+    let units: bigint;
+    let cents: number;
+    const quote = await tradableQuote(asset.code);
+    if (!quote) {
+      return void res.status(503).json({ error: `No current price for ${asset.code}.`, code: "crypto_no_price" });
+    }
+    try {
+      if (side === "buy") {
+        cents = dollarsToCents(req.body?.amount ?? 0);
+        if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
+        units = unitsForCents(cents, asset.decimals, quote.cents);
+        if (units <= 0n) return void res.status(400).json({ error: "Amount is too small to buy any of this asset." });
+      } else {
+        units = parseUnits(req.body?.amount ?? 0, asset.decimals);
+        if (units <= 0n) return void res.status(400).json({ error: "Amount must be greater than zero." });
+        cents = valueInCents(units, asset.decimals, quote.cents);
+        if (cents <= 0) return void res.status(400).json({ error: "Amount is too small to sell." });
+      }
+    } catch {
+      return void res.status(400).json({ error: "Invalid amount." });
+    }
+
+    try {
+      inTransaction(db, () => {
+        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?")
+          .get(req.user!.id) as { id: number; balance_cents: number } | undefined;
+        if (!account) throw new BadInputError("No account found.");
+        const current = BigInt((db.prepare("SELECT units FROM holdings WHERE user_id = ? AND asset = ?")
+          .get(req.user!.id, asset.code) as unknown as { units: string } | undefined)?.units ?? "0");
+
+        const nextUnits = side === "buy" ? current + units : current - units;
+        const nextCents = side === "buy" ? account.balance_cents - cents : account.balance_cents + cents;
+        if (side === "buy" && nextCents < 0) throw new BadInputError("Insufficient funds in checking.");
+        if (nextUnits < 0n) throw new BadInputError(`Insufficient ${asset.code}.`);
+
+        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?")
+          .run(nextCents, now(), account.id);
+        db.prepare(
+          `INSERT INTO holdings (user_id, asset, units, updated_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, asset) DO UPDATE SET units = excluded.units, updated_at = excluded.updated_at`,
+        ).run(req.user!.id, asset.code, nextUnits.toString(), now());
+
+        const reference = makeReference();
+        db.prepare(
+          `INSERT INTO holding_transactions (id, user_id, asset, side, units, usd_cents, price_cents, reference, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(rid("hld"), req.user!.id, asset.code, side, units.toString(), cents, quote.cents.toString(), reference, now());
+
+        // The deposit leg also lands in the member's statement. Money leaving a
+        // checking balance with no matching line is how support tickets start.
+        db.prepare(
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
+           VALUES (?, ?, ?, ?, 'Investing', 'Internal', ?, 'cleared', ?, ?, ?)`,
+        ).run(
+          rid("txn"), account.id, req.user!.id, `${side === "buy" ? "Bought" : "Sold"} ${asset.code}`,
+          side === "buy" ? -cents : cents, reference,
+          `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} at ${centsToDecimal(Number(quote.cents))}/${asset.code}`,
+          now(),
+        );
+      });
+    } catch (err) {
+      return void fail(res, err, "Trade failed.");
+    }
+
+    notify(
+      req.user!.id,
+      "transaction",
+      side === "buy" ? "Digital asset purchased" : "Digital asset sold",
+      `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} for ${centsToDecimal(cents)}.`,
+    );
+    res.status(201).json({
+      ok: true,
+      asset: asset.code,
+      side,
+      quantity: formatUnitsTrimmed(units, asset.decimals),
+      amountUsd: centsToDecimal(cents),
+      priceUsd: centsToDecimal(Number(quote.cents)),
+    });
+  }));
+
+  app.get("/api/me/markets", requireAuth, wrap(async (req, res) => {
+    const { markets, fetchedAt } = await loadMarkets();
+    const registry = new Map(listAssets(db).map(a => [a.code, a]));
+    const held = new Map((db.prepare("SELECT asset, units FROM holdings WHERE user_id = ?")
+      .all(req.user!.id) as unknown as { asset: string; units: string }[]).map(r => [r.asset, r.units]));
+
+    // `tradeable` is driven by the local registry, never by the upstream list.
+    // A coin appearing on CoinGecko is not consent to custody it: decimals,
+    // and therefore every unit conversion, only exist for assets we seeded.
+    const rows = markets.map(row => {
+      const asset = registry.get(row.code);
+      const units = asset ? held.get(row.code) ?? "0" : "0";
+      return {
+        code: row.code,
+        name: row.name,
+        image: row.image,
+        rank: row.rank,
+        priceUsd: centsToDecimal(row.priceCents),
+        change1h: row.change1h,
+        change24h: row.change24h,
+        change7d: row.change7d,
+        marketCapUsd: row.marketCapCents === null ? null : centsToDecimal(row.marketCapCents),
+        volumeUsd: row.volumeCents === null ? null : centsToDecimal(row.volumeCents),
+        sparkline: row.sparkline,
+        tradeable: Boolean(asset),
+        decimals: asset?.decimals ?? null,
+        kind: asset?.kind ?? null,
+        units,
+        quantity: asset ? formatUnitsTrimmed(BigInt(units), asset.decimals) : null,
+        valueUsd: asset && units !== "0"
+          ? centsToDecimal(valueInCents(BigInt(units), asset.decimals, BigInt(row.priceCents)))
+          : null,
+      };
+    });
+
+    res.json({
+      markets: rows,
+      quotedAt: fetchedAt || null,
+      tradingEnabled: tradingEnabled(),
+      disclosure: "Market data is indicative. Digital assets are not FDIC insured and can lose value.",
+    });
+  }));
+
+  app.get("/api/me/holdings/:asset/candles", requireAuth, wrap(async (req, res) => {
+    const code = String(req.params.asset ?? "").trim().toUpperCase();
+    const asset = assetByCode(db, code);
+    if (!asset) return void res.status(404).json({ error: "Unknown asset.", code: "crypto_unknown_asset" });
+
+    const range = String(req.query.range ?? "7d");
+    if (!isCandleRange(range)) {
+      return void res.status(400).json({ error: `range must be one of ${CANDLE_RANGES.join(", ")}.` });
+    }
+
+    const candles = await loadCandles(asset.code, range);
+    // 503 rather than an empty array: the client must be able to tell "no
+    // history available" apart from "this asset was flat", and an empty
+    // series renders as the latter.
+    if (!candles) {
+      return void res.status(503).json({ error: `No price history for ${asset.code}.`, code: "crypto_no_history" });
+    }
+    res.json({ asset: asset.code, range, candles });
   }));
 
   app.get("/api/me/notifications", requireAuth, wrap((req, res) => {

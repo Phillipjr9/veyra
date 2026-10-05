@@ -1,5 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { apiGet, apiPost, apiPatch, probeApi, getToken, setToken, clearToken, onUnauthorized, ApiError } from "./api";
+import { recaptchaField } from "./recaptcha";
+import { federatedIdToken, type ProviderId } from "./federated";
+import { signInWithPasskey } from "./passkey";
 
 export type UserRole = "user" | "support" | "compliance" | "admin" | "superadmin";
 
@@ -34,6 +37,18 @@ type AuthValue = {
   /** Forgets this browser's session entirely (every token store) and returns to the form. */
   resetSession: () => void;
   login: (email: string, password: string) => Promise<User>;
+  /**
+   * Federated sign-in (Google / Apple / Microsoft). Firebase proves identity;
+   * the server decides whether that identity may open an existing account
+   * (see server/src/federated.ts) and mints the Veyra session the app runs on.
+   */
+  loginWithProvider: (provider: ProviderId) => Promise<User>;
+  /**
+   * Passkey sign-in. No email is collected: the credential is discoverable,
+   * so the browser shows the member whichever passkeys it holds for this site
+   * and the server identifies them from the signed credential id.
+   */
+  loginWithPasskey: () => Promise<User>;
   /** `profile` carries the full account application (see server/src/identity.ts). */
   signup: (input: {
     name: string; phone?: string; business?: string; accountType: User["accountType"];
@@ -120,10 +135,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // and claim it "ended" — confusing when the real cause is a typed password.
     clearToken();
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
-    const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password });
+    // A fresh reCAPTCHA token per attempt — they are single-use and expire in
+    // about two minutes, so one is never reused across submissions. Resolves
+    // to {} when the gate is off or Google is unreachable; the server decides.
+    const { token, user: me } = await apiPost<{ token: string; user: User }> ("/api/auth/login", { email: email.trim(), password, ...(await recaptchaField("login")) });
     setToken(token);
     setActiveToken(token);
     setUser(me);
+    return me;
+  }, []);
+
+  const loginWithProvider = useCallback(async (provider: ProviderId): Promise<User> => {
+    // Same reasoning as login(): a leftover token must not ride along, or a
+    // rejection would be reported as "your session ended" instead of the real
+    // cause (no Veyra account for that address, staff account, and so on).
+    clearToken();
+    if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
+    const { idToken } = await federatedIdToken(provider);
+    const { token, user: me } = await apiPost<{ token: string; user: User; linked: boolean }>("/api/auth/federated", { idToken });
+    setToken(token);
+    setActiveToken(token);
+    setUser(me);
+    setSessionNotice("");
+    return me;
+  }, []);
+
+  const loginWithPasskey = useCallback(async (): Promise<User> => {
+    // As in login(): a stale token must not ride along, or a refusal would be
+    // reported as "your session ended" rather than the real reason.
+    clearToken();
+    if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
+    const { token, user: me } = await signInWithPasskey() as { token: string; user: User };
+    setToken(token);
+    setActiveToken(token);
+    setUser(me);
+    setSessionNotice("");
     return me;
   }, []);
 
@@ -132,6 +178,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
       name: name.trim(), phone: phone.trim(), business: accountType === "business" ? business.trim() : "",
       accountType, email: email.trim(), password, plan, profile,
+      ...(await recaptchaField("register")),
     });
     setToken(token);
     setActiveToken(token);
@@ -160,7 +207,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const forgotPassword = useCallback(async (email: string) => {
-    const res = await apiPost<{ devCode?: string }>("/api/auth/forgot-password", { email: email.trim() });
+    const res = await apiPost<{ devCode?: string }>("/api/auth/forgot-password", { email: email.trim(), ...(await recaptchaField("forgotPassword")) });
     return res && typeof res.devCode === "string" ? { devCode: res.devCode } : {};
   }, []);
 
@@ -169,8 +216,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
 
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;

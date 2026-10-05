@@ -19,6 +19,14 @@
 import { createApp } from "../src/app.js";
 import { applicationFor } from "./fixtures.js";
 import { resetRateLimits } from "../src/security.js";
+import { resetRecaptchaConfig } from "../src/recaptcha.js";
+import { resetFederatedConfig } from "../src/federated.js";
+import { resetWebauthnConfig } from "../src/webauthn.js";
+import { resetPrices } from "../src/prices.js";
+import {
+  dollarsToCentsExact, centsToDecimalExact, parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents,
+} from "../src/money.js";
+import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -825,6 +833,611 @@ try {
   const replayReset = await api("POST", "/api/auth/reset-password", undefined, { token: rawToken, password: "another pass 88" });
   expect("reset token is single-use (replay rejected)", replayReset.status === 400);
 
+  /* ---------- reCAPTCHA on the anonymous auth routes ---------- */
+  //
+  // Google's endpoint is replaced by a local stub so the matrix is exercised
+  // for real over HTTP — the verifier does an actual round-trip, parses an
+  // actual response, and the middleware sits in the actual route chain. Only
+  // the far end is ours. Verdicts are driven by the token string.
+  {
+    const seen: { secret?: string; token?: string; body?: any }[] = [];
+    const stub = createServer((req, res) => {
+      let raw = "";
+      req.on("data", chunk => { raw += chunk; });
+      req.on("end", () => {
+        const enterprise = String(req.headers["content-type"]).includes("json");
+        const parsed = enterprise ? JSON.parse(raw || "{}") : Object.fromEntries(new URLSearchParams(raw));
+        const token = enterprise ? parsed.event?.token : parsed.response;
+        const expectedAction = enterprise ? parsed.event?.expectedAction : "login";
+        seen.push({ secret: enterprise ? parsed.event?.siteKey : parsed.secret, token, body: parsed });
+
+        const send = (status: number, payload: unknown) => {
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(payload));
+        };
+        if (token === "boom") return void send(500, { error: "upstream exploded" });
+
+        const verdicts: Record<string, { score: number; action: string } | { fail: string }> = {
+          good: { score: 0.9, action: expectedAction },
+          low: { score: 0.1, action: expectedAction },
+          otheraction: { score: 0.9, action: "contact_form" },
+          dupe: { fail: "timeout-or-duplicate" },
+          badsecret: { fail: "invalid-input-secret" },
+        };
+        const verdict = verdicts[token] ?? { fail: "invalid-input-response" };
+
+        if ("fail" in verdict) {
+          return void send(200, enterprise
+            ? { tokenProperties: { valid: false, invalidReason: verdict.fail === "timeout-or-duplicate" ? "DUPE" : "MALFORMED" } }
+            : { success: false, "error-codes": [verdict.fail] });
+        }
+        send(200, enterprise
+          ? { tokenProperties: { valid: true, action: verdict.action, hostname: "veyra.test" }, riskAnalysis: { score: verdict.score } }
+          : { success: true, score: verdict.score, action: verdict.action, hostname: "veyra.test" });
+      });
+    });
+    await new Promise<void>(r => stub.listen(0, "127.0.0.1", () => r()));
+    const stubUrl = `http://127.0.0.1:${(stub.address() as { port: number }).port}/siteverify`;
+
+    // Credentials are deliberately wrong throughout: reaching the handler at
+    // all (401 "doesn't match") is the proof that the gate let the request by,
+    // and no account is created or mutated by these probes.
+    const attempt = (token?: string, email = "recaptcha-probe@member.test") =>
+      api("POST", "/api/auth/login", undefined, { email, password: "definitely-wrong", ...(token ? { recaptchaToken: token } : {}) });
+
+    const restore = { ...process.env };
+    try {
+      // Off by default: every other test in this file posts to /api/auth/login
+      // with no token, which must keep working.
+      resetRecaptchaConfig();
+      expect("reCAPTCHA is off until configured (no token required)", (await attempt()).status === 401);
+      const offConfig = await api("GET", "/api/auth/config");
+      expect("config advertises the gate as off", offConfig.status === 200 && offConfig.json.recaptcha.enabled === false);
+
+      // Classic v3.
+      process.env.RECAPTCHA_SITE_KEY = "site-key-public";
+      process.env.RECAPTCHA_SECRET_KEY = "secret-key-private";
+      process.env.RECAPTCHA_VERIFY_URL = stubUrl;
+      process.env.RECAPTCHA_MIN_SCORE = "0.5";
+      delete process.env.RECAPTCHA_FAIL_CLOSED;
+      resetRecaptchaConfig();
+
+      const config = await api("GET", "/api/auth/config");
+      expect("config publishes the site key and the action names",
+        config.status === 200 && config.json.recaptcha.enabled === true &&
+        config.json.recaptcha.siteKey === "site-key-public" && config.json.recaptcha.actions.login === "login");
+      expect("config never leaks the secret key",
+        !JSON.stringify(config.json).includes("secret-key-private"));
+
+      const missing = await attempt();
+      expect("a request with no token is refused (400 recaptcha_required)",
+        missing.status === 400 && missing.json.code === "recaptcha_required");
+
+      expect("a good token reaches the handler", (await attempt("good")).status === 401);
+      expect("the secret is sent to the verifier, never to the browser",
+        seen.at(-1)?.secret === "secret-key-private" && seen.at(-1)?.token === "good");
+
+      const low = await attempt("low");
+      expect("a score below the threshold is refused (403 recaptcha_failed)",
+        low.status === 403 && low.json.code === "recaptcha_failed");
+
+      const mismatched = await attempt("otheraction");
+      expect("a token minted for another action is refused (action binding)",
+        mismatched.status === 400 && mismatched.json.code === "recaptcha_failed");
+
+      const duplicate = await attempt("dupe");
+      expect("a replayed or expired token is refused",
+        duplicate.status === 400 && duplicate.json.code === "recaptcha_failed");
+
+      // A token may also travel in a header, for proxies that strip bodies.
+      const viaHeader = await fetch(`${base}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Recaptcha-Token": "good" },
+        body: JSON.stringify({ email: "recaptcha-probe@member.test", password: "definitely-wrong" }),
+      });
+      expect("a token supplied via X-Recaptcha-Token is accepted", viaHeader.status === 401);
+
+      // Infrastructure failure: Google unreachable / misconfigured secret.
+      // Default is fail-open, because locking every customer out of their money
+      // is a worse outcome than letting a bot through during an outage.
+      expect("a verifier outage fails OPEN by default", (await attempt("boom")).status === 401);
+      expect("a rejected secret is treated as our outage, not the visitor's fault",
+        (await attempt("badsecret")).status === 401);
+
+      process.env.RECAPTCHA_FAIL_CLOSED = "1";
+      resetRecaptchaConfig();
+      const closed = await attempt("boom");
+      expect("RECAPTCHA_FAIL_CLOSED=1 turns an outage into a 503",
+        closed.status === 503 && closed.json.code === "recaptcha_unavailable");
+      expect("a decision failure is still enforced when failing closed", (await attempt("low")).status === 403);
+      delete process.env.RECAPTCHA_FAIL_CLOSED;
+
+      // Enterprise: different request shape, different response shape, same verdicts.
+      process.env.RECAPTCHA_PROJECT_ID = "veyra-prod";
+      process.env.RECAPTCHA_API_KEY = "enterprise-api-key";
+      resetRecaptchaConfig();
+      const enterpriseConfig = await api("GET", "/api/auth/config");
+      expect("Enterprise credentials switch the provider",
+        enterpriseConfig.json.recaptcha.provider === "enterprise");
+      expect("Enterprise createAssessment accepts a good token", (await attempt("good")).status === 401);
+      expect("Enterprise sends the expected action for binding",
+        seen.at(-1)?.body?.event?.expectedAction === "login");
+      expect("Enterprise refuses a low score", (await attempt("low")).status === 403);
+      expect("Enterprise refuses a duplicate token", (await attempt("dupe")).status === 400);
+
+      // The other two anonymous routes are gated with their own actions.
+      const gatedRegister = await api("POST", "/api/auth/register", undefined, {
+        name: "Gate Test", email: "gate-test@member.test", password: "member-pass-9",
+        accountType: "personal", profile: applicationFor("personal", "Gate Test"),
+      });
+      expect("sign-up is gated too (no token, no account)",
+        gatedRegister.status === 400 && gatedRegister.json.code === "recaptcha_required" &&
+        !db.prepare("SELECT 1 FROM users WHERE email = ?").get("gate-test@member.test"));
+      const gatedForgot = await api("POST", "/api/auth/forgot-password", undefined, { email: "june@okafor.design" });
+      expect("password recovery is gated too",
+        gatedForgot.status === 400 && gatedForgot.json.code === "recaptcha_required");
+    } finally {
+      for (const key of ["RECAPTCHA_SITE_KEY", "RECAPTCHA_SECRET_KEY", "RECAPTCHA_VERIFY_URL",
+        "RECAPTCHA_MIN_SCORE", "RECAPTCHA_FAIL_CLOSED", "RECAPTCHA_PROJECT_ID", "RECAPTCHA_API_KEY"]) {
+        if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
+      }
+      resetRecaptchaConfig();
+      await new Promise<void>(r => stub.close(() => r()));
+      resetRateLimits();
+    }
+    expect("the gate is fully off again for the rest of the suite", (await attempt()).status === 401);
+  }
+
+  /* ---------- federated sign-in (Google via Firebase) ---------- */
+  //
+  // Real RSA keys, real RS256 signatures, a real JWKS endpoint — only Google's
+  // hostname is swapped out. The crypto under test is genuinely exercised and
+  // the suite stays offline.
+  {
+    const { generateKeyPairSync, createSign, createHmac } = await import("node:crypto");
+    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const KID = "test-key-1";
+    const PROJECT = "veyra-test-project";
+    const jwk = { ...publicKey.export({ format: "jwk" }), kid: KID, alg: "RS256", use: "sig" };
+
+    // A second, unpublished key: signatures from it must never verify.
+    const foreign = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+
+    let jwksHits = 0;
+    const jwksServer = createServer((_req, res) => {
+      jwksHits++;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ keys: [jwk] }));
+    });
+    await new Promise<void>(r => jwksServer.listen(0, "127.0.0.1", () => r()));
+    const jwksUrl = `http://127.0.0.1:${(jwksServer.address() as { port: number }).port}/jwk`;
+
+    const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const nowSec = Math.floor(Date.now() / 1000);
+    const idToken = (over: Record<string, unknown> = {}, opts: { kid?: string; alg?: string; key?: any } = {}) => {
+      const header = b64({ alg: opts.alg ?? "RS256", kid: opts.kid ?? KID, typ: "JWT" });
+      const body = b64({
+        iss: `https://securetoken.google.com/${PROJECT}`,
+        aud: PROJECT,
+        sub: "google-uid-aurelia",
+        auth_time: nowSec - 30, iat: nowSec - 30, exp: nowSec + 3600,
+        email: "aurelia@federated.test", email_verified: true, name: "Aurelia Vance",
+        firebase: { sign_in_provider: "google.com", identities: {} },
+        ...over,
+      });
+      const signature = createSign("RSA-SHA256").update(`${header}.${body}`).sign(opts.key ?? privateKey);
+      return `${header}.${body}.${signature.toString("base64url")}`;
+    };
+
+    const post = (idTokenValue: string) => api("POST", "/api/auth/federated", undefined, { idToken: idTokenValue });
+    const restore = { ...process.env };
+    try {
+      // Off until configured.
+      resetFederatedConfig();
+      const off = await post(idToken());
+      expect("federated sign-in is off until configured (503)", off.status === 503 && off.json.code === "federated_disabled");
+      const offConfig = await api("GET", "/api/auth/config");
+      expect("config advertises federated sign-in as off",
+        offConfig.json.federated.enabled === false && offConfig.json.federated.firebase === null);
+
+      process.env.FIREBASE_PROJECT_ID = PROJECT;
+      process.env.FIREBASE_API_KEY = "web-api-key";
+      process.env.FIREBASE_JWKS_URL = jwksUrl;
+      process.env.FEDERATED_PROVIDERS = "google,apple,microsoft";
+      delete process.env.FEDERATED_ALLOW_STAFF;
+      resetFederatedConfig();
+
+      const onConfig = await api("GET", "/api/auth/config");
+      const offered = (onConfig.json.federated.providers as Array<{ id: string; label: string }>).map(p => p.id);
+      expect("config publishes the Firebase web config for the browser",
+        onConfig.json.federated.enabled === true &&
+        onConfig.json.federated.firebase.projectId === PROJECT &&
+        onConfig.json.federated.firebase.authDomain === `${PROJECT}.firebaseapp.com`);
+      expect("config lists every enabled provider with a label for the UI",
+        offered.join(",") === "google,apple,microsoft" &&
+        (onConfig.json.federated.providers as Array<{ label: string }>).every(p => Boolean(p.label)));
+
+      // No Veyra account uses that address yet: sign-in must refuse rather
+      // than quietly opening one.
+      const orphan = await post(idToken());
+      expect("an unknown email is refused, not auto-provisioned (404)",
+        orphan.status === 404 && orphan.json.code === "federated_no_account" &&
+        !db.prepare("SELECT 1 FROM users WHERE email = ?").get("aurelia@federated.test"));
+
+      // Now open a real account through the normal application flow.
+      const aurelia = await register("Aurelia Vance", "aurelia@federated.test", "member-pass-9", { accountType: "personal" });
+      expect("the member exists before linking", aurelia.status === 201);
+
+      const firstLink = await post(idToken());
+      expect("a verified Google identity links to the matching member and signs in",
+        firstLink.status === 200 && firstLink.json.linked === true &&
+        firstLink.json.user.email === "aurelia@federated.test" && typeof firstLink.json.token === "string");
+      expect("the session it mints is a real Veyra session",
+        (await api("GET", "/api/me/state", firstLink.json.token)).status === 200);
+      expect("the member is told a new way into the account was added",
+        Boolean(db.prepare("SELECT 1 FROM notifications WHERE user_id = ? AND title LIKE 'Google sign-in linked%'")
+          .get(aurelia.json.user.id)));
+
+      const secondUse = await post(idToken());
+      expect("a returning identity signs in without re-linking",
+        secondUse.status === 200 && secondUse.json.linked === false);
+      expect("exactly one link row exists for that identity",
+        (db.prepare("SELECT COUNT(*) AS n FROM federated_identities WHERE user_id = ?").get(aurelia.json.user.id) as { n: number }).n === 1);
+
+      // Matching is by subject, not email: a changed email still signs in.
+      const renamed = await post(idToken({ email: "aurelia.vance@federated.test" }));
+      expect("matching is by stable subject, so a changed email still signs in",
+        renamed.status === 200 && renamed.json.user.email === "aurelia@federated.test");
+
+      /* ---- forgery and claim checks ---- */
+      const unverified = await post(idToken({ sub: "google-uid-other", email_verified: false, email: "aurelia@federated.test" }));
+      expect("an unverified email cannot claim an existing account (403)",
+        unverified.status === 403 && unverified.json.code === "federated_unverified");
+
+      expect("a token for another Firebase project is rejected (aud)",
+        (await post(idToken({ aud: "someone-elses-project" }))).status === 401);
+      expect("a token from another issuer is rejected (iss)",
+        (await post(idToken({ iss: "https://securetoken.google.com/evil" }))).status === 401);
+      expect("an expired token is rejected", (await post(idToken({ exp: nowSec - 3600 }))).status === 401);
+      expect("a token issued in the future is rejected", (await post(idToken({ iat: nowSec + 7200 }))).status === 401);
+      expect("a token signed by an unpublished key is rejected",
+        (await post(idToken({}, { key: foreign }))).status === 401);
+      expect("a token naming an unknown key id is rejected",
+        (await post(idToken({}, { kid: "not-a-real-kid" }))).status === 401);
+
+      // alg confusion: the classic JWT forgery. Both must die on the algorithm
+      // check, before any key is consulted.
+      const noneHeader = b64({ alg: "none", kid: KID, typ: "JWT" });
+      const noneBody = b64({ iss: `https://securetoken.google.com/${PROJECT}`, aud: PROJECT, sub: "x",
+        iat: nowSec, exp: nowSec + 3600, email: "aurelia@federated.test", email_verified: true });
+      expect('alg "none" is rejected', (await post(`${noneHeader}.${noneBody}.`)).status === 401);
+      const hsHeader = b64({ alg: "HS256", kid: KID, typ: "JWT" });
+      const hsSig = createHmac("sha256", publicKey.export({ type: "spki", format: "pem" }) as string)
+        .update(`${hsHeader}.${noneBody}`).digest("base64url");
+      expect("an HS256 token signed with the public key is rejected (alg confusion)",
+        (await post(`${hsHeader}.${noneBody}.${hsSig}`)).status === 401);
+
+      const tampered = idToken().split(".");
+      tampered[1] = b64({ iss: `https://securetoken.google.com/${PROJECT}`, aud: PROJECT, sub: "google-uid-aurelia",
+        iat: nowSec, exp: nowSec + 3600, email: "ops@veyra.test", email_verified: true });
+      expect("a tampered payload breaks the signature", (await post(tampered.join("."))).status === 401);
+      expect("garbage is rejected without a crash", (await post("not-a-jwt")).status === 400);
+
+      /* ---- linking rules ---- */
+      const secondGoogle = await post(idToken({ sub: "google-uid-second", email: "aurelia@federated.test" }));
+      expect("a member holds at most one Google identity (409)",
+        secondGoogle.status === 409 && secondGoogle.json.code === "federated_already_linked");
+
+      /* ---- multiple providers ---- */
+      // This block alone outspends a real member's lifetime budget; the
+      // limiter has its own coverage elsewhere.
+      resetRateLimits();
+      const appleToken = (over: Record<string, unknown> = {}) =>
+        idToken({ sub: "apple-uid-aurelia", email: "aurelia@federated.test",
+          firebase: { sign_in_provider: "apple.com", identities: {} }, ...over });
+
+      const appleLink = await post(appleToken());
+      expect("a second provider links to the same member independently",
+        appleLink.status === 200 && appleLink.json.linked === true && appleLink.json.provider === "apple" &&
+        appleLink.json.user.email === "aurelia@federated.test");
+      expect("the member now holds one identity per provider",
+        (db.prepare("SELECT COUNT(*) AS n FROM federated_identities WHERE user_id = ?")
+          .get(aurelia.json.user.id) as { n: number }).n === 2);
+      expect("a returning Apple identity signs in without re-linking",
+        (await post(appleToken())).json.linked === false);
+
+      const microsoftLink = await post(idToken({ sub: "ms-uid-aurelia", email: "aurelia@federated.test",
+        firebase: { sign_in_provider: "microsoft.com", identities: {} } }));
+      expect("Microsoft links through the same pipeline",
+        microsoftLink.status === 200 && microsoftLink.json.provider === "microsoft");
+
+      // Apple's Hide My Email relay can never match a member — say so usefully.
+      const relay = await post(idToken({ sub: "apple-uid-hidden", email: "abc123@privaterelay.appleid.com",
+        firebase: { sign_in_provider: "apple.com", identities: {} } }));
+      expect("an Apple private-relay address gets its own explanation, not \"no account\"",
+        relay.status === 409 && relay.json.code === "federated_private_relay" &&
+        String(relay.json.error).includes("Share My Email"));
+
+      // The provider is read from the signed token, never from the request.
+      const unknownProvider = await post(idToken({ sub: "fb-uid-1",
+        firebase: { sign_in_provider: "facebook.com", identities: {} } }));
+      expect("a provider this build does not know is refused (403)",
+        unknownProvider.status === 403 && String(unknownProvider.json.error).includes("isn't supported"));
+      const passwordProvider = await post(idToken({ sub: "pw-uid-1",
+        firebase: { sign_in_provider: "password", identities: {} } }));
+      expect("a Firebase password identity cannot ride this route", passwordProvider.status === 403);
+
+      process.env.FEDERATED_PROVIDERS = "google";
+      resetFederatedConfig();
+      const appleDisabled = await post(appleToken({ sub: "apple-uid-new", email: "aurelia@federated.test" }));
+      expect("a provider absent from FEDERATED_PROVIDERS is refused even with a valid token",
+        appleDisabled.status === 403 && String(appleDisabled.json.error).includes("Apple"));
+      expect("narrowing the provider list is reflected to the browser",
+        ((await api("GET", "/api/auth/config")).json.federated.providers as Array<{ id: string }>)
+          .map(p => p.id).join(",") === "google");
+      process.env.FEDERATED_PROVIDERS = "google,apple,microsoft";
+      resetFederatedConfig();
+
+      const staffAttempt = await post(idToken({ sub: "google-uid-ops", email: "ops@veyra.test" }));
+      expect("staff accounts cannot be unlocked by a federated provider by default (403)",
+        staffAttempt.status === 403 && staffAttempt.json.code === "federated_staff_blocked");
+
+      resetRateLimits();
+      const hitsBefore = jwksHits;
+      process.env.FEDERATED_ALLOW_STAFF = "1";
+      resetFederatedConfig();
+      const staffAllowed = await post(idToken({ sub: "google-uid-ops", email: "ops@veyra.test" }));
+      expect("FEDERATED_ALLOW_STAFF=1 opens it to staff deliberately",
+        staffAllowed.status === 200 && staffAllowed.json.user.role === "superadmin");
+      // Verification never refetches per request: the only extra fetch is the
+      // one forced by clearing the cache above.
+      expect("Google's signing keys are cached, not refetched per verification",
+        jwksHits === hitsBefore + 1);
+    } finally {
+      for (const key of ["FIREBASE_PROJECT_ID", "FIREBASE_API_KEY", "FIREBASE_JWKS_URL",
+        "FIREBASE_AUTH_DOMAIN", "FEDERATED_ALLOW_STAFF", "FEDERATED_PROVIDERS"]) {
+        if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
+      }
+      resetFederatedConfig();
+      await new Promise<void>(r => jwksServer.close(() => r()));
+      resetRateLimits();
+    }
+  }
+
+  /* ---------- passkeys (WebAuthn) ---------- */
+  //
+  // A software authenticator: real P-256 keys, real ECDSA signatures, real
+  // CBOR, real authenticator data. Nothing about the verification path is
+  // stubbed — the only thing missing is the hardware that would normally hold
+  // the private key.
+  {
+    const { generateKeyPairSync, createHash: sha, randomBytes: rnd, sign: ecSign } = await import("node:crypto");
+
+    /* --- minimal CBOR encoder, the mirror of the decoder under test --- */
+    const head = (major: number, length: number): Buffer => {
+      if (length < 24) return Buffer.from([(major << 5) | length]);
+      if (length < 256) return Buffer.from([(major << 5) | 24, length]);
+      const b = Buffer.alloc(3); b[0] = (major << 5) | 25; b.writeUInt16BE(length, 1); return b;
+    };
+    const cInt = (n: number) => n >= 0 ? head(0, n) : head(1, -1 - n);
+    const cBytes = (b: Buffer) => Buffer.concat([head(2, b.length), b]);
+    const cText = (t: string) => Buffer.concat([head(3, Buffer.byteLength(t)), Buffer.from(t, "utf8")]);
+    const cMap = (e: Array<[Buffer, Buffer]>) => Buffer.concat([head(5, e.length), ...e.flat()]);
+    const u = (b: Buffer) => b.toString("base64url");
+
+    const RP = "localhost";
+    const ORIGIN = "https://veyra.test";
+
+    /** Flags: UP 0x01, UV 0x04, BE 0x08, BS 0x10, AT 0x40. */
+    const authenticator = (rpId = RP) => {
+      const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+      const jwk = publicKey.export({ format: "jwk" }) as { x: string; y: string };
+      const credId = rnd(32);
+      const cose = cMap([
+        [cInt(1), cInt(2)], [cInt(3), cInt(-7)], [cInt(-1), cInt(1)],
+        [cInt(-2), cBytes(Buffer.from(jwk.x, "base64url"))],
+        [cInt(-3), cBytes(Buffer.from(jwk.y, "base64url"))],
+      ]);
+      const authData = (flags: number, count: number, attested: boolean) => {
+        const h = Buffer.alloc(37);
+        sha("sha256").update(rpId).digest().copy(h, 0);
+        h[32] = flags; h.writeUInt32BE(count, 33);
+        if (!attested) return h;
+        const len = Buffer.alloc(2); len.writeUInt16BE(credId.length);
+        return Buffer.concat([h, Buffer.alloc(16), len, credId, cose]);
+      };
+      const clientData = (type: string, challenge: string, origin: string) =>
+        Buffer.from(JSON.stringify({ type, challenge, origin, crossOrigin: false }), "utf8");
+      // Real hardware advances this on every assertion, so the default must
+      // too — otherwise routine sign-ins look like a cloned device and the
+      // clone test below would pass without proving anything.
+      let counter = 0;
+      return {
+        id: u(credId),
+        register(challenge: string, { origin = ORIGIN, flags = 0x45 } = {}) {
+          return {
+            clientDataJSON: u(clientData("webauthn.create", challenge, origin)),
+            attestationObject: u(cMap([
+              [cText("fmt"), cText("none")], [cText("attStmt"), cMap([])],
+              [cText("authData"), cBytes(authData(flags, 0, true))],
+            ])),
+          };
+        },
+        assert(challenge: string, { origin = ORIGIN, flags = 0x05, count = 0, tamper = false } = {}) {
+          const cd = clientData("webauthn.get", challenge, origin);
+          const ad = authData(flags, count || ++counter, false);
+          const signature = ecSign("sha256", Buffer.concat([ad, sha("sha256").update(cd).digest()]), privateKey);
+          if (tamper) ad[33] = ad[33] ^ 0xff; // flip the counter AFTER signing
+          return { id: u(credId), clientDataJSON: u(cd), authenticatorData: u(ad), signature: u(signature) };
+        },
+      };
+    };
+
+    const restore = { ...process.env };
+    try {
+      process.env.WEBAUTHN_RP_ID = RP;
+      process.env.WEBAUTHN_ORIGINS = ORIGIN;
+      resetWebauthnConfig();
+
+      const owner = await register("Pia Lund", "pia@passkey.test", "member-pass-7", { accountType: "personal" });
+      const pia = owner.json.token;
+      const other = await register("Tom Reed", "tom@passkey.test", "member-pass-8", { accountType: "personal" });
+      const tom = other.json.token;
+
+      const regChallenge = async (token: string) =>
+        (await api("POST", "/api/me/passkeys/challenge", token)).json;
+      const loginChallenge = async () =>
+        (await api("POST", "/api/auth/passkey/challenge")).json;
+
+      /* --- registration --- */
+      const anon = await api("POST", "/api/me/passkeys/challenge");
+      expect("registering a passkey needs a session (401)", anon.status === 401);
+
+      const opts = await regChallenge(pia);
+      expect("registration options name the relying party and demand user verification",
+        opts.rp.id === RP && opts.challenge.length >= 40 &&
+        opts.authenticatorSelection.userVerification === "required" &&
+        opts.authenticatorSelection.residentKey === "required");
+      expect("registration options ask for a discoverable credential, not an email",
+        opts.user.name === "pia@passkey.test" && opts.attestation === "none");
+
+      const device = authenticator();
+      const added = await api("POST", "/api/me/passkeys", pia, { ...device.register(opts.challenge), label: "Pixel 9" });
+      expect("a passkey registers against a live challenge (201)",
+        added.status === 201 && added.json.passkey.label === "Pixel 9" && added.json.passkey.id === device.id);
+      expect("adding a passkey notifies the member",
+        (await api("GET", "/api/me/notifications", pia)).json.notifications
+          .some((n: any) => n.title === "Passkey added"));
+
+      const listed = await api("GET", "/api/me/passkeys", pia);
+      expect("the member can list their passkeys without the key material",
+        listed.json.passkeys.length === 1 && listed.json.passkeys[0].publicKey === undefined &&
+        listed.json.passkeys[0].signCount === undefined);
+
+      /* --- the challenge is single-use and bound to its session --- */
+      const reused = await api("POST", "/api/me/passkeys", pia, authenticator().register(opts.challenge));
+      expect("a registration challenge cannot be used twice",
+        reused.status === 400 && reused.json.code === "passkey_rejected");
+
+      const piaChallenge = (await regChallenge(pia)).challenge;
+      const stolen = await api("POST", "/api/me/passkeys", tom, authenticator().register(piaChallenge));
+      expect("a challenge issued to one member cannot be redeemed by another (403)", stolen.status === 403);
+
+      const dupOpts = await regChallenge(pia);
+      expect("options exclude a credential the member already registered",
+        dupOpts.excludeCredentials.some((c: any) => c.id === device.id));
+      const duplicate = await api("POST", "/api/me/passkeys", pia, device.register(dupOpts.challenge));
+      expect("the same credential cannot be registered twice (409)",
+        duplicate.status === 409 && duplicate.json.code === "passkey_duplicate");
+
+      /* --- registration refusals --- */
+      const noUvOpts = await regChallenge(pia);
+      const noUv = await api("POST", "/api/me/passkeys", pia, authenticator().register(noUvOpts.challenge, { flags: 0x41 }));
+      expect("a passkey that skipped user verification is refused", noUv.status === 400);
+
+      const wrongOriginOpts = await regChallenge(pia);
+      const wrongOrigin = await api("POST", "/api/me/passkeys", pia,
+        authenticator().register(wrongOriginOpts.challenge, { origin: "https://veyra.test.evil.com" }));
+      expect("a registration from a lookalike origin is refused", wrongOrigin.status === 400);
+
+      const wrongRpOpts = await regChallenge(pia);
+      const wrongRp = await api("POST", "/api/me/passkeys", pia, authenticator("evil.test").register(wrongRpOpts.challenge));
+      expect("a credential bound to another relying party is refused", wrongRp.status === 400);
+
+      const junk = await api("POST", "/api/me/passkeys", pia,
+        { clientDataJSON: "bm90LWpzb24", attestationObject: "bm90LWNib3I" });
+      expect("malformed registration data is 400, never 500", junk.status === 400);
+
+      /* --- signing in --- */
+      const signIn = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge));
+      expect("a passkey signs in and mints a Veyra session",
+        signIn.status === 200 && signIn.json.user.email === "pia@passkey.test" && Boolean(signIn.json.token));
+      expect("the minted session is a normal Veyra session",
+        (await api("GET", "/api/me/state", signIn.json.token)).status === 200);
+      expect("signing in records when the passkey was last used",
+        (await api("GET", "/api/me/passkeys", pia)).json.passkeys[0].lastUsedAt !== null);
+
+      const loginOpts = await loginChallenge();
+      expect("the login challenge names no credentials, so it cannot enumerate accounts",
+        Array.isArray(loginOpts.allowCredentials) && loginOpts.allowCredentials.length === 0 &&
+        loginOpts.userVerification === "required");
+
+      /* --- the phishing defence, which is the entire point --- */
+      const phished = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { origin: "https://veyra-secure.test" }));
+      expect("an assertion collected by a phishing origin does not verify (400)",
+        phished.status === 400 && phished.json.code === "passkey_rejected");
+
+      const assertion = device.assert((await loginChallenge()).challenge);
+      await api("POST", "/api/auth/passkey/login", undefined, assertion);
+      const replayed = await api("POST", "/api/auth/passkey/login", undefined, assertion);
+      expect("a captured assertion cannot be replayed", replayed.status === 400);
+
+      const unsolicited = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert(u(rnd(32))));
+      expect("an assertion for a challenge the server never issued is refused", unsolicited.status === 400);
+
+      const tampered = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { tamper: true }));
+      expect("editing authenticator data after signing breaks the signature (401)", tampered.status === 401);
+
+      const impostor = authenticator();
+      const forged = { ...impostor.assert((await loginChallenge()).challenge), id: device.id };
+      expect("a signature from a different key under a known credential id is refused (401)",
+        (await api("POST", "/api/auth/passkey/login", undefined, forged)).status === 401);
+
+      const unknown = await api("POST", "/api/auth/passkey/login", undefined,
+        authenticator().assert((await loginChallenge()).challenge));
+      expect("an unregistered credential is refused (401)",
+        unknown.status === 401 && unknown.json.code === "passkey_unknown");
+
+      const noUvLogin = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { flags: 0x01 }));
+      expect("signing in without user verification is refused (403)", noUvLogin.status === 403);
+
+      const incomplete = await api("POST", "/api/auth/passkey/login", undefined, { id: device.id });
+      expect("an incomplete assertion is 400, never 500",
+        incomplete.status === 400 && incomplete.json.code === "passkey_incomplete");
+
+      /* --- a stalled signature counter is a clone signal --- */
+      const cloneTitle = "Unusual passkey activity";
+      const warned = async () => (await api("GET", "/api/me/notifications", pia))
+        .json.notifications.some((n: any) => n.title === cloneTitle);
+      expect("ordinary sign-ins do not raise a clone warning", (await warned()) === false);
+      await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { count: 40 }));
+      const regressed = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { count: 12 }));
+      expect("a counter that goes backwards still signs in but warns the member",
+        regressed.status === 200 && (await warned()) === true);
+
+      /* --- removal --- */
+      const foreign = await api("DELETE", `/api/me/passkeys/${device.id}`, tom);
+      expect("another member cannot remove your passkey (404)", foreign.status === 404);
+      expect("the passkey survived that attempt",
+        (await api("GET", "/api/me/passkeys", pia)).json.passkeys.length === 1);
+
+      const removed = await api("DELETE", `/api/me/passkeys/${device.id}`, pia);
+      expect("the member can remove their own passkey", removed.status === 200);
+      expect("removal notifies the member",
+        (await api("GET", "/api/me/notifications", pia)).json.notifications
+          .some((n: any) => n.title === "Passkey removed"));
+      const afterRemoval = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge));
+      expect("a removed passkey no longer signs in (401)", afterRemoval.status === 401);
+      expect("the password still works after the passkey is gone",
+        (await api("POST", "/api/auth/login", undefined,
+          { email: "pia@passkey.test", password: "member-pass-7" })).status === 200);
+    } finally {
+      for (const key of ["WEBAUTHN_RP_ID", "WEBAUTHN_ORIGINS", "WEBAUTHN_RP_NAME"]) {
+        if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
+      }
+      resetWebauthnConfig();
+      resetRateLimits();
+    }
+  }
+
   /* ---------- durable operations casework ---------- */
   const memberOps = await api("GET", "/api/admin/operations/cases", rae);
   expect("member blocked from operations casework (403)", memberOps.status === 403);
@@ -864,6 +1477,294 @@ try {
   let operationTimelineImmutable = false;
   try { db.prepare("UPDATE operation_case_events SET detail = 'tampered' WHERE case_id = ?").run(opsCaseId); } catch { operationTimelineImmutable = true; }
   expect("operation case event timeline is append-only at the DB layer", operationTimelineImmutable);
+
+  /* ---------- exact money arithmetic ---------- */
+  // The decimal engine is unit-tested here rather than in a separate runner so
+  // it shares the one command everything else is gated on.
+  {
+    const eq = (label: string, got: unknown, want: unknown) =>
+      expect(label, Object.is(got, want) || String(got) === String(want), `got ${got}, want ${want}`);
+
+    // The bug this replaced: Math.round(v * 100) disagrees with correct half-up
+    // rounding on 0.57% of three-decimal amounts, always a cent low, because
+    // the binary float lands just under the midpoint.
+    eq("$1.005 rounds up to 101c (float path gave 100)", dollarsToCentsExact("1.005"), 101);
+    eq("$0.145 rounds up to 15c (float path gave 14)", dollarsToCentsExact("0.145"), 15);
+    eq("$2.135 rounds up to 214c (float path gave 213)", dollarsToCentsExact("2.135"), 214);
+    eq("$8.115 still rounds to 812c", dollarsToCentsExact("8.115"), 812);
+    eq("negative amounts round away from zero", dollarsToCentsExact("-1.005"), -101);
+    eq("whole dollars are untouched", dollarsToCentsExact(250), 25000);
+    eq("exponent notation expands", dollarsToCentsExact("1e3"), 100000);
+    eq("cents render with two places", centsToDecimalExact(5), "0.05");
+
+    for (const bad of ["", "12abc", "abc", {}, [], true, null, undefined, NaN, Infinity]) {
+      let threw = false;
+      try { dollarsToCentsExact(bad as never); } catch { threw = true; }
+      expect(`rejects ${JSON.stringify(bad) ?? String(bad)} as an amount`, threw);
+    }
+
+    // 18-decimal assets are exactly why units are TEXT + bigint: one ETH is
+    // 10^18 wei, and a SQLite INTEGER column overflows at 9 ETH.
+    eq("1 ETH is 10^18 wei", parseUnits("1", 18), 10n ** 18n);
+    eq("ETH survives a round trip", formatUnitsTrimmed(parseUnits("0.123456789012345678", 18), 18), "0.123456789012345678");
+    eq("excess precision is rounded, not truncated", parseUnits("0.000000005", 8), 1n);
+    eq("trailing zeros are trimmed for display", formatUnitsTrimmed(10n ** 18n, 18), "1");
+    eq("1c of BTC at $100k is 10 satoshi", unitsForCents(1, 8, 10_000_000n), 10n);
+    eq("buying truncates rather than inventing units", unitsForCents(100, 8, 3_333_333n), 3000n);
+    eq("valuation is exact at 18 decimals", valueInCents(parseUnits("0.5", 18), 18, 400_000n), 200_000);
+    let zeroPriceThrew = false;
+    try { unitsForCents(100, 8, 0n); } catch { zeroPriceThrew = true; }
+    expect("a zero price is refused rather than dividing by it", zeroPriceThrew);
+  }
+
+  /* ---------- digital asset holdings ---------- */
+  // The price feed is stubbed over real HTTP, same as reCAPTCHA and JWKS:
+  // the cache, timeout, parsing and staleness logic all run for real, only the
+  // far end is ours. Tests never touch the network.
+  {
+    /* The upstream is /coins/markets, so the stub speaks that array shape.
+       mkt() keeps the tests written in the terms they care about — "which
+       coins are priced, and at what" — instead of 12 fields of noise. */
+    const mkt = (prices: Record<string, number>, extra: Record<string, unknown> = {}) =>
+      Object.entries(prices).map(([id, usd], i) => ({
+        id,
+        symbol: ({ bitcoin: "btc", ethereum: "eth", solana: "sol", "usd-coin": "usdc", dogecoin: "doge" } as Record<string, string>)[id] ?? id,
+        name: id,
+        image: `https://example.test/${id}.png`,
+        current_price: usd,
+        market_cap: usd * 1000,
+        total_volume: usd * 10,
+        market_cap_rank: i + 1,
+        price_change_percentage_1h_in_currency: 0.4,
+        price_change_percentage_24h_in_currency: -1.25,
+        price_change_percentage_7d_in_currency: 3.5,
+        sparkline_in_7d: { price: [usd * 0.98, usd * 0.99, usd] },
+        ...extra,
+      }));
+
+    let priceBody: unknown = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1 });
+    let priceStatus = 200;
+    // Candle rows in CoinGecko's shape: [ms, open, high, low, close].
+    let ohlcBody: unknown = [
+      [1_700_000_000_000, 99000, 101000, 98500, 100500],
+      [1_700_003_600_000, 100500, 102000, 100000, 101750],
+      [1_700_007_200_000, 101750, 101900, 99250, 99800],
+    ];
+    let ohlcStatus = 200;
+    const priceStub = createServer((req, res) => {
+      const ohlc = (req.url ?? "").startsWith("/ohlc");
+      res.writeHead(ohlc ? ohlcStatus : priceStatus, { "content-type": "application/json" });
+      res.end(JSON.stringify(ohlc ? ohlcBody : priceBody));
+    });
+    await new Promise<void>(r => priceStub.listen(0, "127.0.0.1", r));
+    const priceUrl = `http://127.0.0.1:${(priceStub.address() as any).port}/prices`;
+    const restore = { ...process.env };
+
+    try {
+      process.env.CRYPTO_PRICES_URL = priceUrl;
+      process.env.CRYPTO_OHLC_URL = `${priceUrl.replace("/prices", "")}/ohlc/{id}?days={days}`;
+      process.env.CRYPTO_TRADING_ENABLED = "1";
+      process.env.CRYPTO_PRICES_TTL_MS = "50";
+      resetPrices();
+
+      const start = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
+      const empty = await api("GET", "/api/me/holdings", rae);
+      expect("holdings list every registered asset, starting at zero", empty.status === 200 &&
+        empty.json.holdings.length === 4 && empty.json.holdings.every((h: any) => h.units === "0") &&
+        empty.json.totalUsd === "0.00" && empty.json.partial === false);
+      expect("holdings are quoted with a price and a timestamp", empty.json.holdings
+        .every((h: any) => h.priceUsd !== null && typeof h.quotedAt === "number"));
+      expect("holdings carry the not-insured disclosure", /not FDIC insured/i.test(empty.json.disclosure));
+      expect("holdings require a session (401)", (await api("GET", "/api/me/holdings")).status === 401);
+
+      const buy = await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "buy", amount: "250" });
+      expect("buying debits checking and credits the holding", buy.status === 201 &&
+        buy.json.quantity === "0.0025" && buy.json.amountUsd === "250.00");
+      const afterBuy = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
+      expect("the deposit leg left checking exactly once", start - afterBuy === 25000);
+      // A balance that moves with no matching statement line is how support
+      // tickets start, so the USD leg must be visible in transactions too.
+      const statement = (await api("GET", "/api/me/transactions", rae)).json.transactions;
+      expect("the purchase appears in the member's statement", statement.some((t: any) =>
+        t.merchant === "Bought BTC" && t.amount.cents === -25000));
+
+      const held = await api("GET", "/api/me/holdings", rae);
+      const btc = held.json.holdings.find((h: any) => h.asset === "BTC");
+      expect("the holding reports units, quantity and value", btc.units === "250000" &&
+        btc.quantity === "0.0025" && btc.valueUsd === "250.00" && held.json.totalUsd === "250.00");
+
+      expect("selling more than is held is refused (400)", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "sell", amount: "1" })).status === 400);
+      expect("buying beyond the checking balance is refused (400)", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: "99999999" })).status === 400);
+      expect("an unknown asset is a 404", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "DOGE", side: "buy", amount: "10" })).status === 404);
+      expect("an invalid side is a 400", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "hodl", amount: "10" })).status === 400);
+      expect("a zero amount is a 400", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: "0" })).status === 400);
+      expect("a negative amount is a 400", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: "-50" })).status === 400);
+      expect("a malformed amount is a 400, not a 500", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: { $gt: 0 } })).status === 400);
+      expect("holdings are per-member, never shared", (await api("GET", "/api/me/holdings", alex))
+        .json.holdings.every((h: any) => h.units === "0"));
+
+      // Selling the exact displayed quantity must land on zero. If the client
+      // round-tripped through a float this would leave dust behind.
+      const sellAll = await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "sell", amount: btc.quantity });
+      expect("selling the full quantity empties the position", sellAll.status === 201 &&
+        (await api("GET", "/api/me/holdings", rae)).json.holdings.find((h: any) => h.asset === "BTC").units === "0");
+      const afterSell = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
+      expect("a round trip at one price returns the money exactly", afterSell === start);
+
+      // 18-decimal asset end to end — the case an INTEGER column could not hold.
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "ETH", side: "buy", amount: "40" });
+      const eth = (await api("GET", "/api/me/holdings", rae)).json.holdings.find((h: any) => h.asset === "ETH");
+      expect("an 18-decimal holding survives the full round trip", eth.units === "10000000000000000" &&
+        eth.quantity === "0.01" && eth.valueUsd === "40.00");
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "ETH", side: "sell", amount: eth.quantity });
+
+      /* a dead feed must degrade, never invent a zero */
+      priceStatus = 500;
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      const dark = await api("GET", "/api/me/holdings", rae);
+      expect("an unreachable feed yields null prices, never 0.00", dark.status === 200 &&
+        dark.json.holdings.every((h: any) => h.priceUsd === null && h.valueUsd === null));
+      expect("trading is refused without a price (503)", (await api("POST", "/api/me/holdings/trade", rae,
+        { asset: "BTC", side: "buy", amount: "50" })).status === 503);
+
+      // A feed that answers but carries nothing usable is a failed feed: the
+      // last good quotes must survive rather than being replaced by nothing.
+      priceStatus = 200; priceBody = mkt({ bitcoin: 100000 });
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      await api("GET", "/api/me/holdings", rae);
+      priceBody = [];
+      await new Promise(r => setTimeout(r, 60));
+      const kept = await api("GET", "/api/me/holdings", rae);
+      expect("an empty feed response keeps the last known price", kept.json.holdings
+        .find((h: any) => h.asset === "BTC").priceUsd === "100000.00");
+
+      // A member holding an asset the feed cannot price must be told the total
+      // is incomplete rather than shown a smaller, confident number.
+      priceBody = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1 });
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "SOL", side: "buy", amount: "100" });
+      priceBody = mkt({ bitcoin: 100000 });
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      const partial = await api("GET", "/api/me/holdings", rae);
+      expect("an unpriced holding flags the total as partial", partial.json.partial === true);
+
+      /* ---- markets table ---- */
+      priceBody = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1, dogecoin: 0.42 });
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      const markets = await api("GET", "/api/me/markets", rae);
+      expect("markets list every quoted coin, ranked", markets.status === 200 &&
+        markets.json.markets.length === 5 && markets.json.markets[0].code === "BTC" &&
+        markets.json.markets[0].rank === 1 && markets.json.markets[0].priceUsd === "100000.00");
+      expect("markets carry change, cap, volume and a sparkline", (() => {
+        const btc = markets.json.markets[0];
+        return btc.change24h === -1.25 && btc.change7d === 3.5 &&
+          btc.marketCapUsd === "100000000.00" && btc.volumeUsd === "1000000.00" &&
+          Array.isArray(btc.sparkline) && btc.sparkline.length === 3 && btc.sparkline[2] === 10000000;
+      })());
+
+      // Being quoted is not being custodied. DOGE is priced upstream but is not
+      // in the local registry, so it must be listed and explicitly untradeable
+      // — otherwise the UI would offer a buy we have no decimals to settle.
+      expect("a coin outside the registry is listed but not tradeable", (() => {
+        const doge = markets.json.markets.find((m: any) => m.code === "DOGE");
+        return doge && doge.tradeable === false && doge.decimals === null &&
+          doge.quantity === null && doge.valueUsd === null && doge.priceUsd === "0.42";
+      })());
+      expect("a registry asset is tradeable and carries its decimals", (() => {
+        const eth = markets.json.markets.find((m: any) => m.code === "ETH");
+        return eth && eth.tradeable === true && eth.decimals === 18 && eth.kind === "crypto";
+      })());
+
+      // The member's own position has to ride along, or the table is a price
+      // ticker rather than a view of their money.
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "buy", amount: "250" });
+      const withPosition = await api("GET", "/api/me/markets", rae);
+      expect("a held asset shows its quantity and value in the table", (() => {
+        const btc = withPosition.json.markets.find((m: any) => m.code === "BTC");
+        return btc.units === "250000" && btc.quantity === "0.0025" && btc.valueUsd === "250.00";
+      })());
+      expect("markets state the quote time and the disclosure", typeof withPosition.json.quotedAt === "number" &&
+        withPosition.json.quotedAt > 0 && /not FDIC insured/.test(withPosition.json.disclosure));
+      expect("markets require a session (401)", (await api("GET", "/api/me/markets")).status === 401);
+
+      // A dead feed must empty the table, not fill it with zero-priced coins.
+      priceStatus = 500;
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      const noMarkets = await api("GET", "/api/me/markets", rae);
+      expect("an unreachable feed yields no market rows, never $0 ones", noMarkets.status === 200 &&
+        noMarkets.json.markets.length === 0);
+
+      priceStatus = 200;
+      priceBody = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1 });
+      resetPrices();
+      await new Promise(r => setTimeout(r, 60));
+      await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "sell", amount: "0.0025" });
+
+      /* ---- price history ---- */
+      const candles = await api("GET", "/api/me/holdings/BTC/candles?range=7d", rae);
+      expect("candles come back as integer cents, oldest first", candles.status === 200 &&
+        candles.json.candles.length === 3 && candles.json.range === "7d" &&
+        candles.json.candles[0].o === 9900000 && candles.json.candles[0].c === 10050000 &&
+        candles.json.candles[2].t > candles.json.candles[0].t);
+      expect("candles require a session (401)", (await api("GET", "/api/me/holdings/BTC/candles")).status === 401);
+      expect("an unknown asset has no history (404)", (await api("GET", "/api/me/holdings/DOGE/candles", rae)).status === 404);
+      expect("an invalid range is a 400", (await api("GET", "/api/me/holdings/BTC/candles?range=all-time", rae)).status === 400);
+      expect("every advertised range is accepted", (await Promise.all(
+        ["1d", "7d", "30d", "90d"].map(r => api("GET", `/api/me/holdings/ETH/candles?range=${r}`, rae)),
+      )).every(res => res.status === 200));
+
+      // A malformed row must be dropped, not turned into a zero candle that
+      // renders as a crash to the x-axis.
+      ohlcBody = [
+        [1_700_000_000_000, 50000, 51000, 49000, 50500],
+        [1_700_003_600_000, "oops", null, 0, 0],
+        [1_700_007_200_000, 50500, 52000, 50100, 51800],
+      ];
+      resetPrices();
+      const partialCandles = await api("GET", "/api/me/holdings/SOL/candles?range=7d", rae);
+      expect("malformed candle rows are dropped, never zeroed", partialCandles.status === 200 &&
+        partialCandles.json.candles.length === 2 &&
+        partialCandles.json.candles.every((c: any) => c.o > 0 && c.h > 0 && c.l > 0 && c.c > 0));
+
+      // No history is a 503, never an empty array: an empty series draws a
+      // flat line, and a flat line claims the asset did not move.
+      ohlcStatus = 500;
+      resetPrices();
+      const deadHistory = await api("GET", "/api/me/holdings/USDC/candles?range=30d", rae);
+      expect("an unreachable history feed is 503, not an empty series", deadHistory.status === 503 &&
+        deadHistory.json.code === "crypto_no_history");
+      ohlcStatus = 200;
+      ohlcBody = [];
+      resetPrices();
+      expect("an empty history response is 503 too", (await api("GET", "/api/me/holdings/USDC/candles?range=30d", rae)).status === 503);
+
+      /* the licensing interlock */
+      process.env.CRYPTO_TRADING_ENABLED = "0";
+      const locked = await api("POST", "/api/me/holdings/trade", rae, { asset: "BTC", side: "buy", amount: "50" });
+      expect("trading off returns 503 with crypto_disabled", locked.status === 503 && locked.json.code === "crypto_disabled");
+      expect("holdings stay readable when trading is off",
+        (await api("GET", "/api/me/holdings", rae)).json.tradingEnabled === false);
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
+      }
+      resetPrices();
+      await new Promise<void>(r => priceStub.close(() => r()));
+    }
+  }
 
   /* ---------- admin aggregate state ---------- */
   const adminState = await api("GET", "/api/admin/state", admin);

@@ -163,12 +163,15 @@ server/
     app.ts              createApp() — REST routes + middleware
     db.ts               SQLite (WAL, FK on): migrations, audit triggers, tx helper
     security.ts         scrypt hashing, HS256 tokens, rate limiter, TOKEN_SECRET
+    recaptcha.ts        reCAPTCHA v3 / Enterprise verifier for the anonymous routes
+    federated.ts        Firebase ID token verification + provider registry + account linking
+    webauthn.ts         Passkeys: CBOR/COSE decode, origin binding, signature verification
     rbac.ts             Server-authoritative permission matrix (DB overrides)
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   153-check integration suite (boots the real server)
-  scripts/audit-routes.ts  69 routes × 6 identities gate/isolation audit
+  scripts/test-api.ts   235-check integration suite (boots the real server)
+  scripts/audit-routes.ts  86 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -212,7 +215,7 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 153-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 235-check integration suite (fresh DB, ephemeral port)
 npm run check:routes      # fails if a server route has no caller in the app
 npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
@@ -225,6 +228,8 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Passwords | scrypt (`s2$salt$hash`), never plaintext or reversible |
 | Sessions | HS256 bearer tokens (12 h) with a `sessions` table — logout and admin revocation kill them instantly |
 | Login abuse | In-memory rate limit: 8 attempts / 60 s per IP (login and password-reset requests) |
+| Bot defence | reCAPTCHA v3 / Enterprise on sign in, sign up and password recovery — action-bound, score-thresholded, off until configured (see **reCAPTCHA** below) |
+| Federated sign-in | Google, Apple and Microsoft. Firebase ID tokens verified against Google's JWKS (RS256, alg pinned, full claim set); the provider is read from the signed token, never the request. Links to existing members only — never auto-provisions, and excludes staff by default |
 | RBAC | 17 permissions × 5 roles, resolved **fresh from the DB on every request** (role changes take effect immediately, no re-login) |
 | Money | Integer cents everywhere; every mutation inside `BEGIN IMMEDIATE` |
 | Audit trail | `audit_log` is append-only **by database trigger** — `UPDATE`/`DELETE` raise `ABORT` |
@@ -299,11 +304,13 @@ funds) to the status columns.
 
 ### API surface (summary)
 
-- **Auth** — `POST /api/auth/login · register · logout`, `GET /api/auth/me`, `GET /api/health`
+- **Auth** — `POST /api/auth/login · register · federated · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA + federated settings), `POST /api/auth/passkey/challenge · passkey/login`, `GET /api/health`
 - **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
-  rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications
+  rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications,
+  digital asset holdings (`GET /api/me/holdings`, `POST /api/me/holdings/trade`,
+  `GET /api/me/holdings/:asset/candles`, `GET /api/me/markets`)
 - **Admin** — `GET /api/admin/state` (console aggregate: users, accounts, ledger, disputes,
   KYC queue, audit, role matrix, settings) `· overview · members · staff · roles · audit`,
   member detail/adjust/status, KYC request/queue/decision, risk dispute queue + advance,
@@ -321,8 +328,169 @@ funds) to the status columns.
 | `PORT` | `8787` | API port |
 | `DB_PATH` | `server/veyra.db` | SQLite file (git-ignored) |
 | `CORS_ORIGIN` | `*` | Allow a specific browser origin |
+| `RECAPTCHA_*` | off | Bot defence on the anonymous auth routes — see below |
 
 Variables can live in a `.env` file (loaded automatically — see `.env.example`).
+
+### reCAPTCHA
+
+Sign in, sign up and password recovery are the only routes a script can reach
+without a session, and each one costs real work (scrypt, five inserts, a token
+mint). The in-memory budgets in `security.ts` throttle one address; reCAPTCHA
+is what answers a distributed run from many.
+
+**It is off until configured** — no site key means every check is a
+pass-through, so development, CI and the 235-check suite run without a Google
+round-trip. Pick one provider:
+
+| Provider | Variables | Endpoint |
+|---|---|---|
+| Classic v3 | `RECAPTCHA_SITE_KEY` + `RECAPTCHA_SECRET_KEY` | `siteverify` |
+| Enterprise | `RECAPTCHA_SITE_KEY` + `RECAPTCHA_PROJECT_ID` + `RECAPTCHA_API_KEY` | `createAssessment` |
+
+Enterprise is what Firebase App Check sits on, so starting there doesn't have
+to be redone if App Check is adopted later. Tuning:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RECAPTCHA_MIN_SCORE` | `0.5` | Reject below this (1.0 = human, 0.0 = bot) |
+| `RECAPTCHA_FAIL_CLOSED` | unset | `1` rejects requests when the verifier is unreachable |
+| `RECAPTCHA_HOSTNAMES` | any | Comma-separated hostname allowlist |
+| `RECAPTCHA_TIMEOUT_MS` | `4000` | Verification timeout |
+| `RECAPTCHA_VERIFY_URL` | provider default | Override (tests, egress proxy) |
+
+**Two kinds of failure, treated differently.** A *decision* (score below the
+threshold, wrong action, expired or replayed token, missing token) is always
+enforced — that is the feature. An *infrastructure* failure (Google
+unreachable, timeout, 5xx, a rejected secret) is governed by
+`RECAPTCHA_FAIL_CLOSED`, and **fails open by default**: an outage at Google, or
+one bad env var, would otherwise lock every customer out of their money, which
+is a worse incident than the bots it stops. Both are logged (throttled to once
+a minute per cause) so an outage is visible rather than silent.
+
+Replay is Google's job — tokens are single-use and expire after ~2 minutes, so
+there is no local nonce cache. Tokens are bound to an action
+(`login` / `register` / `forgot_password`), so one minted on a cheap public
+form cannot be replayed against sign-in.
+
+The browser reads `GET /api/auth/config` for the site key and whether the gate
+is live, rather than a build-time `VITE_` variable: enabling reCAPTCHA needs no
+frontend rebuild, and a cached bundle can never disagree with the server about
+whether tokens are required. If the script is blocked (ad blocker, strict
+extension, corporate proxy) the client sends no token and the **server**
+decides — `src/lib/recaptcha.ts` never pre-emptively blocks the member.
+
+### Passkeys (WebAuthn)
+
+The only sign-in method here with no third party in the trust path, and the
+strongest one Veyra offers. The authenticator generates a key pair, keeps the
+private half, and signs a server-issued challenge with it. There is no shared
+secret — a full dump of the `passkeys` table lets an attacker *verify*
+signatures, not produce them.
+
+**Why it resists phishing**, which no password or OTP does: the browser will
+only release a credential to the origin that created it, and the origin it was
+asked by is inside what gets signed. A lookalike domain therefore cannot
+collect anything usable — it cannot even ask the right question. The member
+does not have to notice the URL is wrong, which is the whole problem with
+every credential that can be typed.
+
+**Verified server-side** in `webauthn.ts`, with `node:crypto` and no
+dependency: the challenge (server-issued, single-use, 5-minute TTL), the
+origin against an allowlist, the RP ID hash, the user-presence and
+user-verification flags, and the ECDSA/RSA/EdDSA signature over
+`authenticatorData || sha256(clientDataJSON)`. Attestation is deliberately not
+verified — we ask for `attestation: "none"` and ignore `attStmt`, because
+attestation answers "which authenticator model is this?", and Veyra wants
+members using the device already in their hand.
+
+| Rule | Behaviour |
+|---|---|
+| User verification | **Required**, at registration and at sign-in. A passkey is then two factors in one gesture: the device, plus the biometric or PIN that unlocked it. |
+| Registration | Needs a live session. A passkey is added to an account and **never opens one** — same rule as the federated providers. |
+| Challenge ownership | The challenge carries the user id it was issued to; a registration redeemed on a different session is refused (403). |
+| Credential reuse | Credential ID is the primary key, so one credential unlocks exactly one Veyra account. |
+| Sign-in | Discoverable (resident) credentials, no email asked for, `allowCredentials` empty — so neither route can answer "does this account exist?" |
+| Signature counter | Checked, but advisory. Synced passkeys report 0 forever, so a regression notifies the member rather than locking them out. |
+| Removal | Scoped to `(id, user_id)`; another member's credential reads as 404. |
+
+Configure `WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGINS` for your domain — the
+defaults are localhost dev values and **passkeys will not work in production
+until you set them**. The RP ID is a bare domain (no scheme, no port) and must
+equal the site's domain or a parent of it.
+
+> A passkey is bound to `rpId`. Changing it invalidates every passkey already
+> registered, so pick the broadest domain you will ever serve from (`veyra.com`
+> rather than `app.veyra.com`) before members start enrolling.
+
+### Federated sign-in (Google, Apple, Microsoft — via Firebase)
+
+Firebase is an identity **provider** here, never the authority. The browser
+runs the provider's flow and receives a Firebase ID token; `POST /api/auth/federated`
+verifies it, maps it onto an **existing** member, and mints Veyra's own session.
+Everything downstream is untouched — the `sessions` table still revokes
+instantly, RBAC is still read fresh from the database on every request, and the
+audit trail still records what staff did. Only the credential check moves.
+
+**Which providers.** `FEDERATED_PROVIDERS` is a comma list of `google`,
+`apple`, `microsoft` and defaults to `google` alone. Every extra provider is
+another door into an account, so each one is opened deliberately — and must
+also be enabled in the Firebase console. One token shape serves all three:
+Firebase has already completed the provider handshake, so the only difference
+reaching Veyra is the `firebase.sign_in_provider` claim. **That claim is read
+from the signed token, never from the request body** — otherwise a caller
+could present a Google token while naming Apple and claim the wrong identity
+row. A `sign_in_provider` this build doesn't know, or one not in
+`FEDERATED_PROVIDERS`, is refused with 403.
+
+Off unless `FIREBASE_PROJECT_ID` is set. All of `FIREBASE_PROJECT_ID`,
+`FIREBASE_API_KEY` and `FIREBASE_AUTH_DOMAIN` are public values (the Firebase
+web config ships in the page) — **no service-account key is required**, because
+ID tokens are verified against Google's published JWKS with `node:crypto`
+rather than `firebase-admin`.
+
+**Verification.** A Firebase ID token is an RS256 JWT. Every claim Google
+documents is checked: `alg` (pinned to RS256, so `alg: none` and HS256
+confusion both die before a key is consulted), `kid` against the cached JWKS,
+the signature, `exp`, `iat`, `auth_time`, `aud`, `iss` and `sub`. Keys are
+cached for 6 h, refetched on an unknown `kid`, and that refetch is throttled so
+a bad `kid` can't be used to hammer Google.
+
+**Linking policy** — the part that matters:
+
+| Rule | Behaviour |
+|---|---|
+| Unverified email | Refused (403). An unverified address must never claim an account. |
+| Known `(provider, subject)` | Signs in as the linked member. Matching is by subject — stable — not email. |
+| Unknown subject, verified email matches a member | Links once, and the member is notified. |
+| Unknown subject, no matching member | **Refused (404). Never auto-provisions.** |
+| Member already has a different account with that provider | Refused (409) — one identity per member per provider. A member may hold Google *and* Apple *and* Microsoft at once. |
+| Apple "Hide My Email" relay address | Refused (409) with its own message. A `@privaterelay.appleid.com` address can never match a member, so a bare "no account" would send the member hunting for a problem that isn't there; the error tells them to use "Share My Email" instead. |
+| Staff / Super Admin | Refused (403) unless `FEDERATED_ALLOW_STAFF=1`. |
+
+No auto-provisioning is deliberate: opening a bank account requires the full
+application (legal identity, tax ID, address, government ID — see
+`identity.ts`). Clicking "Continue with Apple" cannot conjure one. The sign-up
+screen says so rather than offering a button that can't work.
+
+Staff exclusion is also deliberate: the console can move $10M per adjustment,
+so letting a third-party IdP unlock it widens the blast radius to whoever holds
+that provider account. Flip it on only if your operators are on managed Workspace
+identities.
+
+**Client cost.** `firebase` is loaded through a dynamic `import()`, so it stays
+out of the initial parse. Note that `vite-plugin-singlefile` inlines dynamic
+chunks, so in the production build it is paid upfront regardless: **+47 kB
+gzipped** (736 → 783 kB). If that matters more than the convenience, swap the
+import in `src/lib/federated.ts` for the gstatic ESM CDN build and it drops to
+zero for deployments that never enable it.
+
+> The v3 badge is left visible, which is how Google's terms are satisfied by
+> default. To hide it you must instead display the attribution text ("This site
+> is protected by reCAPTCHA and the Google
+> [Privacy Policy](https://policies.google.com/privacy) and
+> [Terms of Service](https://policies.google.com/terms) apply.") — add it to
+> `AuthShell` in `src/pages/Auth.tsx` alongside `.grecaptcha-badge { visibility: hidden; }`.
 
 The database schema is created by versioned migrations in `server/src/db.ts`
 (v1: `users`, `accounts`, `transactions`, `cards`, `kyc_records`, `disputes`,
@@ -332,6 +500,165 @@ v2 adds `invoices`, `team_members`, `savings_pockets`, `payees`,
 card model, so every member feature is server-backed). `server/src/state.ts`
 builds each member's Account snapshot straight from these tables.
 
+## Digital assets (crypto)
+
+Members can hold BTC, ETH, SOL and USDC alongside their deposit account, and
+buy or sell with their checking balance. `Accounts & savings` carries the
+holdings panel; **Markets** (`/app/markets`) is the full market table.
+`GET /api/me/holdings`, `POST /api/me/holdings/trade` and
+`GET /api/me/markets` are the API.
+
+> ### ⚠ This is licensable activity in New York
+>
+> Veyra holds the assets, so this is custody. Under **23 NYCRR 200.2(q)** both
+> *storing, holding, or maintaining custody or control of virtual currency on
+> behalf of others* and *buying and selling virtual currency as a customer
+> business* are Virtual Currency Business Activity, and require a **BitLicense**
+> or a **limited-purpose trust charter** to serve a single New York resident.
+>
+> Veyra is a financial technology product, **not a bank**, so the NY Banking Law
+> charter exemption does not apply. The §200.2(q) software carve-out — *"the
+> development and dissemination of software in and of itself does not constitute
+> Virtual Currency Business Activity"* — covers a self-custody wallet, **not a
+> hosted one holding other people's assets**. This is the hosted kind.
+>
+> Ballpark: $5,000 application fee, **12–30+ months**, **$500K–$2M+** in the
+> first year, a **$500,000** minimum surety bond, capital set case-by-case by
+> the Superintendent, a CISO under Part 500, 7-year retention and biennial
+> examination. Fewer than 50 entities hold one. NYDFS issued cease-and-desist
+> orders with **$100K–$500K** penalties to unlicensed platforms serving New
+> Yorkers in early 2026.
+>
+> Federal rules have moved the other way — OCC Interpretive Letters 1170, 1184,
+> 1186 and 1188 permit national banks to custody crypto, execute customer
+> trades as riskless principal and outsource the work — but those are *bank*
+> powers, and state licensing still binds a fintech.
+>
+> **`CRYPTO_TRADING_ENABLED` is unset by default, which means ON in development
+> and OFF in production.** That is an interlock, not an opinion: the feature is
+> built and demonstrable, and switching it on for real customers should be a
+> deliberate act taken with counsel. Viewing holdings is never gated — reading a
+> balance is not a licensable activity.
+
+**Nothing here is FDIC insured**, and the UI says so on the panel and in the
+trade dialog.
+
+### Why holdings are a parallel structure
+
+A deposit balance is authoritative: the number *is* what the bank owes you. A
+crypto balance is a quantity whose worth is a market quote that changes every
+second. Merging them yields one confident number that is wrong between every
+two ticks, so they stay separate objects in the schema, the API and the UI —
+holdings never roll into "Total across Veyra".
+
+### Base units are TEXT, not INTEGER
+
+`holdings.units` stores an integer count of the asset's smallest unit as a
+**string**, and arithmetic happens in JS with `bigint`. This is forced, not
+stylistic: SQLite INTEGER is 64-bit and 1 ETH is 10¹⁸ wei, so an INTEGER column
+**overflows at 9 ETH**. The consequence is that SQL cannot `SUM()` these
+columns — aggregate in the application. Non-negativity is enforced with
+`CHECK (units NOT LIKE '-%')` plus app-layer checks.
+
+Buys are denominated in dollars and sells in units of the asset. That matches
+how people think about each direction, and it lets a member sell a position to
+exactly zero instead of leaving rounding dust behind.
+
+### The price feed fails soft
+
+`server/src/prices.ts` polls CoinGecko (free, keyless) with a 60s cache and a
+4s timeout. Three rules, because a price feed is the least trustworthy part of
+the system:
+
+1. **A missing price is `null`, never `0`.** A zero is a number, and a number
+   gets multiplied by a balance to produce a confident, wrong valuation. The UI
+   renders "Price unavailable" and flags the total as incomplete.
+2. **A stale price is labelled**, with the time it was fetched.
+3. **Trading refuses to execute on a stale or missing quote** (503). Showing an
+   old number is cosmetic; filling an order at one moves real money at the
+   wrong rate.
+
+A feed that answers but carries nothing usable counts as a failure: the last
+good quotes survive rather than being replaced by nothing.
+
+Tests never touch the network — they point `CRYPTO_PRICES_URL` and
+`CRYPTO_OHLC_URL` at a local stub, so the real fetch, cache, timeout and
+staleness logic all still run. For local work without egress,
+`node scripts/dev-prices.mjs` serves both shapes with prices that drift and
+deterministic candles.
+
+### The markets page
+
+`/app/markets` lists every coin the feed quotes — price, 1H/24H/7D change,
+market cap, 24h volume, a 7-day sparkline and the member's own position —
+sortable on any numeric column, searchable, and with the candlestick chart
+expanding inline under a row rather than on a separate screen.
+
+The modelling follows a custodian like BitGo rather than an exchange: a
+*curated* list that sits inside custody, not an infinite listing. So the table
+draws a hard line between **quoted** and **tradeable**. Every row shows a
+price; only assets in the local `crypto_assets` registry carry `tradeable:
+true`. A coin appearing on CoinGecko is not consent to custody it — decimals,
+and therefore every unit conversion the ledger depends on, exist only for the
+assets we seeded. Untradeable rows render as reference data with no Buy
+control and no candle history.
+
+This also means the markets page costs **no extra upstream calls**. The spot
+feed moved from `/simple/price` to `/coins/markets`, which returns price,
+changes, cap, volume and a sparkline for up to 100 coins in one request — the
+same call that values the holdings now populates the whole table. Sparklines
+are downsampled from 168 hourly points to 32 before they leave the server, so
+100 rows cost ~3,200 numbers instead of 16,800.
+
+Rows the feed cannot price are **dropped, not zeroed**, and a dead feed yields
+an empty table rather than a page of $0.00 coins.
+
+### Price history and the API quota
+
+Each asset row opens a candlestick chart over 24H / 7D / 30D / 90D, drawn by
+hand in SVG (`src/components/CandleChart.tsx`) — recharts is a dependency but
+has no candlestick primitive, and a custom Bar shape fighting the library's
+scales for wick placement is more code than the SVG. OHLC comes from
+`/coins/{id}/ohlc` via `GET /api/me/holdings/:asset/candles?range=`, cached per
+(asset, range) with a TTL matched to candle width (5min / 30min / 1h / 6h) and
+fetched only when a chart is actually opened.
+
+**Watch the quota.** CoinGecko's free Demo tier allows 10,000 calls/month:
+
+| Spot TTL | Calls/day | Calls/month | Against a 10,000 cap |
+|---|---|---|---|
+| 60s | 1,440 | 43,200 | exhausted in ~7 days |
+| 300s *(default)* | 288 | 8,640 | 86% — little room for charts |
+| 600s | 144 | 4,320 | 43% |
+
+At the 300s default, spot alone uses 86% of the free allowance — unchanged by
+the markets page, which rides the same call — so **a production deployment
+serving real traffic needs the paid Basic plan**
+(~$35/month, 100k credits). Development and demo use fit comfortably in the
+free tier.
+
+A missing series is a **503 with `crypto_no_history`**, never an empty array.
+An empty series draws a flat line, and a flat line claims the asset did not
+move — which is a different statement from "we have no data".
+
+### Exact money arithmetic
+
+`server/src/money.ts` replaced `Math.round(value * 100)` in `dollarsToCents`.
+That expression disagrees with correct half-up rounding on **1,147 of 200,000**
+three-decimal amounts (**0.57%**), always a cent **low**, because those values
+land just under the midpoint once a binary float gets hold of them:
+
+```
+Math.round(1.005 * 100) === 100   // should be 101
+Math.round(0.145 * 100) ===  14   // should be  15
+Math.round(2.135 * 100) === 213   // should be 214
+```
+
+The replacement parses the decimal string digit by digit into a `bigint` and
+never enters float math. It is exact on all 200,000 values, and **identical to
+the old behaviour on every two-decimal amount** — the rejection contract
+(objects, arrays, booleans, `"12abc"`, empty strings) is unchanged.
+
 ## Scripts
 
 ```bash
@@ -340,7 +667,8 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (153) = 194 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (320) = 361 checks
+node scripts/dev-prices.mjs  # offline crypto price feed (see Digital assets)
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

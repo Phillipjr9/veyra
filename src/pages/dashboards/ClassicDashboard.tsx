@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
   Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap, LineChart, CandlestickChart,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
 import { Footer } from "../../components/Chrome";
@@ -17,8 +17,18 @@ import { CommandPalette } from "../../components/CommandPalette";
 import { MobileCheckDepositModal } from "../../components/MobileCheckDeposit";
 import { ZelleHubModal } from "../../components/ZelleHubModal";
 import { InvoiceDetailModal } from "../../components/InvoiceDetailModal";
-import { Camera } from "lucide-react";
+import { Camera, Loader2 } from "lucide-react";
+import {
+  listPasskeys, createPasskey, deletePasskey, passkeySupported, passkeyRegistrationAvailable,
+  suggestPasskeyLabel, passkeyErrorMessage, isPasskeyCancellation, type Passkey,
+} from "../../lib/passkey";
 import { useAuth } from "../../lib/auth";
+import {
+  tradeHolding, quoteAge, useHoldings, useCandles, useMarkets, assetIcon,
+  compactUsd, marketPrice, CANDLE_RANGES, RANGE_LABEL,
+  type Holding, type CandleRange, type MarketRow,
+} from "../../lib/holdings";
+import { CandleChart } from "../../components/CandleChart";
 import { BackButton } from "../../components/BackButton";
 import { lockScroll } from "../../lib/scrollLock";
 import {
@@ -154,6 +164,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app", label: "Overview", icon: <LayoutDashboard size={18} />, end: true },
       { to: "/app/accounts", label: "Savings goals", icon: <PiggyBank size={18} /> },
       { to: "/app/cards", label: "Cards", icon: <CreditCard size={18} /> },
+      { to: "/app/markets", label: "Markets", icon: <CandlestickChart size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
@@ -942,8 +953,6 @@ export function Overview() {
   const first = user?.name.split(" ")[0] ?? "there";
   const personal = user?.accountType === "personal";
   const bank = account.bankDetails;
-  const activeCards = account.cards.filter(c => !c.frozen).length;
-  const totalLimit = account.cards.reduce((s, c) => s + c.limit, 0);
   const primary = account.cards[0];
   const upcoming = account.invoices.filter(i => i.status !== "paid").sort((a, b) => a.due - b.due).slice(0, 3);
   const totalIn = weeks.reduce((s, w) => s + w.inflow, 0);
@@ -1002,16 +1011,7 @@ export function Overview() {
           </div>
         </motion.div>
 
-        <motion.div className="stat stat-dark" {...rise(1)}>
-          {rewardsFlash && <span key={rewardsFlash.key} className={`stat-flash ${rewardsFlash.dir}`} />}
-          <div className="stat-top"><span>Rewards balance</span><span className="chip chip-glass">2% back</span></div>
-          <AnimatedMoney value={account.rewards} className="stat-value" cents fromZero />
-          <p className="stat-note">Unlimited cash back on every purchase.</p>
-          <div className="burst-anchor">
-            <button type="button" className="pill-btn" onClick={onRedeem} disabled={account.rewards < 0.01}><Sparkles size={13} /> Redeem to checking</button>
-            <Burst fire={burst} />
-          </div>
-        </motion.div>
+        <CryptoStat index={1} />
 
         <motion.div className="stat stat-scout" {...rise(2)}>
           <div className="stat-top"><span>Scout savings</span><span className="chip chip-violet">AI</span></div>
@@ -1020,11 +1020,15 @@ export function Overview() {
           <Link to="/app/scout" className="stat-link">View report <ArrowRight size={13} /></Link>
         </motion.div>
 
-        <motion.div className="stat" {...rise(3)}>
-          <div className="stat-top"><span>Active cards</span><span className="chip">{account.cards.length} issued</span></div>
-          <AnimatedNumber value={activeCards} className="stat-value" />
-          <p className="stat-note">{account.cards.length - activeCards} frozen · {money(totalLimit, false)} in limits</p>
-          <Link to="/app/cards" className="stat-link">Manage cards <ArrowRight size={13} /></Link>
+        <motion.div className="stat stat-dark" {...rise(3)}>
+          {rewardsFlash && <span key={rewardsFlash.key} className={`stat-flash ${rewardsFlash.dir}`} />}
+          <div className="stat-top"><span>Rewards balance</span><span className="chip chip-glass">2% back</span></div>
+          <AnimatedMoney value={account.rewards} className="stat-value" cents fromZero />
+          <p className="stat-note">Unlimited cash back on every purchase.</p>
+          <div className="burst-anchor">
+            <button type="button" className="pill-btn" onClick={onRedeem} disabled={account.rewards < 0.01}><Sparkles size={13} /> Redeem to checking</button>
+            <Burst fire={burst} />
+          </div>
         </motion.div>
       </div>
 
@@ -2112,6 +2116,266 @@ export function TeamPage() {
 }
 
 /* ============================================================
+   Markets
+   ============================================================ */
+/**
+ * Full market table with an inline chart, modelled on how a custodian like
+ * BitGo presents markets: a curated list sitting inside custody, not an
+ * exchange's infinite listing.
+ *
+ * The important distinction the table has to carry is between a coin we quote
+ * and a coin we hold. Every row shows a price; only rows in the local asset
+ * registry are tradeable, because decimals — and therefore every unit
+ * conversion — exist only for the assets we seeded. A coin being listed on
+ * CoinGecko is not consent to custody it.
+ */
+type MarketSort = "rank" | "name" | "price" | "change24h" | "marketCap" | "volume";
+
+function MarketSparkline({ points, rising }: { points: number[]; rising: boolean }) {
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const span = max - min || 1;
+  const d = points
+    .map((v, i) => `${((i / (points.length - 1)) * 100).toFixed(2)},${(26 - ((v - min) / span) * 22).toFixed(2)}`)
+    .join(" ");
+  return (
+    <svg className="market-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={d} fill="none" stroke={rising ? "#3f8358" : "#a04545"} strokeWidth="1.6"
+        strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+function Pct({ value }: { value: number | null }) {
+  if (value === null) return <span className="market-flat">—</span>;
+  const up = value >= 0;
+  return <span className={up ? "candle-up" : "candle-down"}>{up ? "+" : "−"}{Math.abs(value).toFixed(2)}%</span>;
+}
+
+export function MarketsPage() {
+  const { data, loading, failed, reload } = useMarkets();
+  const toast = useToast();
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<MarketSort>("rank");
+  const [desc, setDesc] = useState(false);
+  const [onlyTradeable, setOnlyTradeable] = useState(false);
+  // Deep link from a holding card: /app/markets?asset=BTC opens that chart.
+  const [params, setParams] = useSearchParams();
+  const [open, setOpen] = useState<string | null>(params.get("asset"));
+  const [range, setRange] = useState<CandleRange>("7d");
+  const { candles, loading: candlesLoading } = useCandles(open, range);
+
+  const rows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const list = (data?.markets ?? []).filter(m =>
+      (!onlyTradeable || m.tradeable) &&
+      (!needle || m.code.toLowerCase().includes(needle) || m.name.toLowerCase().includes(needle)));
+    const num = (v: string | null) => (v === null ? -Infinity : Number(v));
+    const key = (m: typeof list[number]) =>
+      sort === "name" ? m.name.toLowerCase()
+      : sort === "price" ? Number(m.priceUsd)
+      : sort === "change24h" ? (m.change24h ?? -Infinity)
+      : sort === "marketCap" ? num(m.marketCapUsd)
+      : sort === "volume" ? num(m.volumeUsd)
+      : (m.rank ?? Infinity);
+    return [...list].sort((a, b) => {
+      const ka = key(a), kb = key(b);
+      const cmp = typeof ka === "string" ? ka.localeCompare(kb as string) : (ka as number) - (kb as number);
+      return desc ? -cmp : cmp;
+    });
+  }, [data, query, sort, desc, onlyTradeable]);
+
+  // Keep the URL honest so the open chart survives a refresh or a shared link.
+  const show = (code: string | null) => {
+    setOpen(code);
+    if (code) params.set("asset", code); else params.delete("asset");
+    setParams(params, { replace: true });
+  };
+
+  const sortBy = (next: MarketSort) => {
+    if (next === sort) return setDesc(d => !d);
+    setSort(next);
+    // Rank and name read best ascending; money reads best largest-first.
+    setDesc(next !== "rank" && next !== "name");
+  };
+
+  const head = (id: MarketSort, label: string, className = "") => (
+    <th className={className} aria-sort={sort === id ? (desc ? "descending" : "ascending") : "none"}>
+      <button type="button" onClick={() => sortBy(id)}>{label}{sort === id && <span>{desc ? "▼" : "▲"}</span>}</button>
+    </th>
+  );
+
+  const total = data?.markets.filter(m => m.tradeable && m.units !== "0").length ?? 0;
+
+  return (
+    <div className="app-page markets-page">
+      <PageHeader eyebrow="Digital assets · Market data" title="Markets">
+        <button type="button" className="ghost-btn" onClick={() => { void reload(); toast({ tone: "info", title: "Refreshing market data" }); }}>
+          <RefreshCw size={15} /> Refresh
+        </button>
+      </PageHeader>
+
+      <div className="market-toolbar">
+        <label className="market-search">
+          <Search size={15} />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by name or symbol" aria-label="Search markets" />
+        </label>
+        <button type="button" className={`chip-toggle ${onlyTradeable ? "on" : ""}`} aria-pressed={onlyTradeable}
+          onClick={() => setOnlyTradeable(v => !v)}>
+          Tradeable on Veyra
+        </button>
+        {/* The stacked card layout hides the header row, and with it the
+            column sort buttons, so narrow screens get this instead. */}
+        <label className="market-sort-mobile">
+          <span>Sort</span>
+          <select
+            value={`${sort}:${desc ? "d" : "a"}`}
+            onChange={e => {
+              const [next, dir] = e.target.value.split(":");
+              setSort(next as MarketSort);
+              setDesc(dir === "d");
+            }}
+          >
+            <option value="rank:a">Market rank</option>
+            <option value="marketCap:d">Market cap</option>
+            <option value="volume:d">Volume</option>
+            <option value="price:d">Price, high to low</option>
+            <option value="price:a">Price, low to high</option>
+            <option value="change24h:d">24H gainers</option>
+            <option value="change24h:a">24H losers</option>
+            <option value="name:a">Name A to Z</option>
+          </select>
+        </label>
+        <span className="market-meta">
+          {data?.quotedAt ? `${rows.length} markets · ${quoteAge(data.quotedAt)}` : `${rows.length} markets`}
+          {total > 0 && ` · ${total} held`}
+        </span>
+      </div>
+
+      {failed && <p className="holdings-warning"><AlertTriangle size={14} /> Market data is unavailable right now. Nothing below is current.</p>}
+
+      {loading && !data ? <p className="holding-chart-msg">Loading markets…</p> : (
+        <div className="market-table-wrap">
+          <table className="market-table">
+            <thead>
+              <tr>
+                {head("rank", "#", "market-rank")}
+                {head("name", "Asset")}
+                {head("price", "Price", "market-num")}
+                <th className="market-num">1H</th>
+                {head("change24h", "24H", "market-num")}
+                <th className="market-num">7D</th>
+                <th className="market-spark-col">Last 7 days</th>
+                {head("marketCap", "Market cap", "market-num")}
+                {head("volume", "Volume 24H", "market-num")}
+                <th className="market-num">Your holding</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(m => (
+                <Fragment key={m.code}>
+                  <tr className={open === m.code ? "is-open" : ""}>
+                    <td className="market-rank">{m.rank ?? "—"}</td>
+                    <td>
+                      <span className="market-asset">
+                        <MarketMark row={m} />
+                        <span><strong>{m.name}</strong><small>{m.code}{m.tradeable && <em className="market-badge">Tradeable</em>}</small></span>
+                      </span>
+                    </td>
+                    <td className="market-num market-price">{marketPrice(m.priceUsd)}</td>
+                    <td className="market-num"><Pct value={m.change1h} /></td>
+                    <td className="market-num"><Pct value={m.change24h} /></td>
+                    <td className="market-num"><Pct value={m.change7d} /></td>
+                    <td className="market-spark-col">
+                      {m.sparkline && m.sparkline.length > 1
+                        ? <MarketSparkline points={m.sparkline} rising={(m.change7d ?? 0) >= 0} />
+                        : <span className="market-flat">—</span>}
+                    </td>
+                    <td className="market-num">{compactUsd(m.marketCapUsd)}</td>
+                    <td className="market-num">{compactUsd(m.volumeUsd)}</td>
+                    <td className="market-num">
+                      {m.tradeable && m.units !== "0"
+                        ? <span className="market-held"><b>{m.valueUsd ? `$${m.valueUsd}` : "—"}</b><small>{m.quantity} {m.code}</small></span>
+                        : <span className="market-flat">—</span>}
+                    </td>
+                    <td className="market-actions">
+                      <button type="button" className={`ghost-btn sm ${open === m.code ? "on" : ""}`}
+                        aria-expanded={open === m.code}
+                        onClick={() => show(open === m.code ? null : m.code)}>
+                        <LineChart size={13} /> Chart
+                      </button>
+                    </td>
+                  </tr>
+                  {open === m.code && (
+                    <tr className="market-chart-row">
+                      <td colSpan={11}>
+                        <div className="market-chart">
+                          <div className="holding-chart-head">
+                            <span className="holding-chart-title">
+                              <MarketMark row={m} large />
+                              <span><strong>{m.name}</strong><small>{m.code} · price history</small></span>
+                            </span>
+                            <div className="holding-range" role="group" aria-label="Chart range">
+                              {CANDLE_RANGES.map(r => (
+                                <button key={r} type="button" className={range === r ? "on" : ""} aria-pressed={range === r} onClick={() => setRange(r)}>
+                                  {RANGE_LABEL[r]}
+                                </button>
+                              ))}
+                            </div>
+                            <button type="button" className="icon-btn" onClick={() => show(null)} aria-label="Close chart"><X size={15} /></button>
+                          </div>
+                          {/* Narrow viewports drop columns from the table, so
+                              the detail panel carries them instead — the data
+                              moves one tap away rather than disappearing. */}
+                          <dl className="market-stats">
+                            <div><dt>Rank</dt><dd>{m.rank ?? "—"}</dd></div>
+                            <div><dt>1H</dt><dd><Pct value={m.change1h} /></dd></div>
+                            <div><dt>24H</dt><dd><Pct value={m.change24h} /></dd></div>
+                            <div><dt>7D</dt><dd><Pct value={m.change7d} /></dd></div>
+                            <div><dt>Market cap</dt><dd>{compactUsd(m.marketCapUsd)}</dd></div>
+                            <div><dt>Volume 24H</dt><dd>{compactUsd(m.volumeUsd)}</dd></div>
+                          </dl>
+
+                          {/* Only registry assets have candle history: the route
+                              refuses anything it cannot also price in units. */}
+                          {!m.tradeable
+                            ? <p className="holding-chart-msg">{m.code} is quoted for reference only. Veyra does not hold or trade it.</p>
+                            : candlesLoading ? <p className="holding-chart-msg">Loading price history…</p>
+                            : candles && candles.length > 1 ? <CandleChart candles={candles} range={range} label={m.name} />
+                            : <p className="holding-chart-msg">No price history available for {m.code} right now.</p>}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+          {rows.length === 0 && <p className="holding-chart-msg">No markets match “{query}”.</p>}
+        </div>
+      )}
+
+      <p className="market-foot">{data?.disclosure ?? "Market data is indicative. Digital assets are not FDIC insured and can lose value."}</p>
+    </div>
+  );
+}
+
+/**
+ * Asset mark with a three-step fallback: our own 3D render, then the upstream
+ * logo, then a monogram. The table lists coins beyond the four we drew, and a
+ * broken image icon in a price table looks like broken data.
+ */
+function MarketMark({ row, large = false }: { row: MarketRow; large?: boolean }) {
+  const [failed, setFailed] = useState(false);
+  const own = row.tradeable ? assetIcon(row.code) : null;
+  const src = own ?? (failed ? null : row.image);
+  const cls = large ? "market-mark lg" : "market-mark";
+  if (!src) return <span className={`${cls} market-mono`} aria-hidden="true">{row.code.slice(0, 3)}</span>;
+  return <img className={cls} src={src} alt="" aria-hidden="true" width={128} height={128} loading="lazy" decoding="async" onError={() => setFailed(true)} />;
+}
+
+/* ============================================================
    Perks
    ============================================================ */
 export function PerksPage() {
@@ -2246,6 +2510,8 @@ export function AccountsPage() {
         {!account.savingsPockets.length && <EmptyState icon={<PiggyBank size={18} />} title="No savings pockets" text="Create one for a goal, reserve or rainy day." />}
       </div>
 
+      <HoldingsPanel />
+
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New savings pocket" subtitle="Name a goal and set a target. You can move money after it is created.">
         <form className="dash-form" onSubmit={create}>
           <label htmlFor="pocket-name">Pocket name</label><input id="pocket-name" required maxLength={32} placeholder="Emergency fund" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
@@ -2259,6 +2525,208 @@ export function AccountsPage() {
         <form className="dash-form" onSubmit={transfer}><label htmlFor="saving-amount">Amount</label><div className="amount-input"><span>$</span><input autoFocus id="saving-amount" type="number" min="1" step="0.01" required value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" /></div><div className="quick-row">{[50, 100, 250, 500].map(value => <button type="button" key={value} onClick={() => setAmount(String(value))}>{money(value, false)}</button>)}</div><div className="modal-actions"><button type="button" className="ghost-btn" onClick={() => setMove(null)}>Cancel</button><button type="submit" className="solid-btn">Move money</button></div></form>
       </Modal>
     </div>
+  );
+}
+
+/**
+ * Overview tile for the digital asset balance.
+ *
+ * Sits in the slot the rewards tile used to occupy. The 3D coin is a real
+ * rendered asset rather than a flat glyph, so the tile reads as a distinct
+ * class of money at a glance — which is the point, because the number under
+ * it behaves nothing like the deposit balance two tiles over.
+ *
+ * The discipline from the holdings panel carries over verbatim: a total that
+ * is missing a price is never shown as a confident figure. $0.00 is a number
+ * people believe, and believing it here would mean believing their crypto
+ * vanished.
+ */
+function CryptoStat({ index }: { index: number }) {
+  const { data, loading } = useHoldings();
+  const reduce = useReducedMotion();
+
+  const held = data?.holdings.filter(h => h.units !== "0") ?? [];
+  const unpricedHeld = held.filter(h => h.valueUsd === null).length;
+  const everythingDark = held.length > 0 && unpricedHeld === held.length;
+
+  const note = loading ? "Loading…"
+    : !data ? "Balance unavailable right now."
+    : everythingDark ? "No current quote — value hidden rather than guessed."
+    : held.length === 0 ? "Buy BTC, ETH, SOL or USDC from checking."
+    : unpricedHeld > 0 ? `${held.length} held · ${unpricedHeld} without a quote, so this is partial.`
+    : `${held.length} asset${held.length === 1 ? "" : "s"} held · not FDIC insured`;
+
+  return (
+    <motion.div className="stat stat-crypto" {...rise(index)}>
+      <div className="stat-top">
+        <span>Digital assets</span>
+        {data && !data.tradingEnabled
+          ? <span className="chip chip-glass">View only</span>
+          : <span className="chip chip-glass">{unpricedHeld > 0 ? "Partial" : "Live"}</span>}
+      </div>
+
+      <div className="crypto-stat-body">
+        {/* The wrapper owns the hover lift and the glow; Motion owns the img's
+            transform for the float. Separating them keeps CSS and the inline
+            style Motion writes from overwriting each other. */}
+        <span className="crypto-coin-wrap">
+          <span className="crypto-glow" aria-hidden="true" />
+          <motion.img
+            src="/images/icon-crypto-3d.webp" alt="" aria-hidden="true" className="crypto-coin"
+            width={128} height={128} loading="lazy" decoding="async"
+            animate={reduce ? undefined : { y: [0, -5, 0], rotate: [0, 3.5, 0] }}
+            transition={reduce ? undefined : { duration: 5.5, repeat: Infinity, ease: "easeInOut" }}
+          />
+        </span>
+        {loading || !data
+          ? <strong className="stat-value crypto-muted">—</strong>
+          : everythingDark
+            ? <strong className="stat-value crypto-muted">Price unavailable</strong>
+            : <AnimatedMoney value={Number(data.totalUsd)} className="stat-value" cents fromZero />}
+      </div>
+
+      <p className="stat-note">{note}</p>
+      <Link to="/app/accounts" className="stat-link crypto-link">Manage assets <ArrowRight size={13} /></Link>
+    </motion.div>
+  );
+}
+
+/* ============================================================
+   Digital assets
+   ============================================================ */
+/**
+ * Holdings sit below savings pockets, visually separated, and never roll into
+ * the "Total across Veyra" figure above. That separation is the whole point:
+ * a checking balance is money the bank owes you, while a holding is a quantity
+ * whose worth is a market quote that was true a minute ago. Merging them would
+ * produce a single confident number that is wrong between every two ticks.
+ *
+ * An unpriced asset renders as "Price unavailable", never as $0.00 — a zero is
+ * a number people believe.
+ */
+function HoldingsPanel() {
+  const toast = useToast();
+  const { data, loading, reload } = useHoldings();
+  const [trade, setTrade] = useState<{ holding: Holding; side: "buy" | "sell" } | null>(null);
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!trade || busy) return;
+    const value = amount.trim();
+    if (!value || Number.parseFloat(value) <= 0) return toast({ tone: "error", title: "Enter an amount above zero" });
+    setBusy(true);
+    try {
+      const result = await tradeHolding(trade.holding.asset, trade.side, value);
+      setTrade(null); setAmount("");
+      toast({
+        tone: "success",
+        title: `${result.side === "buy" ? "Bought" : "Sold"} ${result.quantity} ${result.asset}`,
+        description: `${result.amountUsd} at ${result.priceUsd} per ${result.asset}.`,
+      });
+      await reload();
+    } catch (err) {
+      toast({ tone: "error", title: "Trade didn't go through", description: err instanceof Error ? err.message : undefined });
+    } finally { setBusy(false); }
+  };
+
+  if (loading || !data) return null;
+  const owned = data.holdings.filter(h => h.units !== "0");
+
+  return (
+    <>
+      <div className="savings-head holdings-head">
+        <div><h2>Digital assets</h2><p>Held separately from your deposit account. {data.disclosure}</p></div>
+        <span>{owned.length ? `${owned.length} held` : "None held"}</span>
+      </div>
+
+      {data.partial && (
+        <p className="holdings-warning"><AlertTriangle size={14} /> A price feed is unavailable, so the total below is incomplete.</p>
+      )}
+
+      <div className="holdings-grid">
+        {data.holdings.map((holding, index) => (
+          <motion.article key={holding.asset} className="holding-card"
+            initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * .04, duration: .35, ease }}>
+            <div className="holding-top">
+              <span className="holding-mark">
+                <img src={assetIcon(holding.asset)} alt="" aria-hidden="true" width={128} height={128} loading="lazy" decoding="async" />
+              </span>
+              <div className="holding-id">
+                <span className="holding-code">{holding.asset}</span>
+                <strong className="holding-name">{holding.name}</strong>
+              </div>
+              <span className={`chip ${holding.kind === "stablecoin" ? "chip-green" : ""}`}>{holding.kind === "stablecoin" ? "Stablecoin" : "Crypto"}</span>
+            </div>
+            <div className="holding-value">
+              {holding.valueUsd === null
+                ? <span className="holding-unpriced">Price unavailable</span>
+                : <><b>{holding.valueUsd}</b><small>{holding.quantity} {holding.asset}</small></>}
+            </div>
+            <div className="holding-price">
+              {holding.priceUsd ? <>{holding.priceUsd} per {holding.asset} <em>{quoteAge(holding.quotedAt)}</em></> : <>No current quote</>}
+            </div>
+            <div className="holding-actions">
+              {data.tradingEnabled ? (
+                <>
+                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "buy" }); setAmount(""); }} disabled={!holding.priceUsd}>Buy</button>
+                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "sell" }); setAmount(""); }} disabled={!holding.priceUsd || holding.units === "0"}>Sell</button>
+                </>
+              ) : <span className="holding-locked">View only</span>}
+              <button
+                type="button" className="ghost-btn sm holding-chart-btn"
+                onClick={() => navigate(`/app/markets?asset=${holding.asset}`)}
+              >
+                <LineChart size={13} /> Chart
+              </button>
+            </div>
+          </motion.article>
+        ))}
+      </div>
+
+      <Modal
+        open={!!trade} onClose={() => { setTrade(null); setAmount(""); }}
+        title={trade ? `${trade.side === "buy" ? "Buy" : "Sell"} ${trade.holding.asset}` : ""}
+        subtitle={trade
+          ? trade.side === "buy"
+            ? `Funded from checking at ${trade.holding.priceUsd} per ${trade.holding.asset}.`
+            : `You hold ${trade.holding.quantity} ${trade.holding.asset}. Proceeds return to checking.`
+          : ""}
+      >
+        <form className="dash-form" onSubmit={submit}>
+          {/* The mark is repeated here on purpose: this is the last screen
+              before money moves, and confirming which asset you're about to
+              trade shouldn't depend on reading three letters. */}
+          {trade && (
+            <div className="trade-asset">
+              <img src={assetIcon(trade.holding.asset)} alt="" aria-hidden="true" width={128} height={128} decoding="async" />
+              <div>
+                <strong>{trade.holding.name}</strong>
+                <small>{trade.holding.priceUsd ? `${trade.holding.priceUsd} per ${trade.holding.asset}` : "No current quote"}</small>
+              </div>
+            </div>
+          )}
+          {/* Buys are entered in dollars and sells in units, so selling a whole
+              position lands on exactly zero instead of leaving rounding dust. */}
+          <label htmlFor="trade-amount">{trade?.side === "buy" ? "Amount to spend" : `Amount of ${trade?.holding.asset ?? ""}`}</label>
+          <div className="amount-input">
+            {trade?.side === "buy" && <span>$</span>}
+            <input autoFocus id="trade-amount" type="number" min="0" step="any" required value={amount}
+              onChange={e => setAmount(e.target.value)} placeholder={trade?.side === "buy" ? "0.00" : "0.00000000"} />
+          </div>
+          {trade?.side === "buy"
+            ? <div className="quick-row">{[25, 50, 100, 250].map(v => <button type="button" key={v} onClick={() => setAmount(String(v))}>{money(v, false)}</button>)}</div>
+            : <div className="quick-row"><button type="button" onClick={() => setAmount(trade?.holding.quantity ?? "")}>Sell all</button></div>}
+          <p className="holding-disclosure">Digital assets are not FDIC insured, are not deposits, and can lose value.</p>
+          <div className="modal-actions">
+            <button type="button" className="ghost-btn" onClick={() => { setTrade(null); setAmount(""); }}>Cancel</button>
+            <button type="submit" className="solid-btn" disabled={busy}>{busy ? "Working…" : trade?.side === "buy" ? "Buy" : "Sell"}</button>
+          </div>
+        </form>
+      </Modal>
+    </>
   );
 }
 
@@ -2964,6 +3432,108 @@ export function KYCPage() {
 /* ============================================================
    Security center
    ============================================================ */
+/**
+ * Passkey management.
+ *
+ * A passkey is the only credential on the account that cannot be phished,
+ * reused across sites, or read out of a breach of Veyra's database — the
+ * private half never leaves the member's device. This panel is where they are
+ * added and removed; the ceremony itself lives in src/lib/passkey.ts.
+ */
+function PasskeysPanel() {
+  const toast = useToast();
+  const [keys, setKeys] = useState<Passkey[] | null>(null);
+  const [canAdd, setCanAdd] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    void listPasskeys()
+      .then(result => { if (live) setKeys(result.passkeys); })
+      .catch(() => { if (live) setKeys([]); });
+    void passkeyRegistrationAvailable().then(available => { if (live) setCanAdd(available); });
+    return () => { live = false; };
+  }, []);
+
+  const add = async () => {
+    setAdding(true);
+    try {
+      const created = await createPasskey(suggestPasskeyLabel());
+      setKeys(current => [created, ...(current ?? [])]);
+      toast({ tone: "success", title: `${created.label} added`, description: "You can now sign in without your password." });
+    } catch (err) {
+      // Backing out of the OS prompt is a decision, not an error.
+      if (isPasskeyCancellation(err)) return;
+      toast({ tone: "info", title: "Couldn't add that passkey", description: passkeyErrorMessage(err) });
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const remove = async (key: Passkey) => {
+    setRemoving(key.id);
+    try {
+      await deletePasskey(key.id);
+      setKeys(current => (current ?? []).filter(k => k.id !== key.id));
+      toast({ tone: "info", title: `${key.label} removed` });
+    } catch (err) {
+      toast({ tone: "info", title: "Couldn't remove that passkey", description: (err as Error).message });
+    } finally {
+      setRemoving("");
+    }
+  };
+
+  const supported = passkeySupported();
+  return (
+    <section className="panel sessions-panel">
+      <div className="panel-head">
+        <div><h2>Passkeys</h2><span className="panel-sub">Sign in with your fingerprint, face or device PIN</span></div>
+        {supported && canAdd && (
+          <button type="button" className="ghost-btn sm" onClick={add} disabled={adding}>
+            {adding ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}
+            {adding ? "Waiting for your device…" : "Add passkey"}
+          </button>
+        )}
+      </div>
+
+      {!supported ? (
+        <p className="passkey-empty">This browser doesn't support passkeys. Your password still works everywhere.</p>
+      ) : keys === null ? (
+        <p className="passkey-empty">Loading…</p>
+      ) : keys.length === 0 ? (
+        <p className="passkey-empty">
+          No passkeys yet. A passkey replaces your password with the lock you already use on this device —
+          and unlike a password it can't be phished, guessed, or reused anywhere else.
+          {!canAdd && " This device has no fingerprint, face or PIN set up, so add one from a phone or laptop that does."}
+        </p>
+      ) : (
+        <div className="session-list">
+          {keys.map(key => (
+            <div className="session-row" key={key.id}>
+              <span className="session-icon"><KeyRound size={17} /></span>
+              <div className="session-main">
+                <strong>
+                  {key.label}
+                  {key.syncedToCloud && <span className="chip chip-green">Synced</span>}
+                </strong>
+                <small>
+                  Added {new Date(key.createdAt).toLocaleDateString()}
+                  {key.lastUsedAt ? ` · last used ${timeAgo(key.lastUsedAt)}` : " · never used"}
+                </small>
+              </div>
+              <span />
+              <button type="button" className="ghost-btn sm" onClick={() => remove(key)} disabled={removing === key.id}>
+                <Trash2 size={13} /> Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function SecurityCenterPage() {
   const { account, setPreference, revokeSession, toggleTrustedSession, freezeAllCards } = useAcct();
   const toast = useToast();
@@ -2978,6 +3548,7 @@ export function SecurityCenterPage() {
         <section className="panel"><div className="panel-head"><div><h2>Sign-in protection</h2><span className="panel-sub">Recommended settings</span></div></div><Toggle checked={prefs.twoFactor} onChange={value => { setPreference("twoFactor", value); toast({ tone: "info", title: `Two-factor authentication ${value ? "on" : "off"}` }); }} label="Two-factor authentication" description="Require a one-time code on new devices." /><Toggle checked={prefs.loginAlerts} onChange={value => { setPreference("loginAlerts", value); toast({ tone: "info", title: `Login alerts ${value ? "on" : "off"}` }); }} label="New device alerts" description="Notify me when a new browser signs in." /><div className="security-tip"><Lock size={15} /><span>Your password is stored server-side as a scrypt hash — never in plain text.</span></div></section>
         <section className="panel emergency-panel"><div className="panel-head"><div><h2>Emergency controls</h2><span className="panel-sub">Use these if something feels wrong</span></div></div><button type="button" className="emergency-action" onClick={() => setConfirmFreeze(true)}><Snowflake size={18} /><span><b>Freeze every card</b><small>Immediately decline new purchases on all cards.</small></span><ArrowRight size={15} /></button><Link className="emergency-action" to="/app/disputes"><ShieldAlert size={18} /><span><b>Report a transaction</b><small>Open and track a card-purchase dispute.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/kyc"><UserRound size={18} /><span><b>Review KYC</b><small>Check your identity verification status and next steps.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/settings"><KeyRound size={18} /><span><b>Change password</b><small>Update your account password.</small></span><ArrowRight size={15} /></Link></section>
       </div>
+      <PasskeysPanel />
       <section className="panel sessions-panel"><div className="panel-head"><div><h2>Devices & sessions</h2><span className="panel-sub">Sign out a device you no longer use or recognize</span></div></div><div className="session-list">{account.sessions.map(session => <div className="session-row" key={session.id}><span className="session-icon">{session.browser.toLowerCase().includes("mobile") ? <Smartphone size={17} /> : <Monitor size={17} />}</span><div className="session-main"><strong>{session.device} {session.current && <span className="chip chip-green">This device</span>}</strong><small>{session.browser} · {session.location} · {timeAgo(session.lastActive)}</small></div><button type="button" className={`trust-btn ${session.trusted ? "trusted" : ""}`} onClick={() => toggleTrustedSession(session.id)}>{session.trusted ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}{session.trusted ? "Trusted" : "Untrusted"}</button>{!session.current && <button type="button" className="ghost-btn sm" onClick={() => { revokeSession(session.id); toast({ tone: "success", title: `${session.device} signed out` }); }}>Sign out</button>}</div>)}</div></section>
       <Modal open={confirmFreeze} onClose={() => setConfirmFreeze(false)} title="Freeze every card?" subtitle="All new card purchases will be declined until you unfreeze cards individually."><div className="freeze-confirm"><Snowflake size={30} /><p>This does not close cards or cancel transfers that are already processing.</p><div className="modal-actions"><button type="button" className="ghost-btn" onClick={() => setConfirmFreeze(false)}>Cancel</button><button type="button" className="danger-btn" onClick={() => { freezeAllCards(); setConfirmFreeze(false); toast({ tone: "info", title: "All cards frozen" }); }}>Freeze all cards</button></div></div></Modal>
     </div>
@@ -3198,6 +3769,7 @@ export function ClassicApp() {
         <Route path="payments" element={<PaymentsPage />} />
         <Route path="bills" element={<BillsPage />} />
         <Route path="scout" element={<ScoutWorkspace />} />
+        <Route path="markets" element={<MarketsPage />} />
         <Route path="rewards" element={<RewardsPage />} />
         <Route path="perks" element={<PerksPage />} />
         <Route path="statements" element={<StatementsPage />} />

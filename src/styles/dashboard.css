@@ -154,6 +154,36 @@
 .balance-bars-axis { stroke: rgba(24,23,29,.1); stroke-width: 1; }
 .stat-meta .down { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: #a04545; }
 .stat-dark { border-color: transparent; background: radial-gradient(circle at 100% 0, #5b43a3 0, transparent 55%), #221a2f; color: #fff; }
+
+/* Digital assets tile — deliberately a different dark from .stat-dark, so the
+   rewards tile and this one read as two different kinds of money rather than
+   a matched pair. The warm gold bloom comes from the coin's rim and ties the
+   3D asset into the surface it sits on. */
+.stat-crypto { border-color: transparent; color: #fff; background:
+  radial-gradient(circle at 8% 104%, rgba(206,161,88,.26) 0, transparent 48%),
+  radial-gradient(circle at 104% -6%, #6a4fc0 0, transparent 56%), #19131f; }
+.stat-crypto .stat-note { color: rgba(255,255,255,.62); }
+.crypto-stat-body { position: relative; z-index: 1; display: flex; align-items: center; gap: 13px; margin-top: 8px; }
+.crypto-stat-body .stat-value { margin-top: 0; min-width: 0; }
+.crypto-muted { color: rgba(255,255,255,.72); font-size: 15px !important; letter-spacing: -.01em !important; }
+
+.crypto-coin-wrap { position: relative; flex: none; width: 52px; height: 52px; display: grid; place-items: center;
+  transition: transform .4s var(--ease); }
+.stat-crypto:hover .crypto-coin-wrap { transform: translateY(-3px) scale(1.07); }
+.crypto-coin { position: relative; z-index: 1; width: 52px; height: 52px; display: block;
+  filter: drop-shadow(0 7px 13px rgba(0,0,0,.5)); }
+
+/* Sits behind the coin and breathes, so the tile has a light source rather
+   than a flat sticker. Pulled out of flow entirely — pointer-events: none —
+   because it must never intercept the Manage assets link. */
+.crypto-glow { position: absolute; z-index: 0; width: 112px; height: 112px; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, rgba(212,168,92,.5) 0, rgba(117,88,220,.26) 44%, transparent 72%);
+  filter: blur(11px); animation: cryptoPulse 6s ease-in-out infinite; }
+.stat-crypto:hover .crypto-glow { background: radial-gradient(circle, rgba(226,183,108,.62) 0, rgba(130,100,236,.32) 44%, transparent 72%); }
+@keyframes cryptoPulse { 0%, 100% { opacity: .6; transform: scale(.94); } 50% { opacity: 1; transform: scale(1.08); } }
+
+.crypto-link { color: #cbb4ff; }
+.crypto-link:hover { color: #e4d9ff; }
 .stat-dark .stat-top > span:first-child, .stat-dark .stat-note { color: #bdb5c9; }
 .stat-scout { border-color: #e1d7fd; background: linear-gradient(180deg, #fff, #faf7ff); }
 .stat-link { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 5px; margin-top: auto; padding-top: 12px; font-size: 12.5px; font-weight: 600; color: var(--violet); }
@@ -1128,4 +1158,282 @@
   .kyc-status-row { flex-direction: column; align-items: flex-start; }
   .kyc-limits-head span:nth-child(2), .kyc-limit-row em { display: none; }
   .kyc-limits-head, .kyc-limit-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+/* Passkeys (security center). Reuses .session-row for the list itself — a
+   passkey and a session are the same shape of thing on screen. */
+.passkey-empty { margin: 4px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+
+/* Digital assets ---------------------------------------------------------- */
+/* Visually quieter than the savings pockets above: a holding is a market
+   position, not money the bank owes you, and the card should not borrow the
+   confidence of a deposit balance. Hence no color wash, flatter surface, and
+   the quote timestamp printed in plain sight. */
+.holdings-head > span { background: #eef1f6; color: var(--muted); }
+.holdings-warning { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 10px 13px; border: 1px solid #f0d9a8; border-radius: 11px; background: #fdf7e8; color: #8a6414; font-size: 12.5px; }
+.holdings-warning svg { flex: none; }
+.holdings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px,1fr)); gap: 16px; }
+.holding-card { display: flex; flex-direction: column; min-height: 186px; padding: 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--white); }
+.holding-top { display: flex; align-items: center; gap: 11px; }
+.holding-id { min-width: 0; margin-right: auto; display: flex; flex-direction: column; gap: 1px; }
+.holding-code { font: 600 13px var(--display); letter-spacing: .04em; }
+.holding-name { font: 500 12px var(--display); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The mark carries a drop-shadow rather than sitting in a tinted chip: these
+   are rendered 3D objects with their own lighting, and a flat background
+   plate behind them reads as a sticker on a sticker. */
+.holding-mark { flex: none; width: 38px; height: 38px; display: block; }
+.holding-mark img { width: 100%; height: 100%; display: block; filter: drop-shadow(0 3px 6px rgba(24,23,29,.22)); transition: transform .35s var(--ease); }
+.holding-card:hover .holding-mark img { transform: translateY(-2px) scale(1.07); }
+
+.holding-value { margin-top: 14px; min-height: 40px; }
+.holding-value b { display: block; font: 600 24px var(--display); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.holding-value small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* An absent price is stated, never rendered as a zero a member would believe. */
+.holding-unpriced { display: inline-block; margin-top: 7px; font-size: 13px; font-weight: 600; color: #8a6414; }
+.holding-price { margin-top: 10px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.holding-price em { font-style: normal; opacity: .75; }
+.holding-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: auto; padding-top: 14px; }
+.holding-actions button { width: 100%; justify-content: center; }
+.holding-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.holding-locked { margin: auto 0 0; padding-top: 14px; font-size: 11.5px; color: var(--muted); }
+.holding-disclosure { margin: 2px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+
+/* Asset confirmation row at the top of the buy/sell dialog. */
+.trade-asset { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); }
+.trade-asset img { flex: none; width: 42px; height: 42px; display: block; filter: drop-shadow(0 3px 7px rgba(24,23,29,.24)); }
+.trade-asset strong { display: block; font: 600 14px var(--display); }
+.trade-asset small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Price history ----------------------------------------------------------- */
+.holding-actions { align-items: center; }
+.holding-chart-btn { grid-column: 1 / -1; justify-content: center; }
+.holding-chart-btn.on { border-color: var(--violet); color: var(--violet); background: #f4f1fe; }
+.holding-locked { margin: 0; align-self: center; font-size: 11.5px; color: var(--muted); }
+
+.holding-chart-panel { overflow: hidden; margin-top: 16px; border: 1px solid var(--line); border-radius: 18px; background: var(--white); }
+.holding-chart-head { display: flex; align-items: center; gap: 14px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
+.holding-chart-title { display: flex; align-items: center; gap: 11px; margin-right: auto; min-width: 0; }
+.holding-chart-title img { flex: none; width: 34px; height: 34px; filter: drop-shadow(0 3px 6px rgba(24,23,29,.22)); }
+.holding-chart-title strong { display: block; font: 600 14px var(--display); }
+.holding-chart-title small { display: block; margin-top: 1px; font-size: 11.5px; color: var(--muted); }
+.holding-chart-msg { margin: 0; padding: 40px 16px; text-align: center; font-size: 13px; color: var(--muted); }
+
+.holding-range { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--paper); }
+.holding-range button { height: 27px; padding: 0 11px; border: 0; border-radius: 7px; background: transparent; font-size: 11.5px; font-weight: 600; color: var(--muted); transition: background .18s, color .18s; }
+.holding-range button:hover { color: var(--ink); }
+.holding-range button.on { background: var(--white); color: var(--ink); box-shadow: 0 1px 3px rgba(24,23,29,.12); }
+
+.candle-chart { padding: 14px 16px 6px; }
+.candle-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.candle-head strong { font: 600 22px var(--display); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.candle-head span { margin-left: 9px; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.candle-head small { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.candle-up { color: #3f8358; }
+.candle-down { color: #a04545; }
+
+/* touch-action keeps a vertical swipe scrolling the page instead of being
+   captured as a crosshair drag. */
+.candle-svg { width: 100%; height: auto; display: block; touch-action: pan-y; }
+.candle-grid { stroke: var(--line); stroke-width: 1; }
+.candle-axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.candle-cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+
+.candle-readout { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 2px 0 10px; }
+.candle-readout div { display: flex; align-items: baseline; gap: 6px; }
+.candle-readout dt { font-size: 11px; color: var(--muted); }
+.candle-readout dd { margin: 0; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 720px) {
+  .holding-chart-head { flex-wrap: wrap; }
+  .holding-range { order: 3; width: 100%; justify-content: space-between; }
+}
+
+/* ============================================================
+   Markets page
+   ============================================================ */
+.market-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
+
+.market-search { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; max-width: 340px; height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--muted); }
+.market-search:focus-within { border-color: var(--violet); box-shadow: 0 0 0 3px rgb(117 88 220 / .12); }
+.market-search svg { flex: none; }
+.market-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; font-size: 13px; color: var(--ink); }
+
+.chip-toggle { height: 38px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; transition: background .18s, color .18s, border-color .18s; }
+.chip-toggle:hover { border-color: #c9c3b8; color: var(--ink); }
+.chip-toggle.on { border-color: var(--violet); background: var(--violet); color: #fff; }
+
+.market-meta { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* The table is wider than a phone; let it scroll sideways inside its card
+   rather than squeezing nine numeric columns into 360px. */
+.market-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 16px; background: #fff; }
+.market-table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 13px; }
+
+.market-table thead th { position: sticky; top: 0; z-index: 1; padding: 0; border-bottom: 1px solid var(--line); background: #faf8f4; text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.market-table thead th button { display: inline-flex; align-items: center; gap: 5px; width: 100%; padding: 12px 14px; border: 0; background: none; font: inherit; color: inherit; text-align: inherit; cursor: pointer; }
+.market-table thead th button:hover { color: var(--ink); }
+.market-table thead th button span { font-size: 8px; color: var(--violet); }
+.market-table thead th.market-num button { justify-content: flex-end; }
+.market-table thead th:not(:has(button)) { padding: 12px 14px; }
+.market-table thead th.market-num:not(:has(button)) { text-align: right; }
+
+.market-table tbody td { padding: 11px 14px; border-bottom: 1px solid #f1ede5; vertical-align: middle; }
+.market-table tbody tr:last-child td { border-bottom: 0; }
+.market-table tbody tr:hover td { background: #fbfaf7; }
+.market-table tbody tr.is-open td { background: #f7f4fd; }
+
+.market-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.market-rank { width: 44px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.market-price { font-weight: 600; }
+.market-flat { color: var(--muted); }
+
+.market-asset { display: flex; align-items: center; gap: 10px; }
+.market-asset strong { display: block; font-size: 13px; font-weight: 600; }
+.market-asset small { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); letter-spacing: .03em; }
+
+.market-mark { width: 28px; height: 28px; flex: none; border-radius: 50%; object-fit: contain; }
+.market-mark.lg { width: 38px; height: 38px; }
+.market-mono { display: grid; place-items: center; background: #efeae1; font-size: 9.5px; font-weight: 700; letter-spacing: .02em; color: var(--muted); }
+
+.market-badge { padding: 1px 6px; border-radius: 5px; background: #ece6fb; font-size: 9.5px; font-style: normal; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--violet); }
+
+.market-spark-col { width: 120px; }
+.market-spark { width: 110px; height: 28px; display: block; }
+
+.market-held b { display: block; font-size: 13px; font-weight: 600; }
+.market-held small { font-size: 11px; color: var(--muted); }
+
+.market-actions { width: 1%; white-space: nowrap; }
+.market-actions .ghost-btn.on { border-color: var(--violet); color: var(--violet); }
+
+.market-chart-row td { padding: 0 !important; background: #f7f4fd !important; }
+.market-chart { padding: 16px 18px 20px; border-top: 1px solid #e7e0f5; }
+.market-chart .holding-chart-head { padding: 0 0 13px; }
+.market-chart .holding-chart-msg { padding: 30px 14px; }
+
+.market-foot { margin: 14px 0 0; font-size: 11.5px; color: var(--muted); }
+
+/* Sort control that replaces the header row once the table stacks. */
+.market-sort-mobile { display: none; align-items: center; gap: 8px; height: 38px; padding: 0 10px 0 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.market-sort-mobile span { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.market-sort-mobile select { min-width: 0; border: 0; outline: 0; background: none; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+
+/* Columns the layout dropped, restated inside the expanded row. */
+.market-stats { display: none; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid #e7e0f5; border-radius: 12px; background: #fff; }
+.market-stats div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.market-stats dt { font-size: 10.5px; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); }
+.market-stats dd { margin: 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------------------
+   Responsive markets table.
+
+   These are CONTAINER queries, not media queries, and deliberately so. The
+   constraint is how much room the table actually has, which is not the
+   viewport: above 1100px the shell spends 264px on the sidebar, so a 1160px
+   window leaves the table ~830px. A viewport breakpoint would keep showing
+   eleven columns in a box too narrow to hold them.
+
+   Budget per tier, measured against the column content:
+     > 1100   all eleven                              ~1100px
+     <= 1100  less 1H and volume                       ~945px
+     <=  950  less rank, 7D and market cap             ~740px
+     <=  760  stacked cards, nothing horizontal
+   Anything dropped reappears in .market-stats inside the expanded row.
+--------------------------------------------------------------------------- */
+.markets-page { container-type: inline-size; container-name: markets; }
+
+@container markets (max-width: 1100px) {
+  .market-table thead th:nth-child(4),
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(4),   /* 1H     */
+  .market-table thead th:nth-child(9),
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(9) {  /* volume */
+    display: none;
+  }
+  .market-stats { display: grid; }
+}
+
+@container markets (max-width: 950px) {
+  .market-table thead th:nth-child(1),
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(1),   /* rank    */
+  .market-table thead th:nth-child(6),
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(6),   /* 7D      */
+  .market-table thead th:nth-child(8),
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(8) {  /* mkt cap */
+    display: none;
+  }
+}
+
+/* The table stops being a table. */
+@container markets (max-width: 760px) {
+  .market-table-wrap { overflow-x: visible; border: 0; border-radius: 0; background: none; }
+  .market-table { display: block; }
+  .market-table thead { display: none; }
+  .market-table tbody { display: block; }
+
+  /* Every market becomes a card. :not() keeps the full-width chart row out of
+     the grid — it holds a single cell that is also nth-child(1), and would
+     otherwise be hidden along with the rank column. */
+  .market-table tbody tr:not(.market-chart-row) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "asset price"
+      "spark change"
+      "hold  action";
+    align-items: center;
+    gap: 8px 12px;
+    margin: 0 0 10px;
+    padding: 13px 14px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: #fff;
+  }
+  .market-table tbody tr:not(.market-chart-row) > td { padding: 0; border: 0; background: none; }
+  .market-table tbody tr:hover td { background: none; }
+  .market-table tbody tr.is-open { border-color: #cfc0f2; background: #fbf9ff; }
+  .market-table tbody tr.is-open td { background: none; }
+
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(2)  { grid-area: asset; }
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(3)  { grid-area: price; text-align: right; font-size: 14.5px; }
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(5)  { grid-area: change; text-align: right; font-size: 12.5px; }
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(7)  { grid-area: spark; display: block; }
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(10) { grid-area: hold; text-align: left; }
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(11) { grid-area: action; }
+
+  /* An em-dash under every unheld coin is noise, not information. */
+  .market-table tbody tr:not(.market-chart-row) > td:nth-child(10) .market-flat { display: none; }
+  .market-held b { font-size: 12.5px; }
+
+  .market-spark-col { width: auto; }
+  .market-spark { width: 100%; max-width: 150px; height: 26px; }
+
+  .market-table tbody tr.market-chart-row { display: block; }
+  .market-table tbody tr.market-chart-row > td { display: block; padding: 0; background: none; }
+  .market-chart { margin: -4px 0 12px; padding: 14px 14px 16px; border: 1px solid #cfc0f2; border-radius: 14px; background: #fbf9ff; }
+
+  .market-sort-mobile { display: inline-flex; }
+  .market-meta { order: 4; margin-left: 0; width: 100%; }
+
+  /* Range buttons take their own line rather than squeezing the title. */
+  .market-chart .holding-chart-head { flex-wrap: wrap; gap: 10px; padding: 0 0 12px; }
+  .market-chart .holding-range { order: 3; width: 100%; justify-content: space-between; }
+  .market-chart .candle-readout { gap: 6px 16px; }
+}
+
+@container markets (max-width: 560px) {
+  .market-search { flex: 1 1 100%; max-width: none; }
+  .market-sort-mobile { flex: 1 1 auto; }
+  .chip-toggle { flex: 0 0 auto; }
+  .market-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .market-mark { width: 26px; height: 26px; }
+  .market-asset { gap: 9px; }
+  .market-table tbody tr:not(.market-chart-row) { padding: 12px; gap: 7px 10px; }
+  .holding-chart-title strong { font-size: 13.5px; }
+  .market-spark { max-width: 110px; }
+}
+
+@container markets (max-width: 400px) {
+  .market-badge { display: none; }
+  .market-spark { max-width: 88px; }
 }
