@@ -92,13 +92,13 @@ export function Hero() {
       </div>
       <div className="hero-copy">
         <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .7 }}>
-          <Logo compact to={null} /><span className="eyebrow">AI-powered business finance</span>
+          <Logo compact to={null} /><span className="eyebrow">AI-powered operating cash</span>
         </motion.div>
-        <motion.h1 initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .8, delay: .08, ease }}>Money that moves<br /><em>your business forward.</em></motion.h1>
-        <motion.p initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .7, delay: .18 }}>Veyra is the intelligent business account that finds savings, earns rewards, and keeps every dollar working harder.</motion.p>
+        <motion.h1 initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .8, delay: .08, ease }}>Turn every payment<br /><em>into a smarter move.</em></motion.h1>
+        <motion.p initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .7, delay: .18 }}>Veyra brings your accounts, rewards, and spending intelligence together so you can move cash faster and save more without the busywork.</motion.p>
         <motion.div className="hero-actions" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: .28 }}>
-          <Btn to={user ? "/app" : "/signup"}>{user ? "Go to dashboard" : "Open an account"}</Btn>
-          <Link to="/platform" className="text-link">Explore Veyra <ArrowRight size={15} /></Link>
+          <Btn to={user ? "/app" : "/signup"}>{user ? "Go to dashboard" : "Build my account"}</Btn>
+          <Link to="/platform" className="text-link">See the platform <ArrowRight size={15} /></Link>
         </motion.div>
         <HeroCalculator />
       </div>
