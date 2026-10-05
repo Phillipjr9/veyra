@@ -5,7 +5,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
   Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap, LineChart,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
 import { Footer } from "../../components/Chrome";
@@ -23,7 +23,11 @@ import {
   suggestPasskeyLabel, passkeyErrorMessage, isPasskeyCancellation, type Passkey,
 } from "../../lib/passkey";
 import { useAuth } from "../../lib/auth";
-import { tradeHolding, quoteAge, useHoldings, assetIcon, type Holding } from "../../lib/holdings";
+import {
+  tradeHolding, quoteAge, useHoldings, useCandles, assetIcon,
+  CANDLE_RANGES, RANGE_LABEL, type Holding, type CandleRange,
+} from "../../lib/holdings";
+import { CandleChart } from "../../components/CandleChart";
 import { BackButton } from "../../components/BackButton";
 import { lockScroll } from "../../lib/scrollLock";
 import {
@@ -2344,6 +2348,10 @@ function HoldingsPanel() {
   const [trade, setTrade] = useState<{ holding: Holding; side: "buy" | "sell" } | null>(null);
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
+  const [charted, setCharted] = useState<string | null>(null);
+  const [range, setRange] = useState<CandleRange>("7d");
+  const chartAsset = data?.holdings.find(h => h.asset === charted) ?? null;
+  const { candles, loading: candlesLoading } = useCandles(charted, range);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -2401,15 +2409,56 @@ function HoldingsPanel() {
             <div className="holding-price">
               {holding.priceUsd ? <>{holding.priceUsd} per {holding.asset} <em>{quoteAge(holding.quotedAt)}</em></> : <>No current quote</>}
             </div>
-            {data.tradingEnabled ? (
-              <div className="holding-actions">
-                <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "buy" }); setAmount(""); }} disabled={!holding.priceUsd}>Buy</button>
-                <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "sell" }); setAmount(""); }} disabled={!holding.priceUsd || holding.units === "0"}>Sell</button>
-              </div>
-            ) : <p className="holding-locked">View only</p>}
+            <div className="holding-actions">
+              {data.tradingEnabled ? (
+                <>
+                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "buy" }); setAmount(""); }} disabled={!holding.priceUsd}>Buy</button>
+                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "sell" }); setAmount(""); }} disabled={!holding.priceUsd || holding.units === "0"}>Sell</button>
+                </>
+              ) : <span className="holding-locked">View only</span>}
+              <button
+                type="button" className={`ghost-btn sm holding-chart-btn ${charted === holding.asset ? "on" : ""}`}
+                aria-expanded={charted === holding.asset}
+                onClick={() => setCharted(c => c === holding.asset ? null : holding.asset)}
+              >
+                <LineChart size={13} /> Chart
+              </button>
+            </div>
           </motion.article>
         ))}
       </div>
+
+      <AnimatePresence>
+        {chartAsset && (
+          <motion.section
+            key={chartAsset.asset} className="holding-chart-panel"
+            initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: .3, ease }}
+          >
+            <div className="holding-chart-head">
+              <span className="holding-chart-title">
+                <img src={assetIcon(chartAsset.asset)} alt="" aria-hidden="true" width={128} height={128} />
+                <span><strong>{chartAsset.name}</strong><small>{chartAsset.asset} · price history</small></span>
+              </span>
+              <div className="holding-range" role="group" aria-label="Chart range">
+                {CANDLE_RANGES.map(r => (
+                  <button key={r} type="button" className={range === r ? "on" : ""} aria-pressed={range === r} onClick={() => setRange(r)}>
+                    {RANGE_LABEL[r]}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setCharted(null)} aria-label="Close chart"><X size={15} /></button>
+            </div>
+
+            {/* Three distinct states. "No history" is not "flat" — a chart that
+                renders an empty series as a straight line is making a claim
+                about the market that nobody verified. */}
+            {candlesLoading ? <p className="holding-chart-msg">Loading price history…</p>
+              : candles && candles.length > 1 ? <CandleChart candles={candles} range={range} label={chartAsset.name} />
+              : <p className="holding-chart-msg">No price history available for {chartAsset.asset} right now.</p>}
+          </motion.section>
+        )}
+      </AnimatePresence>
 
       <Modal
         open={!!trade} onClose={() => { setTrade(null); setAmount(""); }}

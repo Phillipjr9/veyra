@@ -309,7 +309,8 @@ funds) to the status columns.
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
   rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications,
-  digital asset holdings (`GET /api/me/holdings`, `POST /api/me/holdings/trade`)
+  digital asset holdings (`GET /api/me/holdings`, `POST /api/me/holdings/trade`,
+  `GET /api/me/holdings/:asset/candles`)
 - **Admin** — `GET /api/admin/state` (console aggregate: users, accounts, ledger, disputes,
   KYC queue, audit, role matrix, settings) `· overview · members · staff · roles · audit`,
   member detail/adjust/status, KYC request/queue/decision, risk dispute queue + advance,
@@ -578,10 +579,38 @@ the system:
 A feed that answers but carries nothing usable counts as a failure: the last
 good quotes survive rather than being replaced by nothing.
 
-Tests never touch the network — they point `CRYPTO_PRICES_URL` at a local stub,
-so the real fetch, cache, timeout and staleness logic all still run. For local
-work without egress, `node scripts/dev-prices.mjs` serves the same shape with
-prices that drift.
+Tests never touch the network — they point `CRYPTO_PRICES_URL` and
+`CRYPTO_OHLC_URL` at a local stub, so the real fetch, cache, timeout and
+staleness logic all still run. For local work without egress,
+`node scripts/dev-prices.mjs` serves both shapes with prices that drift and
+deterministic candles.
+
+### Price history and the API quota
+
+Each asset card opens a candlestick chart over 24H / 7D / 30D / 90D, drawn by
+hand in SVG (`src/components/CandleChart.tsx`) — recharts is a dependency but
+has no candlestick primitive, and a custom Bar shape fighting the library's
+scales for wick placement is more code than the SVG. OHLC comes from
+`/coins/{id}/ohlc` via `GET /api/me/holdings/:asset/candles?range=`, cached per
+(asset, range) with a TTL matched to candle width (5min / 30min / 1h / 6h) and
+fetched only when a chart is actually opened.
+
+**Watch the quota.** CoinGecko's free Demo tier allows 10,000 calls/month:
+
+| Spot TTL | Calls/day | Calls/month | Against a 10,000 cap |
+|---|---|---|---|
+| 60s | 1,440 | 43,200 | exhausted in ~7 days |
+| 300s *(default)* | 288 | 8,640 | 86% — little room for charts |
+| 600s | 144 | 4,320 | 43% |
+
+At the 300s default, spot alone uses 86% of the free allowance, so **a
+production deployment serving real traffic needs the paid Basic plan**
+(~$35/month, 100k credits). Development and demo use fit comfortably in the
+free tier.
+
+A missing series is a **503 with `crypto_no_history`**, never an empty array.
+An empty series draws a flat line, and a flat line claims the asset did not
+move — which is a different statement from "we have no data".
 
 ### Exact money arithmetic
 
@@ -609,7 +638,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (304) = 345 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (312) = 353 checks
 node scripts/dev-prices.mjs  # offline crypto price feed (see Digital assets)
 ```
 

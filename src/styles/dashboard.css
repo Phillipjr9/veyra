@@ -1204,3 +1204,47 @@
 .trade-asset img { flex: none; width: 42px; height: 42px; display: block; filter: drop-shadow(0 3px 7px rgba(24,23,29,.24)); }
 .trade-asset strong { display: block; font: 600 14px var(--display); }
 .trade-asset small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Price history ----------------------------------------------------------- */
+.holding-actions { align-items: center; }
+.holding-chart-btn { grid-column: 1 / -1; justify-content: center; }
+.holding-chart-btn.on { border-color: var(--violet); color: var(--violet); background: #f4f1fe; }
+.holding-locked { margin: 0; align-self: center; font-size: 11.5px; color: var(--muted); }
+
+.holding-chart-panel { overflow: hidden; margin-top: 16px; border: 1px solid var(--line); border-radius: 18px; background: var(--white); }
+.holding-chart-head { display: flex; align-items: center; gap: 14px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
+.holding-chart-title { display: flex; align-items: center; gap: 11px; margin-right: auto; min-width: 0; }
+.holding-chart-title img { flex: none; width: 34px; height: 34px; filter: drop-shadow(0 3px 6px rgba(24,23,29,.22)); }
+.holding-chart-title strong { display: block; font: 600 14px var(--display); }
+.holding-chart-title small { display: block; margin-top: 1px; font-size: 11.5px; color: var(--muted); }
+.holding-chart-msg { margin: 0; padding: 40px 16px; text-align: center; font-size: 13px; color: var(--muted); }
+
+.holding-range { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--paper); }
+.holding-range button { height: 27px; padding: 0 11px; border: 0; border-radius: 7px; background: transparent; font-size: 11.5px; font-weight: 600; color: var(--muted); transition: background .18s, color .18s; }
+.holding-range button:hover { color: var(--ink); }
+.holding-range button.on { background: var(--white); color: var(--ink); box-shadow: 0 1px 3px rgba(24,23,29,.12); }
+
+.candle-chart { padding: 14px 16px 6px; }
+.candle-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.candle-head strong { font: 600 22px var(--display); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.candle-head span { margin-left: 9px; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.candle-head small { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.candle-up { color: #3f8358; }
+.candle-down { color: #a04545; }
+
+/* touch-action keeps a vertical swipe scrolling the page instead of being
+   captured as a crosshair drag. */
+.candle-svg { width: 100%; height: auto; display: block; touch-action: pan-y; }
+.candle-grid { stroke: var(--line); stroke-width: 1; }
+.candle-axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.candle-cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+
+.candle-readout { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 2px 0 10px; }
+.candle-readout div { display: flex; align-items: baseline; gap: 6px; }
+.candle-readout dt { font-size: 11px; color: var(--muted); }
+.candle-readout dd { margin: 0; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 720px) {
+  .holding-chart-head { flex-wrap: wrap; }
+  .holding-range { order: 3; width: 100%; justify-content: space-between; }
+}

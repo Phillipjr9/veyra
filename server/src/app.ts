@@ -32,7 +32,7 @@ import { seed } from "./seed.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
 import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
-import { loadPrices, tradableQuote } from "./prices.js";
+import { loadPrices, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -1076,6 +1076,26 @@ export function createApp(dbPath?: string) {
       amountUsd: centsToDecimal(cents),
       priceUsd: centsToDecimal(Number(quote.cents)),
     });
+  }));
+
+  app.get("/api/me/holdings/:asset/candles", requireAuth, wrap(async (req, res) => {
+    const code = String(req.params.asset ?? "").trim().toUpperCase();
+    const asset = assetByCode(db, code);
+    if (!asset) return void res.status(404).json({ error: "Unknown asset.", code: "crypto_unknown_asset" });
+
+    const range = String(req.query.range ?? "7d");
+    if (!isCandleRange(range)) {
+      return void res.status(400).json({ error: `range must be one of ${CANDLE_RANGES.join(", ")}.` });
+    }
+
+    const candles = await loadCandles(asset.code, range);
+    // 503 rather than an empty array: the client must be able to tell "no
+    // history available" apart from "this asset was flat", and an empty
+    // series renders as the latter.
+    if (!candles) {
+      return void res.status(503).json({ error: `No price history for ${asset.code}.`, code: "crypto_no_history" });
+    }
+    res.json({ asset: asset.code, range, candles });
   }));
 
   app.get("/api/me/notifications", requireAuth, wrap((req, res) => {

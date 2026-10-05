@@ -111,3 +111,46 @@ export function useHoldings() {
   useEffect(() => { void reload(); }, [reload]);
   return { data, loading, reload };
 }
+
+/* ---------- price history ---------- */
+
+/** Open/high/low/close in USD cents, with the period start in epoch ms. */
+export type Candle = { t: number; o: number; h: number; l: number; c: number };
+
+export const CANDLE_RANGES = ["1d", "7d", "30d", "90d"] as const;
+export type CandleRange = (typeof CANDLE_RANGES)[number];
+
+export const RANGE_LABEL: Record<CandleRange, string> = {
+  "1d": "24H", "7d": "7D", "30d": "30D", "90d": "90D",
+};
+
+export const fetchCandles = (asset: string, range: CandleRange) =>
+  apiGet<{ asset: string; range: CandleRange; candles: Candle[] }>(
+    `/api/me/holdings/${encodeURIComponent(asset)}/candles?range=${range}`,
+  );
+
+/**
+ * Candles for one asset and range.
+ *
+ * `candles` stays null — never an empty array — when history cannot be had,
+ * because an empty series draws a flat line and a flat line claims the asset
+ * did not move. The caller renders the difference.
+ */
+export function useCandles(asset: string | null, range: CandleRange) {
+  const [candles, setCandles] = useState<Candle[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!asset) { setCandles(null); setFailed(false); return; }
+    let live = true;
+    setLoading(true); setFailed(false);
+    fetchCandles(asset, range)
+      .then(res => { if (live) { setCandles(res.candles); setFailed(false); } })
+      .catch(() => { if (live) { setCandles(null); setFailed(true); } })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [asset, range]);
+
+  return { candles, loading, failed };
+}

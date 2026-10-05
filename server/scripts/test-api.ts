@@ -1524,9 +1524,17 @@ try {
   {
     let priceBody: unknown = { bitcoin: { usd: 100000 }, ethereum: { usd: 4000 }, solana: { usd: 200 }, "usd-coin": { usd: 1 } };
     let priceStatus = 200;
-    const priceStub = createServer((_req, res) => {
-      res.writeHead(priceStatus, { "content-type": "application/json" });
-      res.end(JSON.stringify(priceBody));
+    // Candle rows in CoinGecko's shape: [ms, open, high, low, close].
+    let ohlcBody: unknown = [
+      [1_700_000_000_000, 99000, 101000, 98500, 100500],
+      [1_700_003_600_000, 100500, 102000, 100000, 101750],
+      [1_700_007_200_000, 101750, 101900, 99250, 99800],
+    ];
+    let ohlcStatus = 200;
+    const priceStub = createServer((req, res) => {
+      const ohlc = (req.url ?? "").startsWith("/ohlc");
+      res.writeHead(ohlc ? ohlcStatus : priceStatus, { "content-type": "application/json" });
+      res.end(JSON.stringify(ohlc ? ohlcBody : priceBody));
     });
     await new Promise<void>(r => priceStub.listen(0, "127.0.0.1", r));
     const priceUrl = `http://127.0.0.1:${(priceStub.address() as any).port}/prices`;
@@ -1534,6 +1542,7 @@ try {
 
     try {
       process.env.CRYPTO_PRICES_URL = priceUrl;
+      process.env.CRYPTO_OHLC_URL = `${priceUrl.replace("/prices", "")}/ohlc/{id}?days={days}`;
       process.env.CRYPTO_TRADING_ENABLED = "1";
       process.env.CRYPTO_PRICES_TTL_MS = "50";
       resetPrices();
@@ -1629,6 +1638,44 @@ try {
       await new Promise(r => setTimeout(r, 60));
       const partial = await api("GET", "/api/me/holdings", rae);
       expect("an unpriced holding flags the total as partial", partial.json.partial === true);
+
+      /* ---- price history ---- */
+      const candles = await api("GET", "/api/me/holdings/BTC/candles?range=7d", rae);
+      expect("candles come back as integer cents, oldest first", candles.status === 200 &&
+        candles.json.candles.length === 3 && candles.json.range === "7d" &&
+        candles.json.candles[0].o === 9900000 && candles.json.candles[0].c === 10050000 &&
+        candles.json.candles[2].t > candles.json.candles[0].t);
+      expect("candles require a session (401)", (await api("GET", "/api/me/holdings/BTC/candles")).status === 401);
+      expect("an unknown asset has no history (404)", (await api("GET", "/api/me/holdings/DOGE/candles", rae)).status === 404);
+      expect("an invalid range is a 400", (await api("GET", "/api/me/holdings/BTC/candles?range=all-time", rae)).status === 400);
+      expect("every advertised range is accepted", (await Promise.all(
+        ["1d", "7d", "30d", "90d"].map(r => api("GET", `/api/me/holdings/ETH/candles?range=${r}`, rae)),
+      )).every(res => res.status === 200));
+
+      // A malformed row must be dropped, not turned into a zero candle that
+      // renders as a crash to the x-axis.
+      ohlcBody = [
+        [1_700_000_000_000, 50000, 51000, 49000, 50500],
+        [1_700_003_600_000, "oops", null, 0, 0],
+        [1_700_007_200_000, 50500, 52000, 50100, 51800],
+      ];
+      resetPrices();
+      const partialCandles = await api("GET", "/api/me/holdings/SOL/candles?range=7d", rae);
+      expect("malformed candle rows are dropped, never zeroed", partialCandles.status === 200 &&
+        partialCandles.json.candles.length === 2 &&
+        partialCandles.json.candles.every((c: any) => c.o > 0 && c.h > 0 && c.l > 0 && c.c > 0));
+
+      // No history is a 503, never an empty array: an empty series draws a
+      // flat line, and a flat line claims the asset did not move.
+      ohlcStatus = 500;
+      resetPrices();
+      const deadHistory = await api("GET", "/api/me/holdings/USDC/candles?range=30d", rae);
+      expect("an unreachable history feed is 503, not an empty series", deadHistory.status === 503 &&
+        deadHistory.json.code === "crypto_no_history");
+      ohlcStatus = 200;
+      ohlcBody = [];
+      resetPrices();
+      expect("an empty history response is 503 too", (await api("GET", "/api/me/holdings/USDC/candles?range=30d", rae)).status === 503);
 
       /* the licensing interlock */
       process.env.CRYPTO_TRADING_ENABLED = "0";
