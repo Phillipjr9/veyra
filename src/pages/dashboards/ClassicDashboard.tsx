@@ -1,11 +1,12 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useMailingAddress } from "../../lib/mailingAddress";
 import { createPortal } from "react-dom";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
   Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, Monitor, PackageCheck, Pause, PiggyBank, Play, Plus,
-  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap, LineChart, CandlestickChart,
+  Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap, LineChart, CandlestickChart, Link2,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
 import { Footer } from "../../components/Chrome";
@@ -1345,7 +1346,10 @@ export function CardsPage() {
   const [flipped, setFlipped] = useState<string | null>(null);
   const [managedId, setManagedId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState<{ label: string; holder: string; limit: number; lock: string; type: Card["type"]; address: string }>({ label: "", holder: user?.name ?? "", limit: 4000, lock: "", type: "virtual", address: "125 Market Street, San Francisco, CA 94105" });
+  const [form, setForm] = useState<{ label: string; holder: string; limit: number; lock: string; type: Card["type"]; address: string }>({ label: "", holder: user?.name ?? "", limit: 4000, lock: "", type: "virtual", address: "" });
+  // Physical cards ship to the member's own address by default, not a placeholder.
+  const mailingAddress = useMailingAddress(user?.accountType === "business");
+  useEffect(() => { if (mailingAddress) setForm(f => (f.address ? f : { ...f, address: mailingAddress })); }, [mailingAddress]);
   if (!account) return null;
 
   const counts: Record<CardFilter, number> = {
@@ -2032,6 +2036,9 @@ export function RewardsPage() {
    ============================================================ */
 export function TeamPage() {
   const { account, inviteTeamMember, removeTeamMember } = useAcct();
+  const { user: me } = useAuth();
+  // Teammates: only an Admin may invite or remove people (the server enforces it too).
+  const canManage = !me?.teamRole || me.teamRole === "Admin";
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<{ name: string; email: string; role: TeamMember["role"]; limit: number }>({ name: "", email: "", role: "Member", limit: 5000 });
@@ -2058,7 +2065,7 @@ export function TeamPage() {
   return (
     <div className="app-page">
       <PageHeader eyebrow="Roles, permissions and per-person spend limits" title="Team">
-        <button type="button" className="solid-btn" onClick={() => setOpen(true)}><UserPlus size={15} /> Invite member</button>
+        {canManage && <button type="button" className="solid-btn" onClick={() => setOpen(true)}><UserPlus size={15} /> Invite member</button>}
       </PageHeader>
       <div className="kpi-row">
         <motion.div className="kpi" {...rise(0)}><span>Members</span><AnimatedNumber value={members.length} className="kpi-value" /><small>{members.filter(m => m.status === "invited").length} pending invites</small></motion.div>
@@ -2077,7 +2084,13 @@ export function TeamPage() {
                 <div className="team-limit"><b>{m.monthlyLimit ? money(m.monthlyLimit, false) : "View only"}</b><small>{m.cardCount} {m.cardCount === 1 ? "card" : "cards"}</small></div>
                 <span className={`status-pill team-status ${m.status}`}>{m.status === "active" ? <span className="dot" /> : <Mail size={11} />}{m.status}</span>
                 <div className="team-act">
-                  {m.role !== "Owner" && (
+                  {m.status === "invited" && m.inviteUrl && canManage && (
+                    <button type="button" className="icon-btn" aria-label={`Copy invite link for ${m.name}`} title="Copy invite link"
+                      onClick={async () => toast(await copyText(m.inviteUrl!) ? { tone: "success", title: "Invite link copied", description: "No mail provider is set up, so share this link yourself." } : { tone: "error", title: "Couldn't copy the link" })}>
+                      <Link2 size={14} />
+                    </button>
+                  )}
+                  {m.role !== "Owner" && canManage && m.email.toLowerCase() !== me?.email.toLowerCase() && (
                     <button type="button" className="icon-btn" onClick={() => onRemove(m)} aria-label={`Remove ${m.name}`}><Trash2 size={14} /></button>
                   )}
                 </div>

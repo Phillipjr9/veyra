@@ -715,6 +715,55 @@ CREATE TABLE holding_transactions (
 CREATE INDEX idx_holding_txn_user ON holding_transactions(user_id, created_at DESC);
 `,
   },
+  {
+    version: 11,
+    sql: `
+-- v11: customer support conversations. A support ticket is an operations case
+-- (kind = 'support') so staff work it in the same queue, with the same owner,
+-- SLA and audit timeline as every other case. What the case lacked was a
+-- customer-visible thread: operation_case_notes are internal-only, so replies
+-- the customer may read live in support_messages instead.
+--
+-- Tickets from the public Support / Contact forms have no member account, so
+-- the sender's name and email are kept on the case itself (contact_*). When
+-- the email matches a member, user_id links the case to that member too.
+ALTER TABLE operation_cases ADD COLUMN contact_name TEXT;
+ALTER TABLE operation_cases ADD COLUMN contact_email TEXT;
+ALTER TABLE operation_cases ADD COLUMN category TEXT;
+
+CREATE TABLE support_messages (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id      TEXT NOT NULL REFERENCES operation_cases(id),
+  author_kind  TEXT NOT NULL CHECK (author_kind IN ('customer','staff')),
+  author_id    TEXT REFERENCES users(id),
+  author_name  TEXT NOT NULL,
+  body         TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX idx_support_messages_case ON support_messages(case_id, created_at);
+CREATE TRIGGER support_messages_no_update BEFORE UPDATE ON support_messages
+  BEGIN SELECT RAISE(ABORT, 'support_messages are append-only'); END;
+CREATE TRIGGER support_messages_no_delete BEFORE DELETE ON support_messages
+  BEGIN SELECT RAISE(ABORT, 'support_messages are append-only'); END;
+`,
+  },
+  {
+    version: 12,
+    sql: `
+-- v12: team access. A business owner invites teammates; an invitee who accepts
+-- gets their OWN login (own password, own sessions) that acts on the OWNER's
+-- business account with a role: Admin, Member or Bookkeeper. users.team_owner_id
+-- links the login to the owner; the role lives on users.team_role and
+-- team_members.role. Invite tokens are stored hashed, single-use, with expiry.
+ALTER TABLE users ADD COLUMN team_owner_id TEXT REFERENCES users(id);
+ALTER TABLE users ADD COLUMN team_role TEXT;
+CREATE INDEX idx_users_team_owner ON users(team_owner_id);
+ALTER TABLE team_members ADD COLUMN invite_token_hash TEXT;
+ALTER TABLE team_members ADD COLUMN invite_expires_at INTEGER;
+ALTER TABLE team_members ADD COLUMN member_user_id TEXT REFERENCES users(id);
+CREATE UNIQUE INDEX idx_team_members_invite ON team_members(invite_token_hash) WHERE invite_token_hash IS NOT NULL;
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

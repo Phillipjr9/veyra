@@ -6,6 +6,34 @@ import {
   Landmark, LockKeyhole, Mail, MessageSquare, PiggyBank, Plug, ReceiptText, ShieldCheck, ShoppingBag, Smartphone, Sparkles, Zap
 } from "lucide-react";
 import { Btn, Reveal, VirtualCard } from "../components/common";
+import { apiPost } from "../lib/api";
+import { COMPANY, companyAddress } from "../lib/company";
+
+/**
+ * Sends a public Support / Contact form to POST /api/support/contact, which
+ * opens a case in the staff Operations queue and emails the sender a
+ * confirmation. `website` is a hidden honeypot field that only bots fill in.
+ */
+function useContactForm(kind: "support" | "sales") {
+  const [state, setState] = useState<{ status: "idle" | "sending" | "sent" | "error"; reference?: string; error?: string }>({ status: "idle" });
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.currentTarget).entries());
+    setState({ status: "sending" });
+    try {
+      const res = await apiPost<{ reference?: string }>("/api/support/contact", { ...data, kind });
+      setState({ status: "sent", reference: res.reference });
+    } catch (err) {
+      setState({ status: "error", error: err instanceof Error ? err.message : "We couldn't send your message. Please try again." });
+    }
+  }
+  return { state, submit };
+}
+
+const Honeypot = () => (
+  <input type="text" name="website" tabIndex={-1} autoComplete="off" aria-hidden="true"
+    style={{ position: "absolute", left: "-10000px", width: 1, height: 1, opacity: 0 }} />
+);
 import { AISavingsSection, FeatureOverview, RewardsCalculator, ScoutSteps, SecuritySection, BusinessTools, FinalCTA } from "../Landing";
 
 function PageHead({ kicker, title, sub }: { kicker: string; title: string; sub?: string }) {
@@ -152,11 +180,11 @@ export function SecurityPage() {
 }
 
 export function SupportPage() {
-  const [sent, setSent] = useState(false);
+  const { state, submit } = useContactForm("support");
   const [topic, setTopic] = useState("Account");
   return (
     <>
-      <PageHead kicker="Support" title="We're here around the clock." sub="Reach a specialist by chat or email, any hour of any day." />
+      <PageHead kicker="Support" title="We're here around the clock." sub="Message a specialist any time — we reply by email, usually within one business day." />
       <section className="section support-page">
         <div className="support-channels">
           {[
@@ -172,21 +200,23 @@ export function SupportPage() {
           ))}
         </div>
         <Reveal className="support-form-wrap">
-          <form id="support-form" className="contact-form" onSubmit={e => { e.preventDefault(); setSent(true); }}>
+          <form id="support-form" className="contact-form" onSubmit={submit} style={{ position: "relative" }}>
+            <Honeypot />
             <h2>Send us a message</h2>
             <div className="field-row">
-              <div><label htmlFor="s-name">Name</label><input id="s-name" required placeholder="Your name" /></div>
-              <div><label htmlFor="s-email">Email</label><input id="s-email" type="email" required placeholder="you@company.com" /></div>
+              <div><label htmlFor="s-name">Name</label><input id="s-name" name="name" required minLength={2} maxLength={80} placeholder="Your name" /></div>
+              <div><label htmlFor="s-email">Email</label><input id="s-email" name="email" type="email" required placeholder="you@company.com" /></div>
             </div>
             <label htmlFor="s-topic">Topic</label>
-            <select id="s-topic" value={topic} onChange={e => setTopic(e.target.value)}>
+            <select id="s-topic" name="topic" value={topic} onChange={e => setTopic(e.target.value)}>
               {["Account", "Cards", "Rewards & Scout", "Payments", "Something else"].map(t => <option key={t}>{t}</option>)}
             </select>
             <label htmlFor="s-msg">How can we help?</label>
-            <textarea id="s-msg" rows={5} required placeholder="Tell us what's going on…" />
-            {sent
-              ? <p className="form-success"><Check size={16} /> Thanks — our team will reply shortly.</p>
-              : <button className="auth-submit" type="submit">Send message</button>}
+            <textarea id="s-msg" name="message" rows={5} required minLength={5} maxLength={4000} placeholder="Tell us what's going on… (never include passwords or full card numbers)" />
+            {state.status === "error" && <p className="form-error" role="alert">{state.error}</p>}
+            {state.status === "sent"
+              ? <p className="form-success" role="status"><Check size={16} /> Thanks — your reference is {state.reference}. We've emailed you a confirmation and will reply shortly.</p>
+              : <button className="auth-submit" type="submit" disabled={state.status === "sending"}>{state.status === "sending" ? "Sending…" : "Send message"}</button>}
           </form>
         </Reveal>
       </section>
@@ -195,7 +225,7 @@ export function SupportPage() {
 }
 
 export function ContactPage() {
-  const [sent, setSent] = useState(false);
+  const { state, submit } = useContactForm("sales");
   return (
     <>
       <PageHead kicker="Contact" title="Let's talk about your business." sub="Tell us what you're building and we'll point you to the right plan." />
@@ -205,26 +235,28 @@ export function ContactPage() {
             <h3>Talk to sales</h3>
             <p>For teams of 10 or more, custom workflows or API access.</p>
             <ul>
-              <li><Mail /> <a href="mailto:sales@veyra.example">sales@veyra.example</a></li>
+              <li><Mail /> <a href={`mailto:${COMPANY.salesEmail}`}>{COMPANY.salesEmail}</a></li>
               <li><MessageSquare /> <Link to="/support">Support, 24/7</Link></li>
-              <li><Landmark /> 100 Market Street, Suite 400</li>
+              <li><Landmark /> {companyAddress}</li>
             </ul>
             <div className="contact-note"><Sparkles /> We reply within one business day.</div>
           </div>
-          <form className="contact-form" onSubmit={e => { e.preventDefault(); setSent(true); }}>
+          <form className="contact-form" onSubmit={submit} style={{ position: "relative" }}>
+            <Honeypot />
             <div className="field-row">
-              <div><label htmlFor="c-name">Name</label><input id="c-name" required placeholder="Your name" /></div>
-              <div><label htmlFor="c-co">Company</label><input id="c-co" required placeholder="Company" /></div>
+              <div><label htmlFor="c-name">Name</label><input id="c-name" name="name" required minLength={2} maxLength={80} placeholder="Your name" /></div>
+              <div><label htmlFor="c-co">Company</label><input id="c-co" name="company" required maxLength={120} placeholder="Company" /></div>
             </div>
             <label htmlFor="c-email">Work email</label>
-            <input id="c-email" type="email" required placeholder="you@company.com" />
+            <input id="c-email" name="email" type="email" required placeholder="you@company.com" />
             <label htmlFor="c-size">Team size</label>
-            <select id="c-size">{["1–9", "10–49", "50–199", "200+"].map(s => <option key={s}>{s}</option>)}</select>
+            <select id="c-size" name="teamSize">{["1–9", "10–49", "50–199", "200+"].map(s => <option key={s}>{s}</option>)}</select>
             <label htmlFor="c-msg">Message</label>
-            <textarea id="c-msg" rows={4} required placeholder="What would you like to cover?" />
-            {sent
-              ? <p className="form-success"><Check size={16} /> Thanks — we'll be in touch soon.</p>
-              : <button className="auth-submit" type="submit">Send message</button>}
+            <textarea id="c-msg" name="message" rows={4} required minLength={5} maxLength={4000} placeholder="What would you like to cover?" />
+            {state.status === "error" && <p className="form-error" role="alert">{state.error}</p>}
+            {state.status === "sent"
+              ? <p className="form-success" role="status"><Check size={16} /> Thanks — we'll be in touch within one business day (reference {state.reference}).</p>
+              : <button className="auth-submit" type="submit" disabled={state.status === "sending"}>{state.status === "sending" ? "Sending…" : "Send message"}</button>}
           </form>
         </Reveal>
       </section>

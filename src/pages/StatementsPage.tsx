@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import {
@@ -6,11 +6,33 @@ import {
 } from "lucide-react";
 import { useAcct, money, shortDate, type Txn } from "../lib/store";
 import { useToast } from "../components/Toast";
+import { apiGet } from "../lib/api";
+import { COMPANY, companyAddress } from "../lib/company";
+
+type MailingProfile = Record<string, string | undefined>;
+/** The member's mailing address from their application (business address for business accounts). */
+function mailingLines(profile: MailingProfile | null, business: boolean): string[] {
+  if (!profile) return [];
+  const k = (personal: string, biz: string) => (business && profile[biz] ? profile[biz] : profile[personal]) || "";
+  const line1 = k("addressLine1", "bizAddressLine1");
+  if (!line1) return [];
+  const line2 = k("addressLine2", "bizAddressLine2");
+  const cityLine = [k("city", "bizCity"), [k("state", "bizState"), k("postalCode", "bizPostalCode")].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  return [line1, line2, cityLine].filter(Boolean);
+}
 import { VeyraMark } from "../components/VeyraMark";
 
 export function StatementsPage() {
   const { account, user, exportCSV } = useAcct();
   const toast = useToast();
+  const [mailingProfile, setMailingProfile] = useState<MailingProfile | null>(null);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ profile: MailingProfile | null }>("/api/me/profile")
+      .then(({ profile }) => { if (live) setMailingProfile(profile); })
+      .catch(() => { /* the statement still renders without an address */ });
+    return () => { live = false; };
+  }, []);
 
   const [selectedMonth, setSelectedMonth] = useState<string>("current");
   const [statementModal, setStatementModal] = useState(false);
@@ -299,9 +321,8 @@ export function StatementsPage() {
             <strong className="stmt-customer-name">{isPersonal ? user.name : (user.business || user.name)}</strong>
             <p className="stmt-customer-addr">
               Attn: {user.name}<br />
-              125 Market Street, Suite 400<br />
-              San Francisco, CA 94105<br />
-              Phone: {user.phone || "+1 (555) 019-2834"}
+              {mailingLines(mailingProfile, !isPersonal).map(line => <span key={line}>{line}<br /></span>)}
+              {user.phone ? <>Phone: {user.phone}</> : null}
             </p>
           </div>
 
@@ -442,7 +463,7 @@ export function StatementsPage() {
             </div>
           </div>
           <p className="stmt-fine-print">
-            IN CASE OF ERRORS OR INQUIRIES ABOUT YOUR ELECTRONIC TRANSFERS: Telephone us at 1-800-555-0198 or write to Veyra Support, 125 Market Street, San Francisco CA 94105 as soon as you can if you think your statement is wrong or if you need more information about a transfer. We must hear from you no later than 60 days after we sent the FIRST statement on which the problem appeared.
+            IN CASE OF ERRORS OR INQUIRIES ABOUT YOUR ELECTRONIC TRANSFERS: {`Message us from the Support Desk in the Veyra app, email ${COMPANY.supportEmail}${COMPANY.supportPhone ? `, call ${COMPANY.supportPhone}` : ""}, or write to Veyra Support, ${companyAddress}`} as soon as you can if you think your statement is wrong or if you need more information about a transfer. We must hear from you no later than 60 days after we sent the FIRST statement on which the problem appeared.
           </p>
         </div>
       </div>

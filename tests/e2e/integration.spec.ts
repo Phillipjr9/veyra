@@ -54,7 +54,7 @@ const memberRoutes = [
   ["markets", "Markets"], ["rewards", "Rewards"], ["perks", "Perks"],
   ["statements", "Official Statements & Reports"], ["disputes", "Disputes & Fraud Resolution"],
   ["kyc", "Identity verification"], ["security", "Security center"],
-  ["support-desk", "Live Support & Communications"], ["settings", "Settings"],
+  ["support-desk", "Support & messages"], ["settings", "Settings"],
 ];
 
 test("built app, API, and asset files work from one origin", async ({ request }) => {
@@ -411,4 +411,73 @@ test("missing history and unavailable markets are shown honestly and recover", a
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await expect(page.locator(".market-table tbody > tr")).toHaveCount(6); // five quotes plus the open BTC chart
   await expect(page.getByText("Market data is unavailable right now.", { exact: false })).toBeHidden();
+});
+
+test("support is a real conversation: member → staff Operations queue → member, plus the public form", async ({ page, browser }) => {
+  const subject = `E2E support ${Date.now()}`;
+  await login(page, "personal");
+  await page.goto("/#/app/support-desk");
+  await expect(page.locator("h1").first()).toHaveText("Support & messages");
+  await page.getByRole("button", { name: "New support case" }).click();
+  await page.getByLabel("Subject").fill(subject);
+  await page.getByLabel("Message").fill("My card was declined at a merchant.");
+  const created = page.waitForResponse(r => r.url().endsWith("/api/me/support") && r.request().method() === "POST");
+  await page.getByRole("button", { name: "Open case" }).click();
+  expect((await created).status()).toBe(201);
+  await expect(page.locator(".conversation-header h3")).toHaveText(subject);
+
+  const staffContext = await browser.newContext();
+  const staff = await staffContext.newPage();
+  await login(staff, "admin");
+  await staff.getByRole("tab", { name: /^Operations(?:\s|$)/ }).click();
+  await staff.getByText(subject).first().click();
+  await staff.getByLabel(/Reply to customer/).fill("We've reviewed it — please try the card again.");
+  const replied = staff.waitForResponse(r => r.url().endsWith("/reply"));
+  await staff.getByRole("button", { name: "Send reply", exact: true }).click();
+  expect((await replied).status()).toBe(201);
+  await staffContext.close();
+
+  await page.getByRole("button", { name: "Refresh conversations" }).click();
+  await expect(page.locator(".support-msg-bubble-wrap.specialist")).toContainText("please try the card again");
+
+  const visitor = await browser.newPage();
+  await visitor.goto("/#/support");
+  await visitor.getByLabel("Name", { exact: true }).fill("Website Visitor");
+  await visitor.getByLabel("Email", { exact: true }).fill("visitor@example.com");
+  await visitor.getByLabel("How can we help?").fill("How long do wires take?");
+  await visitor.getByRole("button", { name: "Send message" }).click();
+  await expect(visitor.locator(".form-success")).toContainText(/reference is VS-[0-9A-F]{8}/);
+  await visitor.close();
+});
+
+test("team invite: owner invites from Team, invitee accepts and lands in the shared business", async ({ page, browser }) => {
+  await login(page, "business");
+  await page.goto("/#/app/team");
+  await page.getByRole("button", { name: "Invite member" }).click();
+  const email = `teammate.${Date.now()}@veyra.test`;
+  await page.locator("#tm-name").fill("Tess Mate");
+  await page.locator("#tm-email").fill(email);
+  await page.locator("#tm-role").selectOption("Member");
+  const sent = page.waitForResponse(r => r.url().endsWith("/api/me/team") && r.request().method() === "POST");
+  await page.getByRole("button", { name: "Send invite" }).click();
+  const res = await sent;
+  expect(res.status()).toBe(201);
+  const { inviteUrl } = await res.json() as { inviteUrl: string };
+  expect(inviteUrl).toMatch(/^\/#\/invite\/accept\?token=[a-f0-9]+$/);
+  await expect(page.getByRole("button", { name: "Copy invite link for Tess Mate" })).toBeVisible();
+
+  const ctx = await browser.newContext();
+  const guest = await ctx.newPage();
+  await guest.goto(inviteUrl);
+  await expect(guest.getByRole("heading", { name: /^Join .+ on Veyra$/ })).toBeVisible();
+  await expect(guest.locator(".invite-summary")).toContainText(email);
+  await guest.locator("#inv-pass").fill("teammate-pass-1");
+  await guest.getByRole("button", { name: "Accept invitation" }).click();
+  await expect(guest).toHaveURL(/#\/app$/);
+  await expect(guest.locator("h1").first()).toBeVisible();
+  await guest.goto("/#/app/team");
+  await expect(guest.locator(".team-row").filter({ hasText: email })).toContainText(/active/i);
+  // A Member can't manage the team.
+  await expect(guest.getByRole("button", { name: "Invite member" })).toHaveCount(0);
+  await ctx.close();
 });

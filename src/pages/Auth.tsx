@@ -755,12 +755,16 @@ export function SignupPage() {
 
 export function ForgotPasswordPage() {
   const { forgotPassword, resetPassword } = useAuth();
+  // The reset email links here with ?token=… — open straight on step 2 with
+  // the code filled in, so the member only has to choose a new password.
+  const [params] = useSearchParams();
+  const linkToken = (params.get("token") ?? "").trim();
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState(Boolean(linkToken));
   // Only set outside production, where there is no mail provider yet — the code
   // is shown on screen instead of being "sent" somewhere it would never arrive.
   const [demoCode, setDemoCode] = useState("");
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(linkToken);
   const [password, setPassword] = useState("");
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
@@ -804,7 +808,7 @@ export function ForgotPasswordPage() {
   return (
     <AuthShell title="Reset your password"
       sub={sent
-        ? (demoCode ? "Your code is filled in below — choose a new password." : "Enter the code from your reset email and choose a new password.")
+        ? (demoCode || linkToken ? "Your code is filled in below — choose a new password." : "Enter the code from your reset email and choose a new password.")
         : "We'll email you a secure reset code."}
       foot={<>Remembered it? <Link to="/login">Back to sign in</Link></>}>
       {sent ? (
@@ -843,20 +847,28 @@ export function ForgotPasswordPage() {
    Team invite acceptance (linked from the "You're invited" email)
    ============================================================ */
 export function InviteAcceptPage() {
-  const { signup, user } = useAuth();
+  const { acceptInvite, user } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const email = params.get("email") ?? "";
-  const business = params.get("business") ?? "";
-  const role = params.get("role") ?? "Team member";
+  const token = (params.get("token") ?? "").trim();
+  type Invite = { name: string; email: string; role: string; business: string; invitedBy: string };
+  const [invite, setInvite] = useState<Invite | null>(null);
+  const [lookup, setLookup] = useState<"loading" | "ok" | "invalid">(token ? "loading" : "invalid");
   const [form, setForm] = useState({ name: "", password: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Already signed in — nothing to accept, straight to the dashboard.
-  if (user) { navigate("/app", { replace: true }); return null; }
+  useEffect(() => {
+    if (!token) return;
+    let live = true;
+    apiGet<{ invite: Invite }>(`/api/invites/${encodeURIComponent(token)}`)
+      .then(({ invite }) => { if (!live) return; setInvite(invite); setForm(f => ({ ...f, name: f.name || invite.name })); setLookup("ok"); })
+      .catch(() => { if (live) setLookup("invalid"); });
+    return () => { live = false; };
+  }, [token]);
 
-  const valid = email.includes("@") && business.trim().length > 0;
+  // Already signed in — nothing to accept, straight to the dashboard.
+  useEffect(() => { if (user) navigate("/app", { replace: true }); }, [user, navigate]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -864,22 +876,24 @@ export function InviteAcceptPage() {
     if (form.password.length < 8) return setError("Use at least 8 characters for your password.");
     setBusy(true);
     try {
-      await signup({ name: form.name, business, accountType: "business", email, password: form.password, plan: "Pro" });
-      // Not the dashboard: the account is not open until a human approves it.
-      // The status page says so, and says when to expect news.
-      navigate("/application", { replace: true });
+      await acceptInvite(token, form.name, form.password);
+      navigate("/app", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally { setBusy(false); }
   }
 
-  if (!valid) {
+  if (lookup === "loading") {
+    return <AuthShell title="Checking your invitation…" sub="One moment." foot={null}><div className="reset-success"><Loader2 className="spin" /></div></AuthShell>;
+  }
+
+  if (lookup === "invalid" || !invite) {
     return (
-      <AuthShell title="Invitation not found" sub="This invitation link is incomplete or has expired."
+      <AuthShell title="Invitation not found" sub="This invitation link is invalid, already used, or has expired."
         foot={<>Want an account anyway? <Link to="/signup">Open one now</Link></>}>
         <div className="reset-success">
           <Building2 />
-          <p>Ask your team admin to resend the invitation, or open a Veyra account on your own.</p>
+          <p>Ask the person who invited you to send a new invitation from their Team page, or open a Veyra account on your own.</p>
           <Link className="auth-submit" to="/signup">Open an account</Link>
         </div>
       </AuthShell>
@@ -887,27 +901,27 @@ export function InviteAcceptPage() {
   }
 
   return (
-    <AuthShell title={`Join ${business} on Veyra`} sub="Create your password to accept the invitation."
+    <AuthShell title={`Join ${invite.business} on Veyra`} sub={`${invite.invitedBy} invited you. Create your password to accept.`}
       foot={<>Already have a Veyra account? <Link to="/login">Sign in</Link></>}>
       <form className="auth-form" onSubmit={submit}>
         <div className="invite-summary">
           <Building2 size={16} />
           <div>
-            <strong>{business}</strong>
-            <small>{role} · invited to {email}</small>
+            <strong>{invite.business}</strong>
+            <small>{invite.role} · invited to {invite.email}</small>
           </div>
         </div>
-        <label htmlFor="inv-name">Your legal name</label>
-        <input id="inv-name" required autoComplete="name" placeholder="June Okafor" value={form.name}
+        <label htmlFor="inv-name">Your name</label>
+        <input id="inv-name" required autoComplete="name" maxLength={80} value={form.name}
           onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
         <label htmlFor="inv-pass">Create a password</label>
-        <input id="inv-pass" type="password" required autoComplete="new-password" placeholder="At least 8 characters" value={form.password}
+        <input id="inv-pass" type="password" required minLength={8} autoComplete="new-password" placeholder="At least 8 characters" value={form.password}
           onChange={e => setForm(f => ({ ...f, password: e.target.value }))} />
         {error && <p className="form-error">{error}</p>}
         <button className="auth-submit" type="submit" disabled={busy}>
           {busy ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />} Accept invitation
         </button>
-        <p className="auth-legal">You'll get your own password — the person who invited you never sees it.</p>
+        <p className="auth-legal">You'll have your own password — the person who invited you never sees it.</p>
       </form>
     </AuthShell>
   );

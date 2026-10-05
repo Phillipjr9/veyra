@@ -23,6 +23,7 @@ import { resetRecaptchaConfig } from "../src/recaptcha.js";
 import { resetFederatedConfig } from "../src/federated.js";
 import { resetWebauthnConfig } from "../src/webauthn.js";
 import { resetPrices } from "../src/prices.js";
+import { recentMail, mailConfig, mailDelivers } from "../src/mail.js";
 import {
   dollarsToCentsExact, centsToDecimalExact, parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents,
 } from "../src/money.js";
@@ -253,6 +254,7 @@ try {
 
   const approve = await api("POST", `/api/admin/kyc/${alexId}/decision`, admin, { decision: "approved" });
   expect("approval verified member", approve.status === 200 && approve.json.status === "approved");
+  expect("approval emails the applicant", recentMail.some(m => m.tag === "kyc-approved" && m.html.includes("#/app")));
   const afterApprove = await api("GET", "/api/me/kyc", alex);
   expect("member sees approved status (100%)", afterApprove.json.kyc.status === "approved" && afterApprove.json.kyc.completeness === 100);
 
@@ -577,6 +579,60 @@ try {
   const ownerRemove = await api("DELETE", `/api/me/team/${ownerRow.id}`, rae);
   expect("account owner cannot be removed (400)", ownerRemove.status === 400);
 
+  /* ---------- team access: invite → accept → role-scoped shared access ---------- */
+  const tokenFromMail = (to: string) => {
+    const mail = [...recentMail].reverse().find(m => m.to === to && m.tag === "team-invite");
+    return mail?.text.match(/token=([a-f0-9]+)/i)?.[1] ?? "";
+  };
+  const adaToken = tokenFromMail("ada@raeandco.com");
+  expect("team: invite email carries an accept link", adaToken.length >= 32);
+  expect("team: raw invite token is never stored",
+    !(db.prepare("SELECT 1 FROM team_members WHERE invite_token_hash = ?").get(adaToken)));
+  const dupInvite = await api("POST", "/api/me/team", rae, { name: "Ada Again", email: "ADA@raeandco.com", role: "Member", monthlyLimit: 0 });
+  expect("team: duplicate pending invite refused (409)", dupInvite.status === 409);
+  const lookup = await api("GET", `/api/invites/${adaToken}`);
+  expect("team: invite lookup shows business, role and inviter",
+    lookup.status === 200 && lookup.json.invite.role === "Admin" && lookup.json.invite.email === "ada@raeandco.com" && !!lookup.json.invite.business);
+  expect("team: unknown invite token 404", (await api("GET", `/api/invites/${"0".repeat(64)}`)).status === 404);
+  expect("team: short password refused (400)", (await api("POST", `/api/invites/${adaToken}/accept`, undefined, { name: "Ada", password: "short" })).status === 400);
+  const accepted = await api("POST", `/api/invites/${adaToken}/accept`, undefined, { name: "Ada Lovelace", password: "analytical-engine" });
+  expect("team: accepting creates a login and signs in",
+    accepted.status === 201 && !!accepted.json.token && accepted.json.user.teamRole === "Admin" && accepted.json.user.accountType === "business");
+  expect("team: an invite link works only once", (await api("POST", `/api/invites/${adaToken}/accept`, undefined, { name: "X", password: "another-pass-1" })).status === 404);
+  const ada = accepted.json.token as string;
+  const raeState = (await api("GET", "/api/me/state", rae)).json;
+  const adaState = await api("GET", "/api/me/state", ada);
+  expect("team: teammate sees the owner's business account",
+    adaState.status === 200 && adaState.json.account.balance === raeState.account.balance &&
+    adaState.json.account.team.some((m: any) => m.email === "ada@raeandco.com" && m.status === "active"));
+  const adaLogin = await api("POST", "/api/auth/login", undefined, { email: "ada@raeandco.com", password: "analytical-engine" });
+  expect("team: teammate signs in with their own password", adaLogin.status === 200 && adaLogin.json.user.teamRole === "Admin");
+  expect("team: /auth/me returns the teammate, not the owner", (await api("GET", "/api/auth/me", ada)).json.user.email === "ada@raeandco.com");
+  expect("team: teammates can't touch the owner's ID application (403)", (await api("PATCH", "/api/me/kyc", ada, { nextStep: "x", completeness: 1 })).status === 403);
+  expect("team: teammates can't edit the owner's profile (403)", (await api("PATCH", "/api/me/profile", ada, { name: "Hijack" })).status === 403);
+  expect("team: teammates can't register passkeys on the owner (403)", (await api("POST", "/api/me/passkeys/challenge", ada, {})).status === 403);
+  const adaPw = await api("POST", "/api/auth/change-password", ada, { current: "analytical-engine", next: "difference-engine" });
+  expect("team: password change applies to the teammate only",
+    adaPw.status === 200 && (await api("POST", "/api/auth/login", undefined, { email: "ada@raeandco.com", password: "difference-engine" })).status === 200);
+  // Admin can invite a Bookkeeper; Bookkeeper is read-only.
+  const bkInvite = await api("POST", "/api/me/team", ada, { name: "Bo Keeper", email: "bo@raeandco.com", role: "Bookkeeper", monthlyLimit: 0 });
+  expect("team: an Admin teammate can invite", bkInvite.status === 201);
+  const bo = (await api("POST", `/api/invites/${tokenFromMail("bo@raeandco.com")}/accept`, undefined, { name: "Bo Keeper", password: "ledger-pass-1" })).json.token as string;
+  expect("team: Bookkeeper can read the account", (await api("GET", "/api/me/state", bo)).status === 200);
+  expect("team: Bookkeeper can't move money (403)",
+    (await api("POST", "/api/me/transfers", bo, { amount: 1, counterparty: "X", kind: "ach" })).status === 403);
+  expect("team: Bookkeeper can't invite (403)",
+    (await api("POST", "/api/me/team", bo, { name: "Z", email: "z@raeandco.com", role: "Member", monthlyLimit: 0 })).status === 403);
+  expect("team: Bookkeeper can still contact support", (await api("POST", "/api/me/support", bo, { subject: "Statement question", message: "Where is the March statement?" })).status === 201);
+  const boRow = (await api("GET", "/api/me/state", rae)).json.account.team.find((m: any) => m.email === "bo@raeandco.com");
+  expect("team: owner removes a teammate", (await api("DELETE", `/api/me/team/${boRow.id}`, rae)).status === 200);
+  expect("team: removed teammate is signed out immediately (401)", (await api("GET", "/api/me/state", bo)).status === 401);
+  expect("team: removed teammate can't sign back in to the business",
+    (await (async () => { const l = await api("POST", "/api/auth/login", undefined, { email: "bo@raeandco.com", password: "ledger-pass-1" });
+      return l.status !== 200 || (await api("GET", "/api/me/state", l.json.token)).status === 401; })()));
+  expect("team: teammate logins aren't listed as separate customers",
+    !(await api("GET", "/api/admin/state", admin)).json.accounts?.some((a: any) => a.email === "ada@raeandco.com"));
+
   // Members can open disputes but never resolve their own (compliance resolves)
   const memberAdvance = await api("POST", `/api/me/disputes/${disputeId}/advance`, alex);
   expect("member self-resolution blocked (404 — no such route)", memberAdvance.status === 404);
@@ -825,6 +881,17 @@ try {
   expect("production never returns a reset code in the response",
     prodReset.status === 200 && prodReset.json.devCode === undefined && prodReset.json.token === undefined &&
     !("devCode" in prodReset.json));
+  const resetMails = recentMail.filter(m => m.tag === "password-reset" && m.to === "june@okafor.design");
+  expect("reset requests hand a reset email to the mailer", resetMails.length >= 2);
+  const lastResetMail = resetMails[resetMails.length - 1];
+  expect("reset email links to the reset screen with the token",
+    Boolean(lastResetMail?.html.includes("#/forgot-password?token=")) && resetMails.some(m => m.text.includes(String(devReset.json.devCode))));
+  expect("unknown addresses never receive a reset email", !recentMail.some(m => m.to === "nobody@nowhere.example"));
+  expect("signup sends an application-received email", recentMail.some(m => m.tag === "welcome" && m.to === "june@okafor.design"));
+  expect("mail is off by default, and a provider without a key never delivers",
+    mailConfig({}).provider === "off" && !mailDelivers(mailConfig({ MAIL_PROVIDER: "resend" })) &&
+    mailDelivers(mailConfig({ MAIL_PROVIDER: "postmark", MAIL_API_KEY: "k" })));
+  expect("reset links use APP_URL", mailConfig({ APP_URL: "https://app.example.com/" }).appUrl === "https://app.example.com");
   const badReset = await api("POST", "/api/auth/reset-password", undefined, { token: "forged-token", password: "new password 123" });
   expect("forged reset token rejected (400)", badReset.status === 400);
   // Mint a token through the same code path (sha256-hashed, 30-min expiry) for
@@ -1787,6 +1854,49 @@ try {
     a.userId === raeId && a.balance === raeMirror.balance && a.cards === raeMirror.cards.length));
   const memberState = await api("GET", "/api/admin/state", rae);
   expect("admin state blocked for members (403)", memberState.status === 403);
+
+  /* ---------- customer support ---------- */
+  resetRateLimits();
+  const emptyTickets = await api("GET", "/api/me/support", alex);
+  expect("support: a member starts with their own (empty) ticket list", emptyTickets.status === 200 && Array.isArray(emptyTickets.json.tickets));
+  expect("support: requires a session (401)", (await api("GET", "/api/me/support")).status === 401);
+  const badTicket = await api("POST", "/api/me/support", alex, { subject: "x", message: "" });
+  expect("support: rejects an empty ticket (400)", badTicket.status === 400);
+  const opened = await api("POST", "/api/me/support", alex, { subject: "Card declined abroad", category: "Cards & ATMs", message: "My card was declined in Lagos." });
+  const ticket = opened.json.ticket;
+  expect("support: member opens a ticket with a reference", opened.status === 201 && /^VS-[0-9A-F]{8}$/.test(ticket.reference) &&
+    ticket.status === "open" && ticket.messages.length === 1 && ticket.messages[0].author === "customer");
+  expect("support: the member gets a confirmation email", recentMail.some(m => m.tag === "support-received" && m.subject.includes(ticket.reference)));
+  expect("support: other members can't read or reply to it (404)",
+    (await api("POST", `/api/me/support/${ticket.id}/messages`, rae, { message: "hi" })).status === 404 &&
+    !(await api("GET", "/api/me/support", rae)).json.tickets.some((t: any) => t.id === ticket.id));
+  const supportQueue = (await api("GET", "/api/admin/operations/cases", admin)).json.cases;
+  const supportQueued = supportQueue.find((c: any) => c.id === ticket.id);
+  expect("support: the ticket lands in the staff Operations queue with its thread",
+    supportQueued?.kind === "support" && supportQueued.reference === ticket.reference && supportQueued.messages.length === 1);
+  expect("support: members cannot use the staff reply route (403)",
+    (await api("POST", `/api/admin/operations/cases/${ticket.id}/reply`, alex, { body: "spoofed" })).status === 403);
+  const reply = await api("POST", `/api/admin/operations/cases/${ticket.id}/reply`, admin, { body: "We've lifted the block — please try again." });
+  expect("support: staff reply moves the case to waiting", reply.status === 201 && reply.json.case.status === "waiting" && reply.json.case.messages.length === 2);
+  expect("support: the staff reply is emailed to the member", recentMail.some(m => m.tag === "support-reply" && m.text.includes("lifted the block")));
+  const seen = (await api("GET", "/api/me/support", alex)).json.tickets.find((t: any) => t.id === ticket.id);
+  expect("support: the member sees the reply and an awaiting-you status", seen?.status === "awaiting_you" &&
+    seen.messages[1].author === "staff" && seen.messages[1].authorName.endsWith("Veyra support"));
+  const followUp = await api("POST", `/api/me/support/${ticket.id}/messages`, alex, { message: "Works now, thanks!" });
+  expect("support: a member reply reopens the case for staff", followUp.status === 201 && followUp.json.ticket.status === "open");
+  const contact = await api("POST", "/api/support/contact", undefined, { name: "Guest Visitor", email: "guest@example.com", topic: "Payments", message: "How do wires work?" });
+  expect("support: the public form opens a case without a session", contact.status === 201 && /^VS-/.test(contact.json.reference));
+  const guestCase = (await api("GET", "/api/admin/operations/cases", admin)).json.cases.find((c: any) => c.reference === contact.json.reference);
+  expect("support: public cases keep the sender's contact details", guestCase?.contact?.email === "guest@example.com" && guestCase.messages.length === 1);
+  const guestReply = await api("POST", `/api/admin/operations/cases/${guestCase.id}/reply`, admin, { body: "Wires arrive same day.", resolve: true });
+  expect("support: staff can reply to a guest by email and resolve", guestReply.status === 201 && guestReply.json.case.status === "resolved" &&
+    recentMail.some(m => m.to === "guest@example.com" && m.tag === "support-reply"));
+  const sales = await api("POST", "/api/support/contact", undefined, { kind: "sales", name: "Ada Buyer", email: "ada@corp.example", company: "Corp", teamSize: "50–199", message: "We'd like a demo." });
+  expect("support: sales enquiries are accepted", sales.status === 201);
+  const bot = await api("POST", "/api/support/contact", undefined, { name: "Bot", email: "bot@spam.example", message: "Buy now!!", website: "http://spam" });
+  expect("support: honeypot submissions are dropped silently", bot.status === 202 && !recentMail.some(m => m.to === "bot@spam.example"));
+  expect("support: invalid public email rejected (400)",
+    (await api("POST", "/api/support/contact", undefined, { name: "No Mail", email: "nope", message: "hello there" })).status === 400);
 
   console.log(failures === 0 ? `\nALL API INTEGRATION TESTS PASSED (${checks} checks)` : `\n${failures} OF ${checks} TEST(S) FAILED`);
 } finally {

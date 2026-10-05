@@ -29,6 +29,7 @@ import {
 import { logAdminAction } from "./audit.js";
 import { validateApplication, rowToApplication, memberIdentity, submissionFor, PROFILE_COLUMNS } from "./identity.js";
 import { seed } from "./seed.js";
+import { sendMail, mailDelivers, passwordResetMail, applicationReceivedMail, kycDecisionMail, supportReceivedMail, supportReplyMail, supportInboxMail, teamInviteMail } from "./mail.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
 import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
@@ -37,7 +38,36 @@ import { loadPrices, loadMarkets, tradableQuote, loadCandles, isCandleRange, CAN
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
   accountType: "personal" | "business"; status: string; business: string;
+  /**
+   * Team access: when a teammate is signed in, `id` (and the account fields)
+   * are the business OWNER's — every /api/me route then acts on the shared
+   * business — while `loginId` is the teammate's own user id, used for
+   * anything that belongs to the person (password, sessions, audit actor).
+   */
+  loginId?: string;
+  teamRole?: TeamRole;
 };
+export type TeamRole = "Admin" | "Member" | "Bookkeeper";
+
+/**
+ * What each team role may do on the owner's account. Allow-list: anything not
+ * listed is refused. Identity-bound routes (the owner's ID application,
+ * passkeys and device sessions) are never available to teammates.
+ */
+const TEAM_NEVER = /^\/api\/me\/(profile|kyc|passkeys|sessions)(\/|$)/;
+const TEAM_ALL_WRITE = /^\/api\/me\/(notifications|support)(\/|$)/;
+const TEAM_MEMBER_WRITE = /^\/api\/me\/(transfers|deposits|holdings\/trade|cards|invoices|payees|scheduled|pockets|budgets|disputes|scout\/apply|perks)(\/|$)/;
+const TEAM_ADMIN_WRITE = /^\/api\/me\/(team|preferences|rewards\/redeem)(\/|$)/;
+export function teamAllows(method: string, path: string, role: TeamRole): boolean {
+  if (path.startsWith("/api/auth/")) return true; // me / logout / change-password — scoped to the login below
+  if (!path.startsWith("/api/me/")) return false;
+  if (TEAM_NEVER.test(path)) return false;
+  if (method === "GET" || method === "HEAD") return true;
+  if (TEAM_ALL_WRITE.test(path)) return true;
+  if (role === "Bookkeeper") return false;
+  if (TEAM_MEMBER_WRITE.test(path)) return true;
+  return role === "Admin" && TEAM_ADMIN_WRITE.test(path);
+}
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -119,7 +149,7 @@ export function createApp(dbPath?: string) {
   /** Full user shape — mirrors the frontend User model (used by /api/auth/me). */
   function fullUser(userId: string) {
     const row = db.prepare(
-      "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at FROM users WHERE id = ?",
+      "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at, team_owner_id, team_role FROM users WHERE id = ?",
     ).get(userId) as Record<string, unknown> | undefined;
     if (!row) return null;
     // The account the user just opened, so the sign-up response is already
@@ -132,6 +162,7 @@ export function createApp(dbPath?: string) {
       business: String(row.business ?? ""), accountType: row.account_type as "personal" | "business",
       avatarUrl: String(row.avatar_url ?? "/images/avatar-3d-default.svg"),
       role: row.role as string, plan: row.plan as "Starter" | "Pro", createdAt: row.created_at as number,
+      ...(row.team_owner_id ? { teamRole: row.team_role as TeamRole, teamOwnerId: String(row.team_owner_id) } : {}),
       bankDetails: {
         accountNumber: String(account?.account_number ?? ""),
         routingNumber: String(account?.routing_number ?? ""),
@@ -172,8 +203,23 @@ export function createApp(dbPath?: string) {
     if (!session || session.revoked || session.expires_at < Date.now()) {
       return void res.status(401).json({ error: "Session revoked — sign in again.", code: "session_revoked" });
     }
-    const user = loadUser(payload.sub);
+    let user = loadUser(payload.sub);
     if (!user) return void res.status(401).json({ error: "Account no longer exists.", code: "no_account" });
+    const team = db.prepare(
+      `SELECT u.team_owner_id, u.team_role, m.status AS member_status FROM users u
+       LEFT JOIN team_members m ON m.member_user_id = u.id AND m.user_id = u.team_owner_id
+       WHERE u.id = ? AND u.team_owner_id IS NOT NULL`,
+    ).get(user.id) as { team_owner_id: string; team_role: TeamRole; member_status: string | null } | undefined;
+    if (team) {
+      const owner = loadUser(team.team_owner_id);
+      if (!owner || team.member_status !== "active") {
+        return void res.status(401).json({ error: "Your access to this business was removed.", code: "team_removed" });
+      }
+      if (!teamAllows(req.method, req.path, team.team_role)) {
+        return void res.status(403).json({ error: `Your team role (${team.team_role}) can't do this — ask the account owner.`, code: "team_role" });
+      }
+      user = { ...owner, name: user.name, email: user.email, loginId: user.id, teamRole: team.team_role };
+    }
     if (process.env.NODE_ENV !== "production" && via === "x-veyra-token") {
       // Worth knowing in dev: it means a proxy between the browser and this
       // process is eating the Authorization header.
@@ -418,7 +464,7 @@ export function createApp(dbPath?: string) {
       .run(tokenId, userId, now(), now() + TOKEN_TTL_MS);
     res.json({
       token: signToken({ sub: userId, jti: tokenId, role: user.role }),
-      user: publicUser(user),
+      user: { ...fullUser(user.id), status: user.status },
       linked: linkedNow,
       provider: providerId,
     });
@@ -502,7 +548,7 @@ export function createApp(dbPath?: string) {
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, user.id, now(), now() + TOKEN_TTL_MS);
-    res.json({ token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: publicUser(user) });
+    res.json({ token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: { ...fullUser(user.id), status: user.status } });
   }));
 
   app.post("/api/me/passkeys/challenge", requireAuth, wrap((req, res) => {
@@ -621,7 +667,7 @@ export function createApp(dbPath?: string) {
       .run(tokenId, row.id, now(), now() + TOKEN_TTL_MS);
     const user = loadUser(row.id)!;
     const token = signToken({ sub: row.id, jti: tokenId, role: user.role });
-    res.json({ token, user: publicUser(user) });
+    res.json({ token, user: { ...fullUser(user.id), status: user.status } });
   }));
 
   app.post("/api/auth/register", requireRecaptcha(RECAPTCHA_ACTIONS.register), wrap((req, res) => {
@@ -694,6 +740,7 @@ export function createApp(dbPath?: string) {
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
     notify(id, "security", "Application received — we're reviewing it",
       "Thanks, we have your details. A specialist is reviewing your application now: most take 1–2 business days. We'll email you the moment there's news, and your dashboard unlocks as soon as you're approved.");
+    void sendMail(applicationReceivedMail(email, name.trim()));
     res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
 
   }));
@@ -705,16 +752,18 @@ export function createApp(dbPath?: string) {
   }));
 
   app.get("/api/auth/me", requireAuth, wrap((req, res) => {
-    res.json({ user: fullUser(req.user!.id) });
+    res.json({ user: fullUser(req.user!.loginId ?? req.user!.id) });
   }));
 
   app.post("/api/auth/change-password", requireAuth, wrap(async (req, res) => {
     const current = String(req.body?.current ?? "");
     const next = String(req.body?.next ?? "");
     if (next.length < 8) return void res.status(400).json({ error: "Use at least 8 characters." });
-    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(req.user!.id) as { password_hash: string };
+    // Always the signed-in person's own password — never a team owner's.
+    const loginId = req.user!.loginId ?? req.user!.id;
+    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(loginId) as { password_hash: string };
     if (!verifyPassword(current, row.password_hash)) return void res.status(400).json({ error: "Your current password is incorrect." });
-    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(next), req.user!.id);
+    db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(hashPassword(next), loginId);
     res.json({ ok: true });
   }));
 
@@ -727,7 +776,7 @@ export function createApp(dbPath?: string) {
     if (!rateLimit(`forgot:${ip}`)) return void res.status(429).json({ error: "Too many attempts — try again in a minute." });
     const email = String(req.body?.email ?? "").trim().toLowerCase();
     const row = typeof email === "string" && email
-      ? (db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string } | undefined)
+      ? (db.prepare("SELECT id, name, email FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string; name: string; email: string } | undefined)
       : undefined;
     /** Development only — see the note on the TODO below. */
     let devCode = "";
@@ -737,12 +786,11 @@ export function createApp(dbPath?: string) {
       db.prepare(
         "INSERT INTO password_resets (token_hash, user_id, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)",
       ).run(tokenHash, row.id, Date.now() + 30 * 60_000, now());
-      // TODO(send-email): deliver the token to `email` via the transactional
-      // email provider. Until a provider is configured, development hands the
-      // code back in the response as well as logging it, so the reset screen —
-      // and anyone trying the demo — is not left waiting for mail that never
-      // arrives. Production never puts a reset token in a response body.
-      if (process.env.NODE_ENV !== "production") {
+      void sendMail(passwordResetMail(row.email, row.name, token));
+      // Without a mail provider, development hands the code back in the
+      // response (and logs it) so the reset screen is not left waiting for mail
+      // that never arrives. Production never puts a reset token in a response.
+      if (process.env.NODE_ENV !== "production" && !mailDelivers()) {
         console.log(`[dev] password reset token for ${email}: ${token}`);
         devCode = token;
       }
@@ -1309,7 +1357,7 @@ export function createApp(dbPath?: string) {
     const nums = cardNumbers();
     const controls = { online: true, contactless: true, atm: type === "physical", international: false, magstripe: type === "physical" };
     const shipping = type === "physical"
-      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: String(req.body?.shippingAddress ?? "125 Market Street · San Francisco, CA 94105") }
+      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: String(req.body?.shippingAddress ?? "").trim().slice(0, 200) || memberMailingAddress(req.user!.id) }
       : { status: "not_applicable" };
     db.prepare(
       `INSERT INTO cards (id, user_id, label, last4, full_number, expiry, cvv, type, cardholder, merchant_lock, category_lock,
@@ -1370,7 +1418,7 @@ export function createApp(dbPath?: string) {
     const newId = rid("card");
     const nums = cardNumbers();
     const shipping = card.type === "physical"
-      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: "125 Market Street · San Francisco, CA 94105" }
+      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: previousShippingAddress(card) || memberMailingAddress(req.user!.id) }
       : { status: "not_applicable" };
     inTransaction(db, () => {
       db.prepare(
@@ -1454,28 +1502,108 @@ export function createApp(dbPath?: string) {
 
   /* ---------- team ---------- */
 
+  const INVITE_TTL_MS = 7 * 86_400_000;
+  const hashInvite = (token: string) => createHash("sha256").update(token).digest("hex");
+
   app.post("/api/me/team", requireAuth, requireApproved, wrap((req, res) => {
     const name = String(req.body?.name ?? "").trim();
-    const email = String(req.body?.email ?? "").trim();
+    const email = String(req.body?.email ?? "").trim().toLowerCase();
     const role = String(req.body?.role ?? "Member");
     const monthlyLimit = dollarsToCents(req.body?.monthlyLimit ?? 0);
     if (!name || !email) return void res.status(400).json({ error: "Name and email are required." });
+    if (!/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "Enter a valid email address." });
     if (!["Admin", "Member", "Bookkeeper"].includes(role)) return void res.status(400).json({ error: "Invalid role." });
+    if (req.user!.accountType !== "business") return void res.status(400).json({ error: "Team access is available on business accounts." });
+    if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
+      return void res.status(409).json({ error: "That email already has a Veyra login. Invite a different address." });
+    }
+    if (db.prepare("SELECT 1 FROM team_members WHERE user_id = ? AND email = ? COLLATE NOCASE AND status != 'removed'").get(req.user!.id, email)) {
+      return void res.status(409).json({ error: "That person is already on your team or has a pending invite." });
+    }
+    if (!rateLimit(`invite:${req.user!.id}`, 30, 60 * 60_000)) return void res.status(429).json({ error: "Too many invites — try again in an hour." });
     const id = rid("tm");
+    const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
     db.prepare(
-      `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'invited')`,
-    ).run(id, req.user!.id, name, email, role, role === "Bookkeeper" ? 0 : 1, monthlyLimit);
+      `INSERT INTO team_members (id, user_id, name, email, role, card_count, monthly_limit_cents, status, invite_token_hash, invite_expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'invited', ?, ?)`,
+    ).run(id, req.user!.id, name, email, role, role === "Bookkeeper" ? 0 : 1, monthlyLimit, hashInvite(token), now() + INVITE_TTL_MS);
+    const business = req.user!.business || req.user!.name;
+    void sendMail(teamInviteMail(email, name, req.user!.name, business, role, token));
     notify(req.user!.id, "security", `Invite sent to ${name}`, `${role} · ${monthlyLimit ? `${centsToDecimal(monthlyLimit)} monthly limit` : "view-only access"}.`);
-    res.status(201).json({ member: { id, name, email, role, cardCount: role === "Bookkeeper" ? 0 : 1, monthlyLimit: monthlyLimit / 100, status: "invited" } });
+    // Without a mail provider the link would only exist in an email that never
+    // leaves the server, so development hands it back for the owner to share.
+    const inviteUrl = process.env.NODE_ENV !== "production" && !mailDelivers() ? `/#/invite/accept?token=${token}` : undefined;
+    res.status(201).json({
+      member: { id, name, email, role, cardCount: role === "Bookkeeper" ? 0 : 1, monthlyLimit: monthlyLimit / 100, status: "invited" },
+      ...(inviteUrl ? { inviteUrl } : {}),
+    });
   }));
 
   app.delete("/api/me/team/:id", requireAuth, requireApproved, wrap((req, res) => {
     const id = String(req.params.id);
-    const member = db.prepare("SELECT role FROM team_members WHERE id = ? AND user_id = ?").get(id, req.user!.id) as { role: string } | undefined;
+    const member = db.prepare("SELECT role, member_user_id FROM team_members WHERE id = ? AND user_id = ?").get(id, req.user!.id) as
+      { role: string; member_user_id: string | null } | undefined;
     if (!member) return void res.status(404).json({ error: "Team member not found." });
     if (member.role === "Owner") return void res.status(400).json({ error: "The account owner cannot be removed." });
-    db.prepare("DELETE FROM team_members WHERE id = ? AND user_id = ?").run(id, req.user!.id);
+    if (member.member_user_id && member.member_user_id === req.user!.loginId) {
+      return void res.status(400).json({ error: "You can't remove yourself — ask the account owner." });
+    }
+    inTransaction(db, () => {
+      db.prepare("DELETE FROM team_members WHERE id = ? AND user_id = ?").run(id, req.user!.id);
+      // Their login stops working immediately: requireAuth requires an active
+      // team_members row, and every live session is revoked.
+      if (member.member_user_id) db.prepare("UPDATE sessions SET revoked = 1 WHERE user_id = ?").run(member.member_user_id);
+    });
     res.json({ ok: true });
+  }));
+
+  /** A pending, unexpired invite by its raw token. */
+  function pendingInvite(token: string) {
+    if (!/^[a-f0-9]{32,128}$/i.test(token)) return undefined;
+    return db.prepare(
+      `SELECT m.*, o.name AS owner_name, o.business AS owner_business, o.plan AS owner_plan
+       FROM team_members m JOIN users o ON o.id = m.user_id
+       WHERE m.invite_token_hash = ? AND m.status = 'invited' AND m.invite_expires_at > ?`,
+    ).get(hashInvite(token), now()) as Record<string, unknown> | undefined;
+  }
+
+  app.get("/api/invites/:token", wrap((req, res) => {
+    const invite = pendingInvite(String(req.params.token));
+    if (!invite) return void res.status(404).json({ error: "This invitation is invalid, already used, or expired. Ask for a new one." });
+    res.json({ invite: {
+      name: String(invite.name), email: String(invite.email), role: String(invite.role),
+      business: String(invite.owner_business || invite.owner_name), invitedBy: String(invite.owner_name),
+      expiresAt: Number(invite.invite_expires_at),
+    } });
+  }));
+
+  app.post("/api/invites/:token/accept", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`invite-accept:${ip}`, 20, 60 * 60_000)) return void res.status(429).json({ error: "Too many attempts — try again later." });
+    const invite = pendingInvite(String(req.params.token));
+    if (!invite) return void res.status(404).json({ error: "This invitation is invalid, already used, or expired. Ask for a new one." });
+    const name = String(req.body?.name ?? "").trim() || String(invite.name);
+    const password = String(req.body?.password ?? "");
+    if (name.length < 2 || name.length > 80) return void res.status(400).json({ error: "Enter your name." });
+    if (password.length < 8) return void res.status(400).json({ error: "Use at least 8 characters for your password." });
+    const email = String(invite.email);
+    if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
+      return void res.status(409).json({ error: "That email already has a Veyra login." });
+    }
+    const id = rid("u");
+    const ownerId = String(invite.user_id);
+    inTransaction(db, () => {
+      db.prepare(
+        `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at, team_owner_id, team_role)
+         VALUES (?, ?, ?, '', ?, 'business', 'user', ?, ?, 'active', ?, ?, ?)`,
+      ).run(id, name, email, String(invite.owner_business ?? ""), String(invite.owner_plan ?? "Pro"), hashPassword(password), now(), ownerId, String(invite.role));
+      db.prepare("UPDATE team_members SET status = 'active', name = ?, member_user_id = ?, invite_token_hash = NULL, invite_expires_at = NULL WHERE id = ?")
+        .run(name, id, String(invite.id));
+    });
+    const tokenId = randomUUID();
+    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)").run(tokenId, id, now(), now() + TOKEN_TTL_MS);
+    notify(ownerId, "security", `${name} joined your team`, `${String(invite.role)} access is now active. You can remove it any time from Team.`);
+    res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: { ...fullUser(id), status: "active" } });
   }));
 
   /* ---------- savings pockets (money ops) ---------- */
@@ -1766,7 +1894,7 @@ export function createApp(dbPath?: string) {
     ).all();
     res.json({
       totals: {
-        customers: one("SELECT COUNT(*) AS n FROM users WHERE role = 'user'"),
+        customers: one("SELECT COUNT(*) AS n FROM users WHERE role = 'user' AND team_owner_id IS NULL"),
         openAccounts: one("SELECT COUNT(*) AS n FROM accounts"),
         totalBalanceCents: one("SELECT COALESCE(SUM(balance_cents),0) AS n FROM accounts"),
         pendingCents: one("SELECT COALESCE(SUM(pending_cents),0) AS n FROM accounts"),
@@ -1792,7 +1920,7 @@ export function createApp(dbPath?: string) {
        LEFT JOIN accounts a ON a.user_id = u.id
        LEFT JOIN kyc_records k ON k.user_id = u.id
        LEFT JOIN identity_profiles p ON p.user_id = u.id
-       WHERE u.role = 'user'
+       WHERE u.role = 'user' AND u.team_owner_id IS NULL
        ORDER BY u.created_at DESC`,
     ).all() as Array<Record<string, unknown>>;
     const filtered = q
@@ -2083,6 +2211,7 @@ export function createApp(dbPath?: string) {
         : decision === "rejected"
         ? `${note} If you think this is a mistake, reply to this message and our team will take another look.`
         : `${note} Open your application to send what we need${requirements.length ? `: ${requirements.map((r: string) => requirementLabel(r)).join(", ")}` : ""}. Reviewed by ${req.user!.name}.`);
+    void sendMail(kycDecisionMail(String(target.email), String(target.name), decision, note));
     res.json({ status: reviewState, decision });
   }));
 
@@ -2146,7 +2275,7 @@ export function createApp(dbPath?: string) {
 
   app.get("/api/admin/staff", requireAuth, requirePerm("staff.manage"), wrap((_req, res) => {
     const staff = db.prepare("SELECT id, name, email, role, status FROM users WHERE role != 'user' ORDER BY role").all();
-    const members = db.prepare("SELECT id, name, email, account_type FROM users WHERE role = 'user' ORDER BY created_at DESC LIMIT 50").all();
+    const members = db.prepare("SELECT id, name, email, account_type FROM users WHERE role = 'user' AND team_owner_id IS NULL ORDER BY created_at DESC LIMIT 50").all();
     res.json({ staff, members });
   }));
 
@@ -2231,7 +2360,7 @@ export function createApp(dbPath?: string) {
     if (!["all", "business", "personal", "unverified"].includes(String(audience))) {
       return void res.status(400).json({ error: "audience must be all, business, personal or unverified." });
     }
-    const targets = db.prepare("SELECT id, account_type FROM users WHERE role = 'user'").all() as Array<{ id: string; account_type: string }>;
+    const targets = db.prepare("SELECT id, account_type FROM users WHERE role = 'user' AND team_owner_id IS NULL").all() as Array<{ id: string; account_type: string }>;
     const audienceFilter = (u: { id: string; account_type: string }) => {
       if (audience === "business") return u.account_type === "business";
       if (audience === "personal") return u.account_type === "personal";
@@ -2427,6 +2556,9 @@ export function createApp(dbPath?: string) {
         createdBy: { id: String(row.created_by), name: String(row.creator_name) },
         dueAt: row.due_at == null ? undefined : Number(row.due_at), createdAt: Number(row.created_at),
         updatedAt: Number(row.updated_at), closedAt: row.closed_at == null ? undefined : Number(row.closed_at), events, notes,
+        reference: supportReference(caseId), category: row.category ? String(row.category) : undefined,
+        contact: row.contact_email ? { name: String(row.contact_name ?? ""), email: String(row.contact_email) } : undefined,
+        messages: supportMessages(caseId),
       };
     });
   };
@@ -2539,6 +2671,185 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ case: loadOperationCases().find(item => item.id === caseId) });
   }));
 
+  /**
+   * Where a physical card goes when the member doesn't say: the mailing address
+   * from their application (the business address for business accounts) —
+   * never a placeholder.
+   */
+  function memberMailingAddress(userId: string): string {
+    const row = db.prepare(`SELECT p.*, u.account_type FROM identity_profiles p JOIN users u ON u.id = p.user_id WHERE p.user_id = ?`).get(userId) as Record<string, unknown> | undefined;
+    if (!row) return "Address on file";
+    const biz = row.account_type === "business" && row.biz_address_line1;
+    const pick = (personal: string, business: string) => String((biz ? row[business] : row[personal]) ?? "").trim();
+    const parts = [pick("address_line1", "biz_address_line1"), pick("address_line2", "biz_address_line2"),
+      [pick("city", "biz_city"), [pick("state", "biz_state"), pick("postal_code", "biz_postal_code")].filter(Boolean).join(" ")].filter(Boolean).join(", ")];
+    return parts.filter(Boolean).join(" · ") || "Address on file";
+  }
+  function previousShippingAddress(card: Record<string, unknown>): string {
+    try {
+      const shipping = JSON.parse(String(card.shipping_json ?? "{}")) as { address?: unknown };
+      return typeof shipping.address === "string" ? shipping.address : "";
+    } catch { return ""; }
+  }
+
+  /* ============================== customer support ============================== */
+
+  // A support ticket is an operations case (kind 'support') plus a
+  // customer-visible thread in support_messages. Members open and reply from
+  // the in-app Support Desk; visitors use the public Support / Contact forms;
+  // staff reply from the Operations queue. Each side is notified (in-app and by
+  // email when a provider is configured).
+  const SUPPORT_CATEGORIES = ["Cards & ATMs", "Transfers & Zelle", "Dispute / Fraud", "Account KYC", "Rewards", "Account", "Payments", "Sales", "Something else"] as const;
+  function supportReference(caseId: string) {
+    return `VS-${caseId.replace(/^ops_/, "").replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  }
+  function supportMessages(caseId: string) {
+    return (db.prepare(
+      "SELECT id, author_kind, author_name, body, created_at FROM support_messages WHERE case_id = ? ORDER BY created_at, id",
+    ).all(caseId) as Array<Record<string, unknown>>).map(m => ({
+      id: Number(m.id), author: m.author_kind as "customer" | "staff", authorName: String(m.author_name),
+      body: String(m.body), createdAt: Number(m.created_at),
+    }));
+  }
+  /** Member-facing shape: no internal notes, no staff identities beyond a first name. */
+  function memberTicket(row: Record<string, unknown>) {
+    const id = String(row.id);
+    const status = String(row.status);
+    return {
+      id, reference: supportReference(id), subject: String(row.title), category: String(row.category ?? "Something else"),
+      status: status === "resolved" ? "resolved" : status === "waiting" ? "awaiting_you" : status === "investigating" ? "in_progress" : "open",
+      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+      messages: supportMessages(id).map(m => ({ ...m, authorName: m.author === "staff" ? `${m.authorName.split(/\s+/)[0]} · Veyra support` : m.authorName })),
+    };
+  }
+  function supportText(value: unknown, min: number, max: number, label: string): string {
+    const text = String(value ?? "").trim();
+    if (text.length < min || text.length > max) throw new BadInputError(`${label} must be between ${min} and ${max} characters.`);
+    return text;
+  }
+  /** Public tickets need a creator; they are attributed to the bootstrap Super Admin as the system actor. */
+  function systemActorId(): string | undefined {
+    const row = db.prepare("SELECT id FROM users WHERE role = 'superadmin' ORDER BY created_at LIMIT 1").get() as { id: string } | undefined;
+    return row?.id;
+  }
+  function alertSupportInbox(caseId: string, subject: string, from: string, body: string) {
+    const inbox = String(process.env.SUPPORT_INBOX ?? "").trim();
+    if (inbox) void sendMail(supportInboxMail(inbox, supportReference(caseId), subject, from, body));
+  }
+
+  app.get("/api/me/support", requireAuth, wrap((req, res) => {
+    const rows = db.prepare(
+      "SELECT * FROM operation_cases WHERE kind = 'support' AND user_id = ? ORDER BY updated_at DESC LIMIT 100",
+    ).all(req.user!.id) as Array<Record<string, unknown>>;
+    res.json({ tickets: rows.map(memberTicket) });
+  }));
+
+  app.post("/api/me/support", requireAuth, wrap((req, res) => {
+    if (!rateLimit(`support:${req.user!.id}`, 10, 60 * 60_000)) {
+      return void res.status(429).json({ error: "You've opened a lot of tickets recently — reply on an existing one, or try again in an hour." });
+    }
+    const subject = supportText(req.body?.subject, 3, 120, "Subject");
+    const message = supportText(req.body?.message, 2, 4_000, "Message");
+    const category = (SUPPORT_CATEGORIES as readonly string[]).includes(String(req.body?.category)) ? String(req.body.category) : "Something else";
+    const id = `ops_${randomUUID()}`;
+    const stamp = now();
+    inTransaction(db, () => {
+      db.prepare(`INSERT INTO operation_cases
+        (id, title, kind, priority, status, summary, user_id, category, created_by, created_at, updated_at)
+        VALUES (?, ?, 'support', ?, 'open', ?, ?, ?, ?, ?, ?)`)
+        .run(id, subject, category === "Dispute / Fraud" ? "high" : "normal", message.slice(0, 2_000), req.user!.id, category, req.user!.id, stamp, stamp);
+      db.prepare("INSERT INTO support_messages (case_id, author_kind, author_id, author_name, body, created_at) VALUES (?, 'customer', ?, ?, ?, ?)")
+        .run(id, req.user!.id, req.user!.name, message, stamp);
+      addOperationEvent(id, req, "case.created", `Support ticket opened by the member (${category})`);
+    });
+    void sendMail(supportReceivedMail(req.user!.email, req.user!.name, supportReference(id), subject, true));
+    alertSupportInbox(id, subject, `${req.user!.name} <${req.user!.email}>`, message);
+    const row = db.prepare("SELECT * FROM operation_cases WHERE id = ?").get(id) as Record<string, unknown>;
+    res.status(201).json({ ticket: memberTicket(row) });
+  }));
+
+  app.post("/api/me/support/:id/messages", requireAuth, wrap((req, res) => {
+    const caseId = String(req.params.id);
+    const row = db.prepare("SELECT * FROM operation_cases WHERE id = ? AND kind = 'support' AND user_id = ?").get(caseId, req.user!.id) as Record<string, unknown> | undefined;
+    if (!row) return void res.status(404).json({ error: "Ticket not found." });
+    if (!rateLimit(`support-reply:${req.user!.id}`, 60, 60 * 60_000)) return void res.status(429).json({ error: "Too many messages — try again shortly." });
+    const message = supportText(req.body?.message, 1, 4_000, "Message");
+    inTransaction(db, () => {
+      db.prepare("INSERT INTO support_messages (case_id, author_kind, author_id, author_name, body, created_at) VALUES (?, 'customer', ?, ?, ?, ?)")
+        .run(caseId, req.user!.id, req.user!.name, message, now());
+      // A customer reply puts the ball back in support's court (and reopens a resolved ticket).
+      const reopen = row.status === "waiting" || row.status === "resolved";
+      db.prepare(`UPDATE operation_cases SET updated_at = ?${reopen ? ", status = 'open', closed_at = NULL" : ""} WHERE id = ?`).run(now(), caseId);
+      addOperationEvent(caseId, req, "support.customer_reply", reopen ? "Customer replied — reopened" : "Customer replied");
+    });
+    const updated = db.prepare("SELECT * FROM operation_cases WHERE id = ?").get(caseId) as Record<string, unknown>;
+    res.status(201).json({ ticket: memberTicket(updated) });
+  }));
+
+  // Public Support / Contact forms. No session, so: per-IP rate limit, a
+  // honeypot field bots fill in, and strict length limits.
+  app.post("/api/support/contact", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`contact:${ip}`, 5, 60 * 60_000)) return void res.status(429).json({ error: "Too many messages from this connection — try again later." });
+    const body = req.body ?? {};
+    // Honeypot: pretend success so bots learn nothing.
+    if (typeof body.website === "string" && body.website.trim()) return void res.status(202).json({ ok: true });
+    const name = supportText(body.name, 2, 80, "Name");
+    const email = String(body.email ?? "").trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 200) return void res.status(400).json({ error: "Enter a valid email address." });
+    const message = supportText(body.message, 5, 4_000, "Message");
+    const sales = body.kind === "sales";
+    const company = String(body.company ?? "").trim().slice(0, 120);
+    const teamSize = String(body.teamSize ?? "").trim().slice(0, 20);
+    const topic = String(body.topic ?? "").trim().slice(0, 60);
+    const category = sales ? "Sales" : (SUPPORT_CATEGORIES as readonly string[]).includes(topic) ? topic : "Something else";
+    const subject = sales ? `Sales enquiry${company ? ` — ${company}` : ""}` : `${category} — website message`;
+    const actor = systemActorId();
+    if (!actor) return void res.status(503).json({ error: "Support is not available right now — please email us instead." });
+    const member = db.prepare("SELECT COALESCE(team_owner_id, id) AS id FROM users WHERE email = ? COLLATE NOCASE AND role = 'user'").get(email) as { id: string } | undefined;
+    const thread = sales ? `${message}\n\nCompany: ${company || "—"} · Team size: ${teamSize || "—"}` : message;
+    const id = `ops_${randomUUID()}`;
+    const stamp = now();
+    inTransaction(db, () => {
+      db.prepare(`INSERT INTO operation_cases
+        (id, title, kind, priority, status, summary, user_id, category, contact_name, contact_email, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, 'normal', 'open', ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, subject, sales ? "other" : "support", thread.slice(0, 2_000), member?.id ?? null, category, name, email, actor, stamp, stamp);
+      db.prepare("INSERT INTO support_messages (case_id, author_kind, author_id, author_name, body, created_at) VALUES (?, 'customer', ?, ?, ?, ?)")
+        .run(id, member?.id ?? null, name, thread, stamp);
+      db.prepare("INSERT INTO operation_case_events (case_id, at, actor_id, actor_name, action, detail) VALUES (?, ?, ?, 'Website form', 'case.created', ?)")
+        .run(id, stamp, actor, `${sales ? "Sales enquiry" : "Support request"} from ${name} <${email}>`);
+    });
+    void sendMail(supportReceivedMail(email, name, supportReference(id), subject, false));
+    alertSupportInbox(id, subject, `${name} <${email}>`, thread);
+    res.status(201).json({ ok: true, reference: supportReference(id) });
+  }));
+
+  app.post("/api/admin/operations/cases/:id/reply", requireAuth, requirePerm("dashboard.view"), wrap((req, res) => {
+    const caseId = String(req.params.id);
+    const row = db.prepare(`
+      SELECT c.*, u.name AS member_name, u.email AS member_email FROM operation_cases c
+      LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?`).get(caseId) as Record<string, unknown> | undefined;
+    if (!row) return void res.status(404).json({ error: "Case not found." });
+    const toEmail = String(row.contact_email ?? row.member_email ?? "");
+    if (!toEmail) return void res.status(400).json({ error: "This case has no customer to reply to — use an internal note instead." });
+    const message = supportText(req.body?.body, 2, 4_000, "Reply");
+    const resolve = req.body?.resolve === true;
+    inTransaction(db, () => {
+      db.prepare("INSERT INTO support_messages (case_id, author_kind, author_id, author_name, body, created_at) VALUES (?, 'staff', ?, ?, ?, ?)")
+        .run(caseId, req.user!.id, req.user!.name, message, now());
+      db.prepare("UPDATE operation_cases SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?")
+        .run(resolve ? "resolved" : "waiting", resolve ? now() : null, now(), caseId);
+      addOperationEvent(caseId, req, "support.staff_reply", resolve ? "Replied to the customer and resolved" : "Replied to the customer — waiting on them");
+    });
+    const reference = supportReference(caseId);
+    const isMember = Boolean(row.user_id);
+    if (isMember) notify(String(row.user_id), "security", `Support replied · ${reference}`, message.slice(0, 240));
+    void sendMail(supportReplyMail(toEmail, String(row.contact_name ?? row.member_name ?? ""), reference, String(row.title), message, isMember));
+    audit(req, "operations.case.reply", "System", `case:${caseId}`, `Replied to the customer on ${String(row.title)}.`);
+    res.status(201).json({ case: loadOperationCases().find(item => item.id === caseId) });
+  }));
+
   /* ============================== admin: aggregate state ============================== */
 
   // One round trip for the Super Admin console: users, account summaries,
@@ -2566,7 +2877,7 @@ export function createApp(dbPath?: string) {
              p.dob, p.ssn, p.city, p.state, p.id_type, p.legal_name, p.owner_name, p.submitted_at
       FROM users u LEFT JOIN accounts a ON a.user_id = u.id
       LEFT JOIN identity_profiles p ON p.user_id = u.id
-      WHERE u.role = 'user' OR u.role IS NULL
+      WHERE (u.role = 'user' OR u.role IS NULL) AND u.team_owner_id IS NULL
       ORDER BY u.created_at
     `).all() as Array<Record<string, unknown>>).map(a => ({
       userId: String(a.id), name: String(a.name), email: String(a.email), business: String(a.business ?? ""),
@@ -2713,10 +3024,6 @@ export function createApp(dbPath?: string) {
 /* ---------- helpers ---------- */
 
 const money = (cents: number) => ({ cents, amount: centsToDecimal(cents) });
-
-function publicUser(u: AuthedUser) {
-  return { id: u.id, name: u.name, email: u.email, role: u.role, accountType: u.accountType, business: u.business, status: u.status };
-}
 
 function txnOut(t: any) {
   return {

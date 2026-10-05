@@ -157,6 +157,16 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/admin/operations/cases", auth: true, perm: "dashboard.view" },
   { method: "PUT", path: "/api/admin/operations/cases/:id", auth: true, perm: "dashboard.view" },
   { method: "POST", path: "/api/admin/operations/cases/:id/notes", auth: true, perm: "dashboard.view" },
+  { method: "POST", path: "/api/admin/operations/cases/:id/reply", auth: true, perm: "dashboard.view" },
+  // Customer support: members (any review state) see and reply to only their own tickets.
+  { method: "GET", path: "/api/me/support", auth: true, perm: null },
+  { method: "POST", path: "/api/me/support", auth: true, perm: null },
+  { method: "POST", path: "/api/me/support/:id/messages", auth: true, perm: null },
+  // Public website Support / Contact forms: rate-limited, honeypot-protected.
+  { method: "POST", path: "/api/support/contact", auth: false, perm: null },
+  // Team invitations: the raw token is the credential (hashed, single-use, 7-day expiry).
+  { method: "GET", path: "/api/invites/:token", auth: false, perm: null },
+  { method: "POST", path: "/api/invites/:token/accept", auth: false, perm: null },
   { method: "GET", path: "/api/admin/risk/disputes", auth: true, perm: "risk.view" },
   { method: "POST", path: "/api/admin/risk/disputes/:id/advance", auth: true, perm: "risk.resolve" },
   { method: "GET", path: "/api/admin/staff", auth: true, perm: "staff.manage" },

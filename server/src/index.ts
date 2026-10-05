@@ -31,6 +31,7 @@ import { describeFederated } from "./federated.js";
 import { describeWebauthn } from "./webauthn.js";
 import { describeCrypto } from "./assets.js";
 import { describePrices } from "./prices.js";
+import { describeMail } from "./mail.js";
 import { seedDemoAccounts, DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD, DEMO_PASSWORD } from "./demo.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -75,6 +76,7 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(describeWebauthn());
   console.log(describeCrypto());
   console.log(describePrices());
+  console.log(describeMail());
 
   if (isProduction) {
     console.log("Mode: production (members sign up through the API)");
