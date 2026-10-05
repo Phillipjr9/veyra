@@ -28,6 +28,7 @@ const CLIENT_FILES = [
   "src/pages/SuperAdmin.tsx",
   "src/pages/Auth.tsx",
   "src/pages/SupportCenter.tsx",
+  "src/pages/Marketing.tsx",
   "src/components/Chrome.tsx",
   "src/components/CommandPalette.tsx",
   "src/components/MoneyFlow.tsx",

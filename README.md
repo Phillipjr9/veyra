@@ -664,6 +664,35 @@ never enters float math. It is exact on all 200,000 values, and **identical to
 the old behaviour on every two-decimal amount** — the rejection contract
 (objects, arrays, booleans, `"12abc"`, empty strings) is unchanged.
 
+## Transactional email & support
+
+**Email delivery** (`server/src/mail.ts`) sends real messages through an HTTP
+email API — Resend, Postmark or SendGrid — with no SDK dependency. It is off
+until configured:
+
+| Variable | Purpose |
+|---|---|
+| `MAIL_PROVIDER` | `resend`, `postmark`, `sendgrid`, or `log` (print to console) |
+| `MAIL_API_KEY` | Provider API key / server token |
+| `MAIL_FROM` | Verified sender, e.g. `Veyra <no-reply@yourdomain.com>` |
+| `APP_URL` | Public app origin used for links in emails |
+| `SUPPORT_INBOX` | Optional team inbox alerted about each new support request |
+
+Emails sent: password reset (with a one-click link that opens the reset screen
+with the code filled in), application received, application approved / more
+information needed / declined, support-request confirmation, and support
+replies. Sending never blocks or fails the API call that triggered it. Without
+a provider, development still shows the reset code on screen; production never
+returns it.
+
+**Customer support** is real end to end. Members open and reply to cases from
+**Support Desk** (`/app/support-desk`); visitors use the public **Support** and
+**Contact** forms (rate-limited, with a honeypot field). Every request becomes a
+`support` case in the Super Admin **Operations** queue with its own reference
+(`VS-XXXXXXXX`). Staff reply from the case panel — the customer sees the reply in
+the app, gets a notification and an email, and replying again reopens the case.
+Internal notes stay internal.
+
 ## Whole-app verification
 
 Use Node **22 or newer** (the server uses `node:sqlite`). Install the browser once,
@@ -706,12 +735,13 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (347 runtime assertions); the audit exercises 561 HTTP security probes
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (372 runtime assertions); the audit exercises 591 HTTP security probes
 node scripts/dev-prices.mjs  # offline crypto price feed (see Digital assets)
 ```
 
-> **Production notes:** the frontend is API-only (no offline mode). Password
-> reset tokens are minted and stored hashed, but delivering the reset email
-> requires wiring an SMTP provider to the marked TODO in
-> `server/src/app.ts`. Card issuing and payment rails are internal-ledger
-> operations until a sponsor bank / processor is integrated.
+> **Production notes:** the frontend is API-only (no offline mode). Email
+> delivery is built in (`server/src/mail.ts`) but off until you set
+> `MAIL_PROVIDER`, `MAIL_API_KEY`, `MAIL_FROM` and `APP_URL` — see
+> [Transactional email & support](#transactional-email--support). Card issuing
+> and payment rails are internal-ledger operations until a sponsor bank /
+> processor is integrated.

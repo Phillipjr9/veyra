@@ -91,6 +91,11 @@ type OperationCase = {
   closedAt?: number;
   events: Array<{ id: number; at: number; actorId: string; actorName: string; action: string; detail: string }>;
   notes: Array<{ id: number; authorId: string; authorName: string; body: string; createdAt: number }>;
+  /** Support conversations: the customer-visible thread (internal notes stay in `notes`). */
+  reference?: string;
+  category?: string;
+  contact?: { name: string; email: string };
+  messages?: Array<{ id: number; author: "customer" | "staff"; authorName: string; body: string; createdAt: number }>;
 };
 type OperationSignal = {
   id: string;
@@ -206,6 +211,7 @@ export function SuperAdminPage() {
     title: "", kind: "other", priority: "normal", summary: "", userId: "", assignedTo: "", dueAt: "", sourceType: "", sourceId: "",
   });
   const [caseNote, setCaseNote] = useState("");
+  const [caseReply, setCaseReply] = useState("");
   const [caseSaving, setCaseSaving] = useState(false);
 
   // The backend is the system of record — load the aggregate admin state and
@@ -585,6 +591,19 @@ export function SuperAdminPage() {
         toast({ tone: "success", title: "Internal note added", description: "The case timeline was updated." });
       })
       .catch((err: Error) => toast({ tone: "error", title: "Note wasn't saved", description: err.message }))
+      .finally(() => setCaseSaving(false));
+  };
+
+  const handleCaseReply = (item: OperationCase, resolve: boolean) => {
+    const body = caseReply.trim();
+    if (!body || !guard("dashboard.view", "reply to customers")) return;
+    setCaseSaving(true);
+    apiPost<{ case: OperationCase }>(`/api/admin/operations/cases/${item.id}/reply`, { body, resolve })
+      .then(() => {
+        setCaseReply(""); refresh();
+        toast({ tone: "success", title: resolve ? "Replied and resolved" : "Reply sent", description: "The customer was notified in-app and by email." });
+      })
+      .catch((err: Error) => toast({ tone: "error", title: "Reply wasn't sent", description: err.message }))
       .finally(() => setCaseSaving(false));
   };
 
@@ -1044,6 +1063,25 @@ export function SuperAdminPage() {
                     <label>Due date<input type="datetime-local" disabled={caseSaving} value={selectedOperationCase.dueAt ? new Date(selectedOperationCase.dueAt - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16) : ""} onChange={event => handleCaseUpdate(selectedOperationCase, { dueAt: event.target.value ? new Date(event.target.value).getTime() : null })} /></label>
                   </div>
                   {selectedOperationCase.sourceId && <button type="button" className="admin-case-source" onClick={() => setActiveTab(selectedOperationCase.sourceType === "kyc" ? "kyc" : selectedOperationCase.sourceType === "dispute" ? "risk" : selectedOperationCase.sourceType === "transaction" ? "transactions" : "customers")}><FileText size={13} /> Linked {selectedOperationCase.sourceType} · {selectedOperationCase.sourceId}</button>}
+                  {(selectedOperationCase.messages?.length || selectedOperationCase.contact) ? (
+                    <div className="admin-case-timeline admin-case-conversation">
+                      <div className="admin-case-timeline-head"><h4>Customer conversation{selectedOperationCase.reference ? ` · ${selectedOperationCase.reference}` : ""}</h4><span>{selectedOperationCase.contact ? `${selectedOperationCase.contact.name} <${selectedOperationCase.contact.email}>` : selectedOperationCase.member?.email}</span></div>
+                      {(selectedOperationCase.messages ?? []).map(message => (
+                        <div className={`admin-case-timeline-entry ${message.author === "staff" ? "note" : "event"}`} key={message.id}>
+                          <span className="admin-case-timeline-dot" />
+                          <div><b>{message.author === "staff" ? `${message.authorName} (Veyra)` : message.authorName}</b><p style={{ whiteSpace: "pre-wrap" }}>{message.body}</p><small>{ago(message.createdAt)}</small></div>
+                        </div>
+                      ))}
+                      <form className="admin-case-note" onSubmit={event => { event.preventDefault(); handleCaseReply(selectedOperationCase, false); }}>
+                        <label htmlFor="case-reply"><Mail size={14} /> Reply to customer (visible to them, sent by email)</label>
+                        <textarea id="case-reply" value={caseReply} maxLength={4000} onChange={event => setCaseReply(event.target.value)} placeholder="Write a reply the customer will see…" />
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button type="submit" className="solid-btn sm" disabled={!caseReply.trim() || caseSaving}>Send reply</button>
+                          <button type="button" className="ghost-btn sm" disabled={!caseReply.trim() || caseSaving} onClick={() => handleCaseReply(selectedOperationCase, true)}>Send & resolve</button>
+                        </div>
+                      </form>
+                    </div>
+                  ) : null}
                   <div className="admin-case-timeline"><div className="admin-case-timeline-head"><h4>Internal timeline</h4><span>{caseTimeline.length} entries</span></div>{caseTimeline.length ? caseTimeline.map(entry => <div className={`admin-case-timeline-entry ${entry.type}`} key={entry.id}><span className="admin-case-timeline-dot" /><div><b>{entry.actor}</b><p>{entry.text}</p><small>{ago(entry.at)}</small></div></div>) : <p className="panel-sub">The server will append every ownership, status, priority and note update here.</p>}</div>
                   <form className="admin-case-note" onSubmit={event => { event.preventDefault(); handleCaseNote(selectedOperationCase); }}><label htmlFor="case-note"><MessageSquare size={14} /> Add internal note</label><textarea id="case-note" value={caseNote} maxLength={2000} onChange={event => setCaseNote(event.target.value)} placeholder="Record rationale, evidence pointers, handoff details or next steps…" /><button type="submit" className="ghost-btn sm" disabled={!caseNote.trim() || caseSaving}>Save note</button></form>
                 </> : <div className="admin-case-empty"><ClipboardList size={24} /><strong>Select a case</strong><small>Its full internal timeline and controls will open here.</small></div>}

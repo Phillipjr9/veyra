@@ -494,7 +494,12 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
       if (flow.kind === "deposit") {
         r = deposit(flow.amount, sourceById(flow.sourceId).label);
       } else {
-        r = sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
+        r = sendPayment(
+          { counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note },
+          // Swap in the server's booked receipt (real reference, rewards and
+          // any Scout savings) as soon as it arrives.
+          booked => setResult(current => (current && current.date === booked.date ? booked : current)),
+        );
         onComplete.current?.(r);
       }
       setResult(r);

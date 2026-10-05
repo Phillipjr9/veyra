@@ -29,6 +29,7 @@ import {
 import { logAdminAction } from "./audit.js";
 import { validateApplication, rowToApplication, memberIdentity, submissionFor, PROFILE_COLUMNS } from "./identity.js";
 import { seed } from "./seed.js";
+import { sendMail, mailDelivers, passwordResetMail, applicationReceivedMail, kycDecisionMail, supportReceivedMail, supportReplyMail, supportInboxMail } from "./mail.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
 import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
@@ -418,7 +419,7 @@ export function createApp(dbPath?: string) {
       .run(tokenId, userId, now(), now() + TOKEN_TTL_MS);
     res.json({
       token: signToken({ sub: userId, jti: tokenId, role: user.role }),
-      user: publicUser(user),
+      user: { ...fullUser(user.id), status: user.status },
       linked: linkedNow,
       provider: providerId,
     });
@@ -502,7 +503,7 @@ export function createApp(dbPath?: string) {
     const tokenId = randomUUID();
     db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .run(tokenId, user.id, now(), now() + TOKEN_TTL_MS);
-    res.json({ token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: publicUser(user) });
+    res.json({ token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: { ...fullUser(user.id), status: user.status } });
   }));
 
   app.post("/api/me/passkeys/challenge", requireAuth, wrap((req, res) => {
@@ -621,7 +622,7 @@ export function createApp(dbPath?: string) {
       .run(tokenId, row.id, now(), now() + TOKEN_TTL_MS);
     const user = loadUser(row.id)!;
     const token = signToken({ sub: row.id, jti: tokenId, role: user.role });
-    res.json({ token, user: publicUser(user) });
+    res.json({ token, user: { ...fullUser(user.id), status: user.status } });
   }));
 
   app.post("/api/auth/register", requireRecaptcha(RECAPTCHA_ACTIONS.register), wrap((req, res) => {
@@ -694,6 +695,7 @@ export function createApp(dbPath?: string) {
       .run(tokenId, id, now(), now() + TOKEN_TTL_MS);
     notify(id, "security", "Application received — we're reviewing it",
       "Thanks, we have your details. A specialist is reviewing your application now: most take 1–2 business days. We'll email you the moment there's news, and your dashboard unlocks as soon as you're approved.");
+    void sendMail(applicationReceivedMail(email, name.trim()));
     res.status(201).json({ token: signToken({ sub: id, jti: tokenId, role: "user" }), user: fullUser(id) });
 
   }));
@@ -727,7 +729,7 @@ export function createApp(dbPath?: string) {
     if (!rateLimit(`forgot:${ip}`)) return void res.status(429).json({ error: "Too many attempts — try again in a minute." });
     const email = String(req.body?.email ?? "").trim().toLowerCase();
     const row = typeof email === "string" && email
-      ? (db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string } | undefined)
+      ? (db.prepare("SELECT id, name, email FROM users WHERE email = ? COLLATE NOCASE").get(email) as { id: string; name: string; email: string } | undefined)
       : undefined;
     /** Development only — see the note on the TODO below. */
     let devCode = "";
@@ -737,12 +739,11 @@ export function createApp(dbPath?: string) {
       db.prepare(
         "INSERT INTO password_resets (token_hash, user_id, expires_at, used, created_at) VALUES (?, ?, ?, 0, ?)",
       ).run(tokenHash, row.id, Date.now() + 30 * 60_000, now());
-      // TODO(send-email): deliver the token to `email` via the transactional
-      // email provider. Until a provider is configured, development hands the
-      // code back in the response as well as logging it, so the reset screen —
-      // and anyone trying the demo — is not left waiting for mail that never
-      // arrives. Production never puts a reset token in a response body.
-      if (process.env.NODE_ENV !== "production") {
+      void sendMail(passwordResetMail(row.email, row.name, token));
+      // Without a mail provider, development hands the code back in the
+      // response (and logs it) so the reset screen is not left waiting for mail
+      // that never arrives. Production never puts a reset token in a response.
+      if (process.env.NODE_ENV !== "production" && !mailDelivers()) {
         console.log(`[dev] password reset token for ${email}: ${token}`);
         devCode = token;
       }
@@ -1309,7 +1310,7 @@ export function createApp(dbPath?: string) {
     const nums = cardNumbers();
     const controls = { online: true, contactless: true, atm: type === "physical", international: false, magstripe: type === "physical" };
     const shipping = type === "physical"
-      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: String(req.body?.shippingAddress ?? "125 Market Street · San Francisco, CA 94105") }
+      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: String(req.body?.shippingAddress ?? "").trim().slice(0, 200) || memberMailingAddress(req.user!.id) }
       : { status: "not_applicable" };
     db.prepare(
       `INSERT INTO cards (id, user_id, label, last4, full_number, expiry, cvv, type, cardholder, merchant_lock, category_lock,
@@ -1370,7 +1371,7 @@ export function createApp(dbPath?: string) {
     const newId = rid("card");
     const nums = cardNumbers();
     const shipping = card.type === "physical"
-      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: "125 Market Street · San Francisco, CA 94105" }
+      ? { status: "processing", carrier: "ParcelPost", tracking: `VP${Math.random().toString().slice(2, 14)}`, orderedAt: now(), estimatedDelivery: now() + 6 * 86_400_000, address: previousShippingAddress(card) || memberMailingAddress(req.user!.id) }
       : { status: "not_applicable" };
     inTransaction(db, () => {
       db.prepare(
@@ -2083,6 +2084,7 @@ export function createApp(dbPath?: string) {
         : decision === "rejected"
         ? `${note} If you think this is a mistake, reply to this message and our team will take another look.`
         : `${note} Open your application to send what we need${requirements.length ? `: ${requirements.map((r: string) => requirementLabel(r)).join(", ")}` : ""}. Reviewed by ${req.user!.name}.`);
+    void sendMail(kycDecisionMail(String(target.email), String(target.name), decision, note));
     res.json({ status: reviewState, decision });
   }));
 
@@ -2427,6 +2429,9 @@ export function createApp(dbPath?: string) {
         createdBy: { id: String(row.created_by), name: String(row.creator_name) },
         dueAt: row.due_at == null ? undefined : Number(row.due_at), createdAt: Number(row.created_at),
         updatedAt: Number(row.updated_at), closedAt: row.closed_at == null ? undefined : Number(row.closed_at), events, notes,
+        reference: supportReference(caseId), category: row.category ? String(row.category) : undefined,
+        contact: row.contact_email ? { name: String(row.contact_name ?? ""), email: String(row.contact_email) } : undefined,
+        messages: supportMessages(caseId),
       };
     });
   };
@@ -2536,6 +2541,185 @@ export function createApp(dbPath?: string) {
       addOperationEvent(caseId, req, "case.note", "Internal note added");
     });
     audit(req, "operations.case.note", "System", `case:${caseId}`, `Added an internal note to ${exists.title}.`);
+    res.status(201).json({ case: loadOperationCases().find(item => item.id === caseId) });
+  }));
+
+  /**
+   * Where a physical card goes when the member doesn't say: the mailing address
+   * from their application (the business address for business accounts) —
+   * never a placeholder.
+   */
+  function memberMailingAddress(userId: string): string {
+    const row = db.prepare(`SELECT p.*, u.account_type FROM identity_profiles p JOIN users u ON u.id = p.user_id WHERE p.user_id = ?`).get(userId) as Record<string, unknown> | undefined;
+    if (!row) return "Address on file";
+    const biz = row.account_type === "business" && row.biz_address_line1;
+    const pick = (personal: string, business: string) => String((biz ? row[business] : row[personal]) ?? "").trim();
+    const parts = [pick("address_line1", "biz_address_line1"), pick("address_line2", "biz_address_line2"),
+      [pick("city", "biz_city"), [pick("state", "biz_state"), pick("postal_code", "biz_postal_code")].filter(Boolean).join(" ")].filter(Boolean).join(", ")];
+    return parts.filter(Boolean).join(" · ") || "Address on file";
+  }
+  function previousShippingAddress(card: Record<string, unknown>): string {
+    try {
+      const shipping = JSON.parse(String(card.shipping_json ?? "{}")) as { address?: unknown };
+      return typeof shipping.address === "string" ? shipping.address : "";
+    } catch { return ""; }
+  }
+
+  /* ============================== customer support ============================== */
+
+  // A support ticket is an operations case (kind 'support') plus a
+  // customer-visible thread in support_messages. Members open and reply from
+  // the in-app Support Desk; visitors use the public Support / Contact forms;
+  // staff reply from the Operations queue. Each side is notified (in-app and by
+  // email when a provider is configured).
+  const SUPPORT_CATEGORIES = ["Cards & ATMs", "Transfers & Zelle", "Dispute / Fraud", "Account KYC", "Rewards", "Account", "Payments", "Sales", "Something else"] as const;
+  function supportReference(caseId: string) {
+    return `VS-${caseId.replace(/^ops_/, "").replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  }
+  function supportMessages(caseId: string) {
+    return (db.prepare(
+      "SELECT id, author_kind, author_name, body, created_at FROM support_messages WHERE case_id = ? ORDER BY created_at, id",
+    ).all(caseId) as Array<Record<string, unknown>>).map(m => ({
+      id: Number(m.id), author: m.author_kind as "customer" | "staff", authorName: String(m.author_name),
+      body: String(m.body), createdAt: Number(m.created_at),
+    }));
+  }
+  /** Member-facing shape: no internal notes, no staff identities beyond a first name. */
+  function memberTicket(row: Record<string, unknown>) {
+    const id = String(row.id);
+    const status = String(row.status);
+    return {
+      id, reference: supportReference(id), subject: String(row.title), category: String(row.category ?? "Something else"),
+      status: status === "resolved" ? "resolved" : status === "waiting" ? "awaiting_you" : status === "investigating" ? "in_progress" : "open",
+      createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
+      messages: supportMessages(id).map(m => ({ ...m, authorName: m.author === "staff" ? `${m.authorName.split(/\s+/)[0]} · Veyra support` : m.authorName })),
+    };
+  }
+  function supportText(value: unknown, min: number, max: number, label: string): string {
+    const text = String(value ?? "").trim();
+    if (text.length < min || text.length > max) throw new BadInputError(`${label} must be between ${min} and ${max} characters.`);
+    return text;
+  }
+  /** Public tickets need a creator; they are attributed to the bootstrap Super Admin as the system actor. */
+  function systemActorId(): string | undefined {
+    const row = db.prepare("SELECT id FROM users WHERE role = 'superadmin' ORDER BY created_at LIMIT 1").get() as { id: string } | undefined;
+    return row?.id;
+  }
+  function alertSupportInbox(caseId: string, subject: string, from: string, body: string) {
+    const inbox = String(process.env.SUPPORT_INBOX ?? "").trim();
+    if (inbox) void sendMail(supportInboxMail(inbox, supportReference(caseId), subject, from, body));
+  }
+
+  app.get("/api/me/support", requireAuth, wrap((req, res) => {
+    const rows = db.prepare(
+      "SELECT * FROM operation_cases WHERE kind = 'support' AND user_id = ? ORDER BY updated_at DESC LIMIT 100",
+    ).all(req.user!.id) as Array<Record<string, unknown>>;
+    res.json({ tickets: rows.map(memberTicket) });
+  }));
+
+  app.post("/api/me/support", requireAuth, wrap((req, res) => {
+    if (!rateLimit(`support:${req.user!.id}`, 10, 60 * 60_000)) {
+      return void res.status(429).json({ error: "You've opened a lot of tickets recently — reply on an existing one, or try again in an hour." });
+    }
+    const subject = supportText(req.body?.subject, 3, 120, "Subject");
+    const message = supportText(req.body?.message, 2, 4_000, "Message");
+    const category = (SUPPORT_CATEGORIES as readonly string[]).includes(String(req.body?.category)) ? String(req.body.category) : "Something else";
+    const id = `ops_${randomUUID()}`;
+    const stamp = now();
+    inTransaction(db, () => {
+      db.prepare(`INSERT INTO operation_cases
+        (id, title, kind, priority, status, summary, user_id, category, created_by, created_at, updated_at)
+        VALUES (?, ?, 'support', ?, 'open', ?, ?, ?, ?, ?, ?)`)
+        .run(id, subject, category === "Dispute / Fraud" ? "high" : "normal", message.slice(0, 2_000), req.user!.id, category, req.user!.id, stamp, stamp);
+      db.prepare("INSERT INTO support_messages (case_id, author_kind, author_id, author_name, body, created_at) VALUES (?, 'customer', ?, ?, ?, ?)")
+        .run(id, req.user!.id, req.user!.name, message, stamp);
+      addOperationEvent(id, req, "case.created", `Support ticket opened by the member (${category})`);
+    });
+    void sendMail(supportReceivedMail(req.user!.email, req.user!.name, supportReference(id), subject, true));
+    alertSupportInbox(id, subject, `${req.user!.name} <${req.user!.email}>`, message);
+    const row = db.prepare("SELECT * FROM operation_cases WHERE id = ?").get(id) as Record<string, unknown>;
+    res.status(201).json({ ticket: memberTicket(row) });
+  }));
+
+  app.post("/api/me/support/:id/messages", requireAuth, wrap((req, res) => {
+    const caseId = String(req.params.id);
+    const row = db.prepare("SELECT * FROM operation_cases WHERE id = ? AND kind = 'support' AND user_id = ?").get(caseId, req.user!.id) as Record<string, unknown> | undefined;
+    if (!row) return void res.status(404).json({ error: "Ticket not found." });
+    if (!rateLimit(`support-reply:${req.user!.id}`, 60, 60 * 60_000)) return void res.status(429).json({ error: "Too many messages — try again shortly." });
+    const message = supportText(req.body?.message, 1, 4_000, "Message");
+    inTransaction(db, () => {
+      db.prepare("INSERT INTO support_messages (case_id, author_kind, author_id, author_name, body, created_at) VALUES (?, 'customer', ?, ?, ?, ?)")
+        .run(caseId, req.user!.id, req.user!.name, message, now());
+      // A customer reply puts the ball back in support's court (and reopens a resolved ticket).
+      const reopen = row.status === "waiting" || row.status === "resolved";
+      db.prepare(`UPDATE operation_cases SET updated_at = ?${reopen ? ", status = 'open', closed_at = NULL" : ""} WHERE id = ?`).run(now(), caseId);
+      addOperationEvent(caseId, req, "support.customer_reply", reopen ? "Customer replied — reopened" : "Customer replied");
+    });
+    const updated = db.prepare("SELECT * FROM operation_cases WHERE id = ?").get(caseId) as Record<string, unknown>;
+    res.status(201).json({ ticket: memberTicket(updated) });
+  }));
+
+  // Public Support / Contact forms. No session, so: per-IP rate limit, a
+  // honeypot field bots fill in, and strict length limits.
+  app.post("/api/support/contact", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`contact:${ip}`, 5, 60 * 60_000)) return void res.status(429).json({ error: "Too many messages from this connection — try again later." });
+    const body = req.body ?? {};
+    // Honeypot: pretend success so bots learn nothing.
+    if (typeof body.website === "string" && body.website.trim()) return void res.status(202).json({ ok: true });
+    const name = supportText(body.name, 2, 80, "Name");
+    const email = String(body.email ?? "").trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 200) return void res.status(400).json({ error: "Enter a valid email address." });
+    const message = supportText(body.message, 5, 4_000, "Message");
+    const sales = body.kind === "sales";
+    const company = String(body.company ?? "").trim().slice(0, 120);
+    const teamSize = String(body.teamSize ?? "").trim().slice(0, 20);
+    const topic = String(body.topic ?? "").trim().slice(0, 60);
+    const category = sales ? "Sales" : (SUPPORT_CATEGORIES as readonly string[]).includes(topic) ? topic : "Something else";
+    const subject = sales ? `Sales enquiry${company ? ` — ${company}` : ""}` : `${category} — website message`;
+    const actor = systemActorId();
+    if (!actor) return void res.status(503).json({ error: "Support is not available right now — please email us instead." });
+    const member = db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE AND role = 'user'").get(email) as { id: string } | undefined;
+    const thread = sales ? `${message}\n\nCompany: ${company || "—"} · Team size: ${teamSize || "—"}` : message;
+    const id = `ops_${randomUUID()}`;
+    const stamp = now();
+    inTransaction(db, () => {
+      db.prepare(`INSERT INTO operation_cases
+        (id, title, kind, priority, status, summary, user_id, category, contact_name, contact_email, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, 'normal', 'open', ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, subject, sales ? "other" : "support", thread.slice(0, 2_000), member?.id ?? null, category, name, email, actor, stamp, stamp);
+      db.prepare("INSERT INTO support_messages (case_id, author_kind, author_id, author_name, body, created_at) VALUES (?, 'customer', ?, ?, ?, ?)")
+        .run(id, member?.id ?? null, name, thread, stamp);
+      db.prepare("INSERT INTO operation_case_events (case_id, at, actor_id, actor_name, action, detail) VALUES (?, ?, ?, 'Website form', 'case.created', ?)")
+        .run(id, stamp, actor, `${sales ? "Sales enquiry" : "Support request"} from ${name} <${email}>`);
+    });
+    void sendMail(supportReceivedMail(email, name, supportReference(id), subject, false));
+    alertSupportInbox(id, subject, `${name} <${email}>`, thread);
+    res.status(201).json({ ok: true, reference: supportReference(id) });
+  }));
+
+  app.post("/api/admin/operations/cases/:id/reply", requireAuth, requirePerm("dashboard.view"), wrap((req, res) => {
+    const caseId = String(req.params.id);
+    const row = db.prepare(`
+      SELECT c.*, u.name AS member_name, u.email AS member_email FROM operation_cases c
+      LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?`).get(caseId) as Record<string, unknown> | undefined;
+    if (!row) return void res.status(404).json({ error: "Case not found." });
+    const toEmail = String(row.contact_email ?? row.member_email ?? "");
+    if (!toEmail) return void res.status(400).json({ error: "This case has no customer to reply to — use an internal note instead." });
+    const message = supportText(req.body?.body, 2, 4_000, "Reply");
+    const resolve = req.body?.resolve === true;
+    inTransaction(db, () => {
+      db.prepare("INSERT INTO support_messages (case_id, author_kind, author_id, author_name, body, created_at) VALUES (?, 'staff', ?, ?, ?, ?)")
+        .run(caseId, req.user!.id, req.user!.name, message, now());
+      db.prepare("UPDATE operation_cases SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?")
+        .run(resolve ? "resolved" : "waiting", resolve ? now() : null, now(), caseId);
+      addOperationEvent(caseId, req, "support.staff_reply", resolve ? "Replied to the customer and resolved" : "Replied to the customer — waiting on them");
+    });
+    const reference = supportReference(caseId);
+    const isMember = Boolean(row.user_id);
+    if (isMember) notify(String(row.user_id), "security", `Support replied · ${reference}`, message.slice(0, 240));
+    void sendMail(supportReplyMail(toEmail, String(row.contact_name ?? row.member_name ?? ""), reference, String(row.title), message, isMember));
+    audit(req, "operations.case.reply", "System", `case:${caseId}`, `Replied to the customer on ${String(row.title)}.`);
     res.status(201).json({ case: loadOperationCases().find(item => item.id === caseId) });
   }));
 
@@ -2713,10 +2897,6 @@ export function createApp(dbPath?: string) {
 /* ---------- helpers ---------- */
 
 const money = (cents: number) => ({ cents, amount: centsToDecimal(cents) });
-
-function publicUser(u: AuthedUser) {
-  return { id: u.id, name: u.name, email: u.email, role: u.role, accountType: u.accountType, business: u.business, status: u.status };
-}
 
 function txnOut(t: any) {
   return {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useMailingAddress } from "../lib/mailingAddress";
 import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -1106,7 +1107,10 @@ export function CardsPage() {
   const [flipped, setFlipped] = useState<string | null>(null);
   const [managedId, setManagedId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
-  const [form, setForm] = useState<{ label: string; holder: string; limit: number; lock: string; type: Card["type"]; address: string }>({ label: "", holder: user?.name ?? "", limit: 4000, lock: "", type: "virtual", address: "125 Market Street, San Francisco, CA 94105" });
+  const [form, setForm] = useState<{ label: string; holder: string; limit: number; lock: string; type: Card["type"]; address: string }>({ label: "", holder: user?.name ?? "", limit: 4000, lock: "", type: "virtual", address: "" });
+  // Physical cards ship to the member's own address by default, not a placeholder.
+  const mailingAddress = useMailingAddress(user?.accountType === "business");
+  useEffect(() => { if (mailingAddress) setForm(f => (f.address ? f : { ...f, address: mailingAddress })); }, [mailingAddress]);
   if (!account) return null;
 
   const counts: Record<CardFilter, number> = {

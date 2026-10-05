@@ -289,9 +289,9 @@ const deliveredShipping = (now: number): CardShipping => ({
   orderedAt: now - DAY * 38,
   estimatedDelivery: now - DAY * 30,
   deliveredAt: now - DAY * 31,
-  address: "125 Market Street · San Francisco, CA 94105",
+  address: "Address on file",
 });
-const newPhysicalShipping = (address = "125 Market Street · San Francisco, CA 94105"): CardShipping => ({
+const newPhysicalShipping = (address = "Address on file"): CardShipping => ({
   status: "processing",
   carrier: "ParcelPost",
   tracking: `VP${digits(12)}`,
@@ -606,6 +606,8 @@ export type PlatformAccount = {
 };
 
 type SendInput = { counterparty: string; amount: number; category: string; method: string; cardId?: string; note?: string };
+/** Called once the server has booked a payment, with its authoritative receipt. */
+type SendConfirmed = (result: MoveResult) => void;
 type CardInput = { label: string; limit: number; type: Card["type"]; merchantLock?: string; cardholder: string; shippingAddress?: string };
 type InvoiceInput = { client: string; clientEmail: string; amount: number; dueDays: number; description?: string };
 type InviteInput = { name: string; email: string; role: TeamMember["role"]; monthlyLimit: number };
@@ -842,7 +844,7 @@ function useAccountState() {
   );
 
   const sendPayment = useCallback(
-    (input: SendInput): MoveResult => {
+    (input: SendInput, onConfirmed?: SendConfirmed): MoveResult => {
       const current = ref.current;
       if (current?.accountStatus === "restricted") {
         throw new Error("Your account is restricted. Outgoing transfers are paused — contact support.");
@@ -851,7 +853,12 @@ function useAccountState() {
       const value = r2(input.amount);
       const reward = r2(value * rewardRate(input.category));
       const scoutOn = current?.preferences.scoutAuto ?? true;
-      const scout = scoutOn && Math.random() < 0.65 ? r2(value * (0.03 + Math.random() * 0.07)) : 0;
+      // Scout savings are decided by the server. Showing a locally guessed
+      // figure here made the receipt disagree with what was actually booked,
+      // so the optimistic view assumes none; the confirmed receipt (below) and
+      // the refreshed snapshot carry the real amount.
+      void scoutOn;
+      const scout = 0;
       const result: MoveResult = { reference: makeReference(), date: Date.now(), amount: value, balanceBefore: before, balanceAfter: r2(before - value + scout), reward, scout };
       // The ledger row's id is the server's; remember it so an immediate
       // follow-up (dispute this payment) targets the stored row either way.
@@ -878,7 +885,11 @@ function useAccountState() {
       syncPost(
         "/api/me/transfers",
         { counterparty: input.counterparty, amount: value, category: input.category, method: input.method, cardId: input.cardId, note: input.note },
-        (result) => adoptId(txnId, (result as { transaction?: { id?: string } } | null)?.transaction?.id),
+        (response) => {
+          const booked = response as { transaction?: { id?: string }; result?: Partial<MoveResult> } | null;
+          adoptId(txnId, booked?.transaction?.id);
+          if (onConfirmed && booked?.result) onConfirmed({ ...result, ...booked.result, date: result.date });
+        },
       );
       return result;
     },

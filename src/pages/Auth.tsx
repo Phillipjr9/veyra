@@ -755,12 +755,16 @@ export function SignupPage() {
 
 export function ForgotPasswordPage() {
   const { forgotPassword, resetPassword } = useAuth();
+  // The reset email links here with ?token=… — open straight on step 2 with
+  // the code filled in, so the member only has to choose a new password.
+  const [params] = useSearchParams();
+  const linkToken = (params.get("token") ?? "").trim();
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState(Boolean(linkToken));
   // Only set outside production, where there is no mail provider yet — the code
   // is shown on screen instead of being "sent" somewhere it would never arrive.
   const [demoCode, setDemoCode] = useState("");
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(linkToken);
   const [password, setPassword] = useState("");
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
@@ -804,7 +808,7 @@ export function ForgotPasswordPage() {
   return (
     <AuthShell title="Reset your password"
       sub={sent
-        ? (demoCode ? "Your code is filled in below — choose a new password." : "Enter the code from your reset email and choose a new password.")
+        ? (demoCode || linkToken ? "Your code is filled in below — choose a new password." : "Enter the code from your reset email and choose a new password.")
         : "We'll email you a secure reset code."}
       foot={<>Remembered it? <Link to="/login">Back to sign in</Link></>}>
       {sent ? (
