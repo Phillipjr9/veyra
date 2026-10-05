@@ -22,7 +22,8 @@ export type AuthConfig = {
   };
   federated: {
     enabled: boolean;
-    providers: string[];
+    /** One entry per provider the server accepts — the UI renders these. */
+    providers: Array<{ id: string; label: string }>;
     firebase: { apiKey: string; authDomain: string; projectId: string } | null;
   };
 };
@@ -63,8 +64,8 @@ export function authConfig(): Promise<AuthConfig> {
             actions: { ...AUTH_CONFIG_OFF.recaptcha.actions, ...(recaptcha.actions ?? {}) },
           }
           : AUTH_CONFIG_OFF.recaptcha,
-        federated: federated?.enabled && federated.firebase?.apiKey
-          ? { enabled: true, providers: federated.providers ?? [], firebase: federated.firebase }
+        federated: federated?.enabled && federated.firebase?.apiKey && federated.providers?.length
+          ? { enabled: true, providers: federated.providers, firebase: federated.firebase }
           : AUTH_CONFIG_OFF.federated,
       };
     } catch {

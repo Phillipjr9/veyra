@@ -164,7 +164,7 @@ server/
     db.ts               SQLite (WAL, FK on): migrations, audit triggers, tx helper
     security.ts         scrypt hashing, HS256 tokens, rate limiter, TOKEN_SECRET
     recaptcha.ts        reCAPTCHA v3 / Enterprise verifier for the anonymous routes
-    federated.ts        Firebase ID token verification + Google account linking
+    federated.ts        Firebase ID token verification + provider registry + account linking
     rbac.ts             Server-authoritative permission matrix (DB overrides)
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
@@ -228,7 +228,7 @@ npm run typecheck:server  # strict NodeNext typecheck
 | Sessions | HS256 bearer tokens (12 h) with a `sessions` table — logout and admin revocation kill them instantly |
 | Login abuse | In-memory rate limit: 8 attempts / 60 s per IP (login and password-reset requests) |
 | Bot defence | reCAPTCHA v3 / Enterprise on sign in, sign up and password recovery — action-bound, score-thresholded, off until configured (see **reCAPTCHA** below) |
-| Federated sign-in | Firebase ID tokens verified against Google's JWKS (RS256, alg pinned, full claim set). Links to existing members only — never auto-provisions, and excludes staff by default |
+| Federated sign-in | Google, Apple and Microsoft. Firebase ID tokens verified against Google's JWKS (RS256, alg pinned, full claim set); the provider is read from the signed token, never the request. Links to existing members only — never auto-provisions, and excludes staff by default |
 | RBAC | 17 permissions × 5 roles, resolved **fresh from the DB on every request** (role changes take effect immediately, no re-login) |
 | Money | Integer cents everywhere; every mutation inside `BEGIN IMMEDIATE` |
 | Audit trail | `audit_log` is append-only **by database trigger** — `UPDATE`/`DELETE` raise `ABORT` |
@@ -303,7 +303,7 @@ funds) to the status columns.
 
 ### API surface (summary)
 
-- **Auth** — `POST /api/auth/login · register · federated · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA + Google settings), `GET /api/health`
+- **Auth** — `POST /api/auth/login · register · federated · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA + federated settings), `GET /api/health`
 - **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
@@ -377,14 +377,25 @@ whether tokens are required. If the script is blocked (ad blocker, strict
 extension, corporate proxy) the client sends no token and the **server**
 decides — `src/lib/recaptcha.ts` never pre-emptively blocks the member.
 
-### Federated sign-in (Google, via Firebase)
+### Federated sign-in (Google, Apple, Microsoft — via Firebase)
 
 Firebase is an identity **provider** here, never the authority. The browser
-runs the Google flow and receives a Firebase ID token; `POST /api/auth/federated`
+runs the provider's flow and receives a Firebase ID token; `POST /api/auth/federated`
 verifies it, maps it onto an **existing** member, and mints Veyra's own session.
 Everything downstream is untouched — the `sessions` table still revokes
 instantly, RBAC is still read fresh from the database on every request, and the
 audit trail still records what staff did. Only the credential check moves.
+
+**Which providers.** `FEDERATED_PROVIDERS` is a comma list of `google`,
+`apple`, `microsoft` and defaults to `google` alone. Every extra provider is
+another door into an account, so each one is opened deliberately — and must
+also be enabled in the Firebase console. One token shape serves all three:
+Firebase has already completed the provider handshake, so the only difference
+reaching Veyra is the `firebase.sign_in_provider` claim. **That claim is read
+from the signed token, never from the request body** — otherwise a caller
+could present a Google token while naming Apple and claim the wrong identity
+row. A `sign_in_provider` this build doesn't know, or one not in
+`FEDERATED_PROVIDERS`, is refused with 403.
 
 Off unless `FIREBASE_PROJECT_ID` is set. All of `FIREBASE_PROJECT_ID`,
 `FIREBASE_API_KEY` and `FIREBASE_AUTH_DOMAIN` are public values (the Firebase
@@ -407,17 +418,18 @@ a bad `kid` can't be used to hammer Google.
 | Known `(provider, subject)` | Signs in as the linked member. Matching is by subject — stable — not email. |
 | Unknown subject, verified email matches a member | Links once, and the member is notified. |
 | Unknown subject, no matching member | **Refused (404). Never auto-provisions.** |
-| Member already has a different Google account | Refused (409) — one identity per member per provider. |
+| Member already has a different account with that provider | Refused (409) — one identity per member per provider. A member may hold Google *and* Apple *and* Microsoft at once. |
+| Apple "Hide My Email" relay address | Refused (409) with its own message. A `@privaterelay.appleid.com` address can never match a member, so a bare "no account" would send the member hunting for a problem that isn't there; the error tells them to use "Share My Email" instead. |
 | Staff / Super Admin | Refused (403) unless `FEDERATED_ALLOW_STAFF=1`. |
 
 No auto-provisioning is deliberate: opening a bank account requires the full
 application (legal identity, tax ID, address, government ID — see
-`identity.ts`). Clicking "Continue with Google" cannot conjure one. The sign-up
+`identity.ts`). Clicking "Continue with Apple" cannot conjure one. The sign-up
 screen says so rather than offering a button that can't work.
 
 Staff exclusion is also deliberate: the console can move $10M per adjustment,
 so letting a third-party IdP unlock it widens the blast radius to whoever holds
-that Google account. Flip it on only if your operators are on managed Workspace
+that provider account. Flip it on only if your operators are on managed Workspace
 identities.
 
 **Client cost.** `firebase` is loaded through a dynamic `import()`, so it stays
@@ -450,7 +462,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (235) = 276 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (244) = 285 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

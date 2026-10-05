@@ -22,6 +22,9 @@ import { authConfig } from "./authConfig";
 
 export type FederatedResult = { idToken: string; email: string };
 
+/** Providers this build can drive. The server decides which are offered. */
+export type ProviderId = "google" | "apple" | "microsoft";
+
 /** Thrown when the member closes the Google window — not an error worth showing. */
 export class FederatedCancelled extends Error {
   constructor() {
@@ -33,6 +36,11 @@ export class FederatedCancelled extends Error {
 /** True when the server has federated sign-in switched on. */
 export async function federatedEnabled(): Promise<boolean> {
   return (await authConfig()).federated.enabled;
+}
+
+/** The providers the server offers, in the order it listed them. */
+export async function federatedProviders(): Promise<Array<{ id: string; label: string }>> {
+  return (await authConfig()).federated.providers;
 }
 
 type FirebaseAuthModule = typeof import("firebase/auth");
@@ -50,15 +58,19 @@ function loadSdk() {
 }
 
 /**
- * Runs the Google popup flow and returns a fresh Firebase ID token.
+ * Runs a provider's popup flow and returns a fresh Firebase ID token.
  *
  * The Firebase session is signed out before returning: Veyra's own session is
  * the only one that should survive, and leaving a second logged-in identity in
  * browser storage would be a quiet way for a shared computer to leak one.
+ *
+ * Which provider produced the token is NOT sent to the server — it reads that
+ * from the signed token itself, so this argument only selects the button.
  */
-export async function googleIdToken(): Promise<FederatedResult> {
+export async function federatedIdToken(providerId: ProviderId): Promise<FederatedResult> {
   const config = (await authConfig()).federated;
-  if (!config.enabled || !config.firebase) throw new Error("Google sign-in is not enabled.");
+  if (!config.enabled || !config.firebase) throw new Error("Federated sign-in is not enabled.");
+  if (!config.providers.some(p => p.id === providerId)) throw new Error("That sign-in method isn't enabled.");
 
   const { app: appMod, auth: authMod } = await loadSdk();
   const app = appMod.getApps().length
@@ -66,10 +78,27 @@ export async function googleIdToken(): Promise<FederatedResult> {
     : appMod.initializeApp(config.firebase);
   const auth = authMod.getAuth(app);
 
-  const provider = new authMod.GoogleAuthProvider();
-  // Always show the chooser: on a shared machine, silently reusing the last
-  // Google session is how someone signs in as the wrong person.
-  provider.setCustomParameters({ prompt: "select_account" });
+  let provider: InstanceType<FirebaseAuthModule["OAuthProvider"]> | InstanceType<FirebaseAuthModule["GoogleAuthProvider"]>;
+  if (providerId === "google") {
+    const google = new authMod.GoogleAuthProvider();
+    // Always show the chooser: on a shared machine, silently reusing the last
+    // session is how someone signs in as the wrong person.
+    google.setCustomParameters({ prompt: "select_account" });
+    provider = google;
+  } else if (providerId === "apple") {
+    const apple = new authMod.OAuthProvider("apple.com");
+    // Ask for the real address. Apple may still relay it, which the server
+    // detects and explains — but without this it never even offers to share.
+    apple.addScope("email");
+    apple.addScope("name");
+    provider = apple;
+  } else {
+    const microsoft = new authMod.OAuthProvider("microsoft.com");
+    microsoft.addScope("email");
+    // Personal and work/school accounts both, with the chooser shown.
+    microsoft.setCustomParameters({ prompt: "select_account" });
+    provider = microsoft;
+  }
 
   try {
     const credential = await authMod.signInWithPopup(auth, provider);
@@ -81,9 +110,12 @@ export async function googleIdToken(): Promise<FederatedResult> {
       throw new FederatedCancelled();
     }
     if (code === "auth/popup-blocked") {
-      throw new Error("Your browser blocked the Google sign-in window. Allow pop-ups for this site and try again.");
+      throw new Error("Your browser blocked the sign-in window. Allow pop-ups for this site and try again.");
     }
-    throw new Error("Google sign-in didn't complete. Try again, or sign in with your email and password.");
+    if (code === "auth/account-exists-with-different-credential") {
+      throw new Error("That email is already set up with a different sign-in method. Use that one, or sign in with your password.");
+    }
+    throw new Error("That sign-in didn't complete. Try again, or sign in with your email and password.");
   } finally {
     // Discard Firebase's own session regardless of outcome.
     try {

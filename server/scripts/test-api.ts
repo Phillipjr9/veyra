@@ -1038,15 +1038,19 @@ try {
       process.env.FIREBASE_PROJECT_ID = PROJECT;
       process.env.FIREBASE_API_KEY = "web-api-key";
       process.env.FIREBASE_JWKS_URL = jwksUrl;
+      process.env.FEDERATED_PROVIDERS = "google,apple,microsoft";
       delete process.env.FEDERATED_ALLOW_STAFF;
       resetFederatedConfig();
 
       const onConfig = await api("GET", "/api/auth/config");
+      const offered = (onConfig.json.federated.providers as Array<{ id: string; label: string }>).map(p => p.id);
       expect("config publishes the Firebase web config for the browser",
         onConfig.json.federated.enabled === true &&
-        onConfig.json.federated.providers.includes("google") &&
         onConfig.json.federated.firebase.projectId === PROJECT &&
         onConfig.json.federated.firebase.authDomain === `${PROJECT}.firebaseapp.com`);
+      expect("config lists every enabled provider with a label for the UI",
+        offered.join(",") === "google,apple,microsoft" &&
+        (onConfig.json.federated.providers as Array<{ label: string }>).every(p => Boolean(p.label)));
 
       // No Veyra account uses that address yet: sign-in must refuse rather
       // than quietly opening one.
@@ -1119,24 +1123,74 @@ try {
       expect("a member holds at most one Google identity (409)",
         secondGoogle.status === 409 && secondGoogle.json.code === "federated_already_linked");
 
+      /* ---- multiple providers ---- */
+      // This block alone outspends a real member's lifetime budget; the
+      // limiter has its own coverage elsewhere.
+      resetRateLimits();
+      const appleToken = (over: Record<string, unknown> = {}) =>
+        idToken({ sub: "apple-uid-aurelia", email: "aurelia@federated.test",
+          firebase: { sign_in_provider: "apple.com", identities: {} }, ...over });
+
+      const appleLink = await post(appleToken());
+      expect("a second provider links to the same member independently",
+        appleLink.status === 200 && appleLink.json.linked === true && appleLink.json.provider === "apple" &&
+        appleLink.json.user.email === "aurelia@federated.test");
+      expect("the member now holds one identity per provider",
+        (db.prepare("SELECT COUNT(*) AS n FROM federated_identities WHERE user_id = ?")
+          .get(aurelia.json.user.id) as { n: number }).n === 2);
+      expect("a returning Apple identity signs in without re-linking",
+        (await post(appleToken())).json.linked === false);
+
+      const microsoftLink = await post(idToken({ sub: "ms-uid-aurelia", email: "aurelia@federated.test",
+        firebase: { sign_in_provider: "microsoft.com", identities: {} } }));
+      expect("Microsoft links through the same pipeline",
+        microsoftLink.status === 200 && microsoftLink.json.provider === "microsoft");
+
+      // Apple's Hide My Email relay can never match a member — say so usefully.
+      const relay = await post(idToken({ sub: "apple-uid-hidden", email: "abc123@privaterelay.appleid.com",
+        firebase: { sign_in_provider: "apple.com", identities: {} } }));
+      expect("an Apple private-relay address gets its own explanation, not \"no account\"",
+        relay.status === 409 && relay.json.code === "federated_private_relay" &&
+        String(relay.json.error).includes("Share My Email"));
+
+      // The provider is read from the signed token, never from the request.
+      const unknownProvider = await post(idToken({ sub: "fb-uid-1",
+        firebase: { sign_in_provider: "facebook.com", identities: {} } }));
+      expect("a provider this build does not know is refused (403)",
+        unknownProvider.status === 403 && String(unknownProvider.json.error).includes("isn't supported"));
+      const passwordProvider = await post(idToken({ sub: "pw-uid-1",
+        firebase: { sign_in_provider: "password", identities: {} } }));
+      expect("a Firebase password identity cannot ride this route", passwordProvider.status === 403);
+
+      process.env.FEDERATED_PROVIDERS = "google";
+      resetFederatedConfig();
+      const appleDisabled = await post(appleToken({ sub: "apple-uid-new", email: "aurelia@federated.test" }));
+      expect("a provider absent from FEDERATED_PROVIDERS is refused even with a valid token",
+        appleDisabled.status === 403 && String(appleDisabled.json.error).includes("Apple"));
+      expect("narrowing the provider list is reflected to the browser",
+        ((await api("GET", "/api/auth/config")).json.federated.providers as Array<{ id: string }>)
+          .map(p => p.id).join(",") === "google");
+      process.env.FEDERATED_PROVIDERS = "google,apple,microsoft";
+      resetFederatedConfig();
+
       const staffAttempt = await post(idToken({ sub: "google-uid-ops", email: "ops@veyra.test" }));
-      expect("staff accounts cannot be unlocked by Google by default (403)",
+      expect("staff accounts cannot be unlocked by a federated provider by default (403)",
         staffAttempt.status === 403 && staffAttempt.json.code === "federated_staff_blocked");
 
-      // Asserted before the reset below, which deliberately empties the cache.
-      // Every verification above — including the unknown-kid probe, whose
-      // forced refetch is throttled — was served from one fetch.
-      expect("Google's signing keys are fetched once and cached, not per request", jwksHits === 1);
-
+      resetRateLimits();
+      const hitsBefore = jwksHits;
       process.env.FEDERATED_ALLOW_STAFF = "1";
       resetFederatedConfig();
       const staffAllowed = await post(idToken({ sub: "google-uid-ops", email: "ops@veyra.test" }));
       expect("FEDERATED_ALLOW_STAFF=1 opens it to staff deliberately",
         staffAllowed.status === 200 && staffAllowed.json.user.role === "superadmin");
-      expect("clearing the config refetches the keys", jwksHits === 2);
+      // Verification never refetches per request: the only extra fetch is the
+      // one forced by clearing the cache above.
+      expect("Google's signing keys are cached, not refetched per verification",
+        jwksHits === hitsBefore + 1);
     } finally {
       for (const key of ["FIREBASE_PROJECT_ID", "FIREBASE_API_KEY", "FIREBASE_JWKS_URL",
-        "FIREBASE_AUTH_DOMAIN", "FEDERATED_ALLOW_STAFF"]) {
+        "FIREBASE_AUTH_DOMAIN", "FEDERATED_ALLOW_STAFF", "FEDERATED_PROVIDERS"]) {
         if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
       }
       resetFederatedConfig();

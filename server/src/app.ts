@@ -16,7 +16,7 @@ import { resolve } from "node:path";
 import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError, generateAccountNumber } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
 import { requireRecaptcha, publicRecaptchaConfig, RECAPTCHA_ACTIONS } from "./recaptcha.js";
-import { verifyFirebaseIdToken, federatedConfig, publicFederatedConfig } from "./federated.js";
+import { verifyFirebaseIdToken, federatedConfig, publicFederatedConfig, PROVIDER_REGISTRY } from "./federated.js";
 import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
@@ -289,10 +289,13 @@ export function createApp(dbPath?: string) {
   app.post("/api/auth/federated", wrap(async (req, res) => {
     const config = federatedConfig();
     if (!config.enabled) {
-      return void res.status(503).json({ error: "Google sign-in is not enabled.", code: "federated_disabled" });
+      return void res.status(503).json({ error: "Federated sign-in is not enabled.", code: "federated_disabled" });
     }
     const ip = req.ip ?? "unknown";
-    if (!rateLimit(`federated:${ip}`, 20, 60_000)) {
+    // 60/min per address. Each request costs one cached-key signature verify,
+    // so the budget is about bounding abuse, not protecting scarce work — and
+    // a whole office behind one NAT address must not trip it.
+    if (!rateLimit(`federated:${ip}`, 60, 60_000)) {
       return void res.status(429).json({ error: "Too many attempts — wait a minute, then try again." });
     }
 
@@ -301,19 +304,20 @@ export function createApp(dbPath?: string) {
       console.warn(`[federated] rejected — ${verdict.detail}`);
       return void res.status(verdict.status).json({ error: verdict.error, code: "federated_rejected" });
     }
-    const { subject, email, emailVerified, provider } = verdict.identity;
+    const { subject, email, emailVerified, providerId, privateRelay } = verdict.identity;
+    const providerLabel = PROVIDER_REGISTRY[providerId].label;
 
     // An unverified address must never be able to claim an existing account.
     if (!emailVerified) {
       return void res.status(403).json({
-        error: "That Google account's email address isn't verified, so it can't be used to sign in.",
+        error: `That ${providerLabel} account's email address isn't verified, so it can't be used to sign in.`,
         code: "federated_unverified",
       });
     }
 
     const existing = db.prepare(
       "SELECT user_id FROM federated_identities WHERE provider = ? AND subject = ?",
-    ).get("google", subject) as { user_id: string } | undefined;
+    ).get(providerId, subject) as { user_id: string } | undefined;
 
     let userId: string;
     let linkedNow = false;
@@ -324,7 +328,16 @@ export function createApp(dbPath?: string) {
       // First time this Google account has been seen: it may only attach to an
       // account that already exists, and only by verified email.
       if (!email) {
-        return void res.status(403).json({ error: "That Google account did not share an email address.", code: "federated_no_email" });
+        return void res.status(403).json({ error: `That ${providerLabel} account did not share an email address.`, code: "federated_no_email" });
+      }
+      // Apple's "Hide My Email" mints a per-app relay address, which by design
+      // matches nothing. Saying "no account found" would send someone hunting
+      // for a problem that isn't theirs.
+      if (privateRelay) {
+        return void res.status(409).json({
+          error: "Apple is hiding your email address, so we can't match it to your Veyra account. Sign in with your email and password, then choose \"Share My Email\" when linking Apple.",
+          code: "federated_private_relay",
+        });
       }
       const match = db.prepare("SELECT id, role FROM users WHERE email = ? COLLATE NOCASE").get(email) as
         | { id: string; role: string }
@@ -345,12 +358,12 @@ export function createApp(dbPath?: string) {
       try {
         db.prepare(
           "INSERT INTO federated_identities (provider, subject, user_id, email, linked_at) VALUES (?, ?, ?, ?, ?)",
-        ).run("google", subject, match.id, email, now());
+        ).run(providerId, subject, match.id, email, now());
       } catch {
         // The UNIQUE(provider, user_id) index: this member already has a
-        // different Google account attached.
+        // different account attached for this same provider.
         return void res.status(409).json({
-          error: "This account is already linked to a different Google account.",
+          error: `This account is already linked to a different ${providerLabel} account.`,
           code: "federated_already_linked",
         });
       }
@@ -362,13 +375,13 @@ export function createApp(dbPath?: string) {
     if (!user) return void res.status(404).json({ error: "That account no longer exists.", code: "federated_no_account" });
 
     db.prepare("UPDATE federated_identities SET last_used_at = ? WHERE provider = ? AND subject = ?")
-      .run(now(), "google", subject);
+      .run(now(), providerId, subject);
 
     // Attaching a new way into the account is security-relevant, so the member
     // is told the first time it happens.
     if (linkedNow) {
-      notify(userId, "security", "Google sign-in linked to your account",
-        `You can now sign in with Google (${email}). If this wasn't you, change your password and contact support immediately.`);
+      notify(userId, "security", `${providerLabel} sign-in linked to your account`,
+        `You can now sign in with ${providerLabel} (${email}). If this wasn't you, change your password and contact support immediately.`);
     }
 
     const tokenId = randomUUID();
@@ -378,7 +391,7 @@ export function createApp(dbPath?: string) {
       token: signToken({ sub: userId, jti: tokenId, role: user.role }),
       user: publicUser(user),
       linked: linkedNow,
-      provider,
+      provider: providerId,
     });
   }));
 

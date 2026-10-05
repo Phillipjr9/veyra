@@ -1,14 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "motion/react";
-import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { Apple as AppleIcon, ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, KeyRound, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
 import { apiGet, describeAuthError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { prewarmRecaptcha } from "../lib/recaptcha";
-import { federatedEnabled, FederatedCancelled } from "../lib/federated";
+import { federatedProviders, FederatedCancelled, type ProviderId } from "../lib/federated";
 import { useToast } from "../components/Toast";
 
 /** 3D artwork shown beside the form (desktop) and above it (phones). */
@@ -77,18 +77,35 @@ function PasswordField({ value, onChange, id, placeholder = "••••••�
   );
 }
 
-function AuthProviders({ onGoogle, onPasskey, googleBusy = false }: {
-  onGoogle: () => void; onPasskey: () => void;
-  /** Google's popup is a round-trip through another origin — say so while it runs. */
-  googleBusy?: boolean;
+/** Icon per provider. Neutral marks, matching the rest of the auth screen. */
+const PROVIDER_ICON: Record<string, typeof Globe> = {
+  google: Globe,
+  apple: AppleIcon,
+  microsoft: Building2,
+};
+
+function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "" }: {
+  /** What the server offers. Empty renders nothing but the passkey button. */
+  providers: Array<{ id: string; label: string }>;
+  onProvider: (id: ProviderId) => void;
+  onPasskey: () => void;
+  /** A provider popup is a round-trip through another origin — say so while it runs. */
+  busyProvider?: string;
 }) {
   return (
     <>
       <div className="auth-provider-stack">
-        <button type="button" className="auth-provider-button google" onClick={onGoogle} disabled={googleBusy}>
-          {googleBusy ? <Loader2 size={18} className="spin" /> : <Globe size={18} />}
-          <span>{googleBusy ? "Waiting for Google…" : "Continue with Google"}</span>
-        </button>
+        {providers.map(({ id, label }) => {
+          const Icon = PROVIDER_ICON[id] ?? Globe;
+          const busy = busyProvider === id;
+          return (
+            <button key={id} type="button" className={`auth-provider-button ${id}`}
+              onClick={() => onProvider(id as ProviderId)} disabled={Boolean(busyProvider)}>
+              {busy ? <Loader2 size={18} className="spin" /> : <Icon size={18} />}
+              <span>{busy ? `Waiting for ${label}…` : `Continue with ${label}`}</span>
+            </button>
+          );
+        })}
         <button type="button" className="auth-provider-button passkey" onClick={onPasskey}>
           <KeyRound size={18} />
           <span>Use passkey</span>
@@ -183,7 +200,7 @@ function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]
 }
 
 export function LoginPage() {
-  const { login, loginWithGoogle, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
+  const { login, loginWithProvider, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
 
   const toast = useToast();
   const navigate = useNavigate();
@@ -194,11 +211,13 @@ export function LoginPage() {
   const [errorHint, setErrorHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState("");
-  const [googleBusy, setGoogleBusy] = useState(false);
-  const [googleReady, setGoogleReady] = useState(false);
+  const [busyProvider, setBusyProvider] = useState("");
+  const [providers, setProviders] = useState<Array<{ id: string; label: string }>>([]);
   const demos = useDemoAccounts();
 
-  useEffect(() => { void federatedEnabled().then(setGoogleReady); }, []);
+  // The server decides which providers exist, so a deployment with none
+  // configured simply doesn't render the buttons.
+  useEffect(() => { void federatedProviders().then(setProviders); }, []);
 
   /** Where a successful sign-in lands, whatever proved the identity. */
   function afterSignIn(me: { role?: string }) {
@@ -236,29 +255,19 @@ export function LoginPage() {
     setDemoBusy("");
   }
 
-  const handleGoogle = async () => {
-    // The server owns whether this is switched on, so a deployment without
-    // Firebase keys still explains itself instead of opening a dead popup.
-    if (!googleReady) {
-      toast({
-        title: "Google sign-in is not configured yet",
-        description: "Set FIREBASE_PROJECT_ID and FIREBASE_API_KEY on the API to enable this flow.",
-        tone: "info",
-      });
-      return;
-    }
-    setError(""); setErrorHint(""); setGoogleBusy(true);
+  const handleProvider = async (id: ProviderId) => {
+    setError(""); setErrorHint(""); setBusyProvider(id);
     try {
-      afterSignIn(await loginWithGoogle());
+      afterSignIn(await loginWithProvider(id));
     } catch (err) {
-      // Closing the Google window is a decision, not a failure.
+      // Closing the provider window is a decision, not a failure.
       if (!(err instanceof FederatedCancelled)) {
-        const described = describeAuthError(err, "sign in with Google");
+        const described = describeAuthError(err, "sign in");
         setError(described.message);
         setErrorHint(described.status ? `${described.hint} (HTTP ${described.status})` : described.hint);
       }
     } finally {
-      setGoogleBusy(false);
+      setBusyProvider("");
     }
   };
 
@@ -313,7 +322,7 @@ export function LoginPage() {
       {demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
 
 
-      <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} googleBusy={googleBusy} />
+      <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey} busyProvider={busyProvider} />
 
       <form className="auth-form" onSubmit={submit}>
         <label htmlFor="email">Email</label>
@@ -368,6 +377,8 @@ const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","
 
 export function SignupPage() {
   const { signup } = useAuth();
+  const [signupProviders, setSignupProviders] = useState<Array<{ id: string; label: string }>>([]);
+  useEffect(() => { void federatedProviders().then(setSignupProviders); }, []);
   const navigate = useNavigate();
   const toast = useToast();
   const [params] = useSearchParams();
@@ -385,13 +396,14 @@ export function SignupPage() {
   const set = (k: keyof typeof form, v: string | boolean | number) => setForm(f => ({ ...f, [k]: v }));
   const business = form.accountType === "business";
 
-  const handleGoogle = () => {
+  const handleProvider = (id: ProviderId) => {
     // Deliberate: federated sign-in never auto-provisions. Opening an account
     // needs the full application (legal identity, tax ID, address, government
-    // ID), so Google can link to an account but cannot create one.
+    // ID), so a provider can link to an account but cannot create one.
+    const label = signupProviders.find(p => p.id === id)?.label ?? "That provider";
     toast({
-      title: "Google can't open an account",
-      description: "Opening a Veyra account needs your full application. Complete it below, then link Google from Security.",
+      title: `${label} can't open an account`,
+      description: "Opening a Veyra account needs your full application. Complete it below, then link it from Security.",
       tone: "info",
     });
   };
@@ -454,7 +466,7 @@ export function SignupPage() {
     <AuthShell art={AUTH_ART.signup} wide title="Open your account"
       sub={business ? "A few details and your business account is ready." : "Simple checking for spending, saving and everyday life."}
       foot={<>Already with us? <Link to="/login">Sign in</Link></>}>
-      <AuthProviders onGoogle={handleGoogle} onPasskey={handlePasskey} />
+      <AuthProviders providers={signupProviders} onProvider={handleProvider} onPasskey={handlePasskey} />
       <form className="auth-form" onSubmit={submit}>
         <span className="auth-choice-label">I want to open</span>
         <div className="account-type-toggle">

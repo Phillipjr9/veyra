@@ -45,12 +45,40 @@ import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
 const GOOGLE_JWKS_URL = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 
+/**
+ * Providers this build knows how to accept.
+ *
+ * Verification is identical for all of them — a Firebase ID token is a Firebase
+ * ID token whichever button produced it, signed by the same Google keys with
+ * the same `aud`/`iss`. Only `firebase.sign_in_provider` differs, so adding a
+ * provider is a row here plus a button in the UI.
+ *
+ * Which ones are actually accepted is set by FEDERATED_PROVIDERS, and each must
+ * also be enabled in the Firebase console.
+ */
+export const PROVIDER_REGISTRY = {
+  google: { label: "Google", signInProvider: "google.com" },
+  apple: { label: "Apple", signInProvider: "apple.com" },
+  microsoft: { label: "Microsoft", signInProvider: "microsoft.com" },
+} as const;
+
+export type ProviderId = keyof typeof PROVIDER_REGISTRY;
+
+const BY_SIGN_IN_PROVIDER = new Map<string, ProviderId>(
+  (Object.entries(PROVIDER_REGISTRY) as Array<[ProviderId, { signInProvider: string }]>)
+    .map(([id, meta]) => [meta.signInProvider, id]),
+);
+
+/** Apple's "Hide My Email" relay — see the note where this is used. */
+const APPLE_PRIVATE_RELAY = "@privaterelay.appleid.com";
+
 export type FederatedConfig = {
   enabled: boolean;
   projectId: string;
   /** Public Firebase web config, handed to the browser so it can run the flow. */
   apiKey: string;
   authDomain: string;
+  providers: ProviderId[];
   allowStaff: boolean;
   jwksUrl: string;
   timeoutMs: number;
@@ -63,11 +91,20 @@ let cached: FederatedConfig | null = null;
 export function federatedConfig(): FederatedConfig {
   if (cached) return cached;
   const projectId = (process.env.FIREBASE_PROJECT_ID ?? "").trim();
+  // Default to Google alone: adding a provider is a deliberate act, because
+  // each one is another way into an account.
+  const requested = (process.env.FEDERATED_PROVIDERS ?? "google")
+    .split(",").map(p => p.trim().toLowerCase()).filter(Boolean);
+  const providers = requested.filter((p): p is ProviderId => p in PROVIDER_REGISTRY);
+  for (const unknown of requested.filter(p => !(p in PROVIDER_REGISTRY))) {
+    console.warn(`[federated] ignoring unknown provider "${unknown}" — known: ${Object.keys(PROVIDER_REGISTRY).join(", ")}`);
+  }
   cached = {
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && providers.length > 0,
     projectId,
     apiKey: (process.env.FIREBASE_API_KEY ?? "").trim(),
     authDomain: (process.env.FIREBASE_AUTH_DOMAIN ?? "").trim() || (projectId ? `${projectId}.firebaseapp.com` : ""),
+    providers,
     allowStaff: process.env.FEDERATED_ALLOW_STAFF === "1",
     jwksUrl: (process.env.FIREBASE_JWKS_URL ?? "").trim() || GOOGLE_JWKS_URL,
     timeoutMs: Number(process.env.FIREBASE_TIMEOUT_MS) || 4000,
@@ -87,7 +124,11 @@ export function publicFederatedConfig() {
   const config = federatedConfig();
   return {
     enabled: config.enabled,
-    providers: config.enabled ? ["google"] : [],
+    // The browser renders one button per entry, so the server decides which
+    // providers exist — not a hardcoded list in the bundle.
+    providers: config.enabled
+      ? config.providers.map(id => ({ id, label: PROVIDER_REGISTRY[id].label }))
+      : [],
     firebase: config.enabled
       ? { apiKey: config.apiKey, authDomain: config.authDomain, projectId: config.projectId }
       : null,
@@ -143,7 +184,16 @@ export type FederatedIdentity = {
   email: string;
   emailVerified: boolean;
   name: string;
-  provider: string;
+  /** Normalised provider, derived from the token — never from the client. */
+  providerId: ProviderId;
+  /** Raw `firebase.sign_in_provider`, kept for diagnostics. */
+  signInProvider: string;
+  /**
+   * True for an Apple "Hide My Email" address. Those can never match an
+   * existing member by email, so the refusal needs to say something useful
+   * instead of "no account found".
+   */
+  privateRelay: boolean;
 };
 
 export type VerifyResult =
@@ -225,6 +275,20 @@ export async function verifyFirebaseIdToken(idToken: string): Promise<VerifyResu
   const firebase = (payload.firebase ?? {}) as { sign_in_provider?: unknown };
   const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
 
+  // Which provider this was is read from the signed token, never from the
+  // request body: a client that could name its own provider could claim an
+  // Apple identity for a Google subject and sidestep whatever rules differ.
+  const signInProvider = typeof firebase.sign_in_provider === "string" ? firebase.sign_in_provider : "";
+  const providerId = BY_SIGN_IN_PROVIDER.get(signInProvider);
+  if (!providerId) {
+    return bad(`sign_in_provider "${signInProvider}" is not one this build accepts`, 403,
+      "That sign-in method isn't supported here.");
+  }
+  if (!config.providers.includes(providerId)) {
+    return bad(`provider "${providerId}" is not in FEDERATED_PROVIDERS`, 403,
+      `${PROVIDER_REGISTRY[providerId].label} sign-in isn't enabled.`);
+  }
+
   return {
     ok: true,
     identity: {
@@ -232,7 +296,9 @@ export async function verifyFirebaseIdToken(idToken: string): Promise<VerifyResu
       email,
       emailVerified: payload.email_verified === true,
       name: typeof payload.name === "string" ? payload.name.trim() : "",
-      provider: typeof firebase.sign_in_provider === "string" ? firebase.sign_in_provider : "unknown",
+      providerId,
+      signInProvider,
+      privateRelay: email.endsWith(APPLE_PRIVATE_RELAY),
     },
   };
 }
@@ -240,7 +306,8 @@ export async function verifyFirebaseIdToken(idToken: string): Promise<VerifyResu
 /** Boot-time summary, matching the reCAPTCHA banner. */
 export function describeFederated(): string {
   const config = federatedConfig();
-  if (!config.enabled) return "Federated sign-in: off (set FIREBASE_PROJECT_ID to enable Google sign-in)";
-  return `Federated sign-in: google · project ${config.projectId} · ` +
+  if (!config.projectId) return "Federated sign-in: off (set FIREBASE_PROJECT_ID to enable)";
+  if (!config.providers.length) return "Federated sign-in: off (FEDERATED_PROVIDERS is empty)";
+  return `Federated sign-in: ${config.providers.join(", ")} · project ${config.projectId} · ` +
     `${config.allowStaff ? "staff may link" : "members only (FEDERATED_ALLOW_STAFF=1 to widen)"}`;
 }
