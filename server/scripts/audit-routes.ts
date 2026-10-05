@@ -68,6 +68,14 @@ const BASELINE: Policy[] = [
   // an account that already exists (never auto-provisions) and refuses staff
   // accounts unless FEDERATED_ALLOW_STAFF=1 — see server/src/federated.ts.
   { method: "POST", path: "/api/auth/federated", auth: false, perm: null },
+  // Passkey sign-in. Public of necessity — both halves run before a session
+  // exists. The challenge route hands out nothing but random bytes, and the
+  // login route is gated by a signature over a server-issued, single-use
+  // challenge, which is a far stronger check than any permission.
+  // Deliberately no allowCredentials and no email parameter, so neither route
+  // can answer "does this account exist?" — see server/src/webauthn.ts.
+  { method: "POST", path: "/api/auth/passkey/challenge", auth: false, perm: null },
+  { method: "POST", path: "/api/auth/passkey/login", auth: false, perm: null },
   { method: "POST", path: "/api/auth/register", auth: false, perm: null },
   { method: "POST", path: "/api/auth/forgot-password", auth: false, perm: null },
   { method: "POST", path: "/api/auth/reset-password", auth: false, perm: null },
@@ -81,6 +89,14 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/me/deposits", auth: true, perm: null },
   { method: "POST", path: "/api/me/transfers", auth: true, perm: null },
   { method: "GET", path: "/api/me/notifications", auth: true, perm: null },
+  // Managing your own passkeys. Authenticated and scoped to the caller: a
+  // passkey is added to an account that already exists, never used to open
+  // one, and DELETE matches on (id, user_id) so another member's credential
+  // reads as 404 rather than as someone else's row.
+  { method: "POST", path: "/api/me/passkeys/challenge", auth: true, perm: null },
+  { method: "POST", path: "/api/me/passkeys", auth: true, perm: null },
+  { method: "GET", path: "/api/me/passkeys", auth: true, perm: null },
+  { method: "DELETE", path: "/api/me/passkeys/:id", auth: true, perm: null },
   { method: "POST", path: "/api/me/notifications/read-all", auth: true, perm: null },
   { method: "POST", path: "/api/me/notifications/:id/read", auth: true, perm: null },
   { method: "GET", path: "/api/me/kyc", auth: true, perm: null },

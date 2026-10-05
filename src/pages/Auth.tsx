@@ -5,10 +5,11 @@ import { Apple as AppleIcon, ArrowRight, BadgeCheck, Building2, Check, Eye, EyeO
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
-import { apiGet, describeAuthError } from "../lib/api";
+import { apiGet, describeAuthError, ApiError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { prewarmRecaptcha } from "../lib/recaptcha";
 import { federatedProviders, FederatedCancelled, type ProviderId } from "../lib/federated";
+import { passkeySupported, passkeyErrorMessage, isPasskeyCancellation } from "../lib/passkey";
 import { useToast } from "../components/Toast";
 
 /** 3D artwork shown beside the form (desktop) and above it (phones). */
@@ -84,14 +85,17 @@ const PROVIDER_ICON: Record<string, typeof Globe> = {
   microsoft: Building2,
 };
 
-function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "" }: {
+function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "", passkeyBusy = false }: {
   /** What the server offers. Empty renders nothing but the passkey button. */
   providers: Array<{ id: string; label: string }>;
   onProvider: (id: ProviderId) => void;
   onPasskey: () => void;
   /** A provider popup is a round-trip through another origin — say so while it runs. */
   busyProvider?: string;
+  /** The OS passkey prompt is modal and can sit there a while. */
+  passkeyBusy?: boolean;
 }) {
+  const busyAnywhere = Boolean(busyProvider) || passkeyBusy;
   return (
     <>
       <div className="auth-provider-stack">
@@ -100,15 +104,15 @@ function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "" }: 
           const busy = busyProvider === id;
           return (
             <button key={id} type="button" className={`auth-provider-button ${id}`}
-              onClick={() => onProvider(id as ProviderId)} disabled={Boolean(busyProvider)}>
+              onClick={() => onProvider(id as ProviderId)} disabled={busyAnywhere}>
               {busy ? <Loader2 size={18} className="spin" /> : <Icon size={18} />}
               <span>{busy ? `Waiting for ${label}…` : `Continue with ${label}`}</span>
             </button>
           );
         })}
-        <button type="button" className="auth-provider-button passkey" onClick={onPasskey}>
-          <KeyRound size={18} />
-          <span>Use passkey</span>
+        <button type="button" className="auth-provider-button passkey" onClick={onPasskey} disabled={busyAnywhere}>
+          {passkeyBusy ? <Loader2 size={18} className="spin" /> : <KeyRound size={18} />}
+          <span>{passkeyBusy ? "Waiting for your device…" : "Use passkey"}</span>
         </button>
       </div>
       <div className="auth-divider"><span>or continue with email</span></div>
@@ -200,7 +204,7 @@ function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]
 }
 
 export function LoginPage() {
-  const { login, loginWithProvider, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
+  const { login, loginWithProvider, loginWithPasskey, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
 
   const toast = useToast();
   const navigate = useNavigate();
@@ -212,6 +216,7 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [demoBusy, setDemoBusy] = useState("");
   const [busyProvider, setBusyProvider] = useState("");
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [providers, setProviders] = useState<Array<{ id: string; label: string }>>([]);
   const demos = useDemoAccounts();
 
@@ -271,15 +276,28 @@ export function LoginPage() {
     }
   };
 
-  const handlePasskey = () => {
-    const supported = "PublicKeyCredential" in window;
-    toast({
-      title: supported ? "Passkey flow is ready to connect" : "Passkey is not supported in this browser",
-      description: supported
-        ? "Connect WebAuthn to your backend to complete the sign-in flow."
-        : "Use a modern browser with passkeys enabled to continue.",
-      tone: supported ? "scout" : "info",
-    });
+  const handlePasskey = async () => {
+    if (!passkeySupported()) {
+      toast({ title: "Passkeys aren't supported in this browser", tone: "info",
+        description: "Use a recent version of Chrome, Safari, Edge or Firefox, or sign in with your email and password." });
+      return;
+    }
+    setPasskeyBusy(true);
+    setError("");
+    try {
+      const me = await loginWithPasskey();
+      navigate(me.role === "user" ? "/app" : "/admin", { replace: true });
+    } catch (err) {
+      // Backing out of the OS prompt is a decision, not a failure.
+      if (isPasskeyCancellation(err)) return;
+      const message = err instanceof ApiError ? err.message : passkeyErrorMessage(err);
+      setError(message);
+      setErrorHint(err instanceof ApiError && err.status === 401
+        ? "If you haven't added a passkey yet, sign in with your password and add one from Security."
+        : "");
+    } finally {
+      setPasskeyBusy(false);
+    }
   };
 
   return (
@@ -322,7 +340,8 @@ export function LoginPage() {
       {demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
 
 
-      <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey} busyProvider={busyProvider} />
+      <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey}
+        busyProvider={busyProvider} passkeyBusy={passkeyBusy} />
 
       <form className="auth-form" onSubmit={submit}>
         <label htmlFor="email">Email</label>
@@ -408,14 +427,14 @@ export function SignupPage() {
     });
   };
 
+  // A passkey is added to an account, never used to open one — the same rule
+  // the federated providers follow, for the same reason: opening a Veyra
+  // account requires the full application.
   const handlePasskey = () => {
-    const supported = "PublicKeyCredential" in window;
     toast({
-      title: supported ? "Passkey registration is ready for setup" : "Passkey is not supported in this browser",
-      description: supported
-        ? "Enable WebAuthn registration to allow passwordless sign-up."
-        : "Use a browser that supports WebAuthn to continue.",
-      tone: supported ? "scout" : "info",
+      title: "Add a passkey once your account is open",
+      description: "Opening an account needs the application below. After that, Security \u2192 Passkeys sets one up in a few seconds.",
+      tone: "info",
     });
   };
 

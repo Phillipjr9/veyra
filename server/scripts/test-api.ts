@@ -21,6 +21,7 @@ import { applicationFor } from "./fixtures.js";
 import { resetRateLimits } from "../src/security.js";
 import { resetRecaptchaConfig } from "../src/recaptcha.js";
 import { resetFederatedConfig } from "../src/federated.js";
+import { resetWebauthnConfig } from "../src/webauthn.js";
 import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1195,6 +1196,240 @@ try {
       }
       resetFederatedConfig();
       await new Promise<void>(r => jwksServer.close(() => r()));
+      resetRateLimits();
+    }
+  }
+
+  /* ---------- passkeys (WebAuthn) ---------- */
+  //
+  // A software authenticator: real P-256 keys, real ECDSA signatures, real
+  // CBOR, real authenticator data. Nothing about the verification path is
+  // stubbed — the only thing missing is the hardware that would normally hold
+  // the private key.
+  {
+    const { generateKeyPairSync, createHash: sha, randomBytes: rnd, sign: ecSign } = await import("node:crypto");
+
+    /* --- minimal CBOR encoder, the mirror of the decoder under test --- */
+    const head = (major: number, length: number): Buffer => {
+      if (length < 24) return Buffer.from([(major << 5) | length]);
+      if (length < 256) return Buffer.from([(major << 5) | 24, length]);
+      const b = Buffer.alloc(3); b[0] = (major << 5) | 25; b.writeUInt16BE(length, 1); return b;
+    };
+    const cInt = (n: number) => n >= 0 ? head(0, n) : head(1, -1 - n);
+    const cBytes = (b: Buffer) => Buffer.concat([head(2, b.length), b]);
+    const cText = (t: string) => Buffer.concat([head(3, Buffer.byteLength(t)), Buffer.from(t, "utf8")]);
+    const cMap = (e: Array<[Buffer, Buffer]>) => Buffer.concat([head(5, e.length), ...e.flat()]);
+    const u = (b: Buffer) => b.toString("base64url");
+
+    const RP = "localhost";
+    const ORIGIN = "https://veyra.test";
+
+    /** Flags: UP 0x01, UV 0x04, BE 0x08, BS 0x10, AT 0x40. */
+    const authenticator = (rpId = RP) => {
+      const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+      const jwk = publicKey.export({ format: "jwk" }) as { x: string; y: string };
+      const credId = rnd(32);
+      const cose = cMap([
+        [cInt(1), cInt(2)], [cInt(3), cInt(-7)], [cInt(-1), cInt(1)],
+        [cInt(-2), cBytes(Buffer.from(jwk.x, "base64url"))],
+        [cInt(-3), cBytes(Buffer.from(jwk.y, "base64url"))],
+      ]);
+      const authData = (flags: number, count: number, attested: boolean) => {
+        const h = Buffer.alloc(37);
+        sha("sha256").update(rpId).digest().copy(h, 0);
+        h[32] = flags; h.writeUInt32BE(count, 33);
+        if (!attested) return h;
+        const len = Buffer.alloc(2); len.writeUInt16BE(credId.length);
+        return Buffer.concat([h, Buffer.alloc(16), len, credId, cose]);
+      };
+      const clientData = (type: string, challenge: string, origin: string) =>
+        Buffer.from(JSON.stringify({ type, challenge, origin, crossOrigin: false }), "utf8");
+      // Real hardware advances this on every assertion, so the default must
+      // too — otherwise routine sign-ins look like a cloned device and the
+      // clone test below would pass without proving anything.
+      let counter = 0;
+      return {
+        id: u(credId),
+        register(challenge: string, { origin = ORIGIN, flags = 0x45 } = {}) {
+          return {
+            clientDataJSON: u(clientData("webauthn.create", challenge, origin)),
+            attestationObject: u(cMap([
+              [cText("fmt"), cText("none")], [cText("attStmt"), cMap([])],
+              [cText("authData"), cBytes(authData(flags, 0, true))],
+            ])),
+          };
+        },
+        assert(challenge: string, { origin = ORIGIN, flags = 0x05, count = 0, tamper = false } = {}) {
+          const cd = clientData("webauthn.get", challenge, origin);
+          const ad = authData(flags, count || ++counter, false);
+          const signature = ecSign("sha256", Buffer.concat([ad, sha("sha256").update(cd).digest()]), privateKey);
+          if (tamper) ad[33] = ad[33] ^ 0xff; // flip the counter AFTER signing
+          return { id: u(credId), clientDataJSON: u(cd), authenticatorData: u(ad), signature: u(signature) };
+        },
+      };
+    };
+
+    const restore = { ...process.env };
+    try {
+      process.env.WEBAUTHN_RP_ID = RP;
+      process.env.WEBAUTHN_ORIGINS = ORIGIN;
+      resetWebauthnConfig();
+
+      const owner = await register("Pia Lund", "pia@passkey.test", "member-pass-7", { accountType: "personal" });
+      const pia = owner.json.token;
+      const other = await register("Tom Reed", "tom@passkey.test", "member-pass-8", { accountType: "personal" });
+      const tom = other.json.token;
+
+      const regChallenge = async (token: string) =>
+        (await api("POST", "/api/me/passkeys/challenge", token)).json;
+      const loginChallenge = async () =>
+        (await api("POST", "/api/auth/passkey/challenge")).json;
+
+      /* --- registration --- */
+      const anon = await api("POST", "/api/me/passkeys/challenge");
+      expect("registering a passkey needs a session (401)", anon.status === 401);
+
+      const opts = await regChallenge(pia);
+      expect("registration options name the relying party and demand user verification",
+        opts.rp.id === RP && opts.challenge.length >= 40 &&
+        opts.authenticatorSelection.userVerification === "required" &&
+        opts.authenticatorSelection.residentKey === "required");
+      expect("registration options ask for a discoverable credential, not an email",
+        opts.user.name === "pia@passkey.test" && opts.attestation === "none");
+
+      const device = authenticator();
+      const added = await api("POST", "/api/me/passkeys", pia, { ...device.register(opts.challenge), label: "Pixel 9" });
+      expect("a passkey registers against a live challenge (201)",
+        added.status === 201 && added.json.passkey.label === "Pixel 9" && added.json.passkey.id === device.id);
+      expect("adding a passkey notifies the member",
+        (await api("GET", "/api/me/notifications", pia)).json.notifications
+          .some((n: any) => n.title === "Passkey added"));
+
+      const listed = await api("GET", "/api/me/passkeys", pia);
+      expect("the member can list their passkeys without the key material",
+        listed.json.passkeys.length === 1 && listed.json.passkeys[0].publicKey === undefined &&
+        listed.json.passkeys[0].signCount === undefined);
+
+      /* --- the challenge is single-use and bound to its session --- */
+      const reused = await api("POST", "/api/me/passkeys", pia, authenticator().register(opts.challenge));
+      expect("a registration challenge cannot be used twice",
+        reused.status === 400 && reused.json.code === "passkey_rejected");
+
+      const piaChallenge = (await regChallenge(pia)).challenge;
+      const stolen = await api("POST", "/api/me/passkeys", tom, authenticator().register(piaChallenge));
+      expect("a challenge issued to one member cannot be redeemed by another (403)", stolen.status === 403);
+
+      const dupOpts = await regChallenge(pia);
+      expect("options exclude a credential the member already registered",
+        dupOpts.excludeCredentials.some((c: any) => c.id === device.id));
+      const duplicate = await api("POST", "/api/me/passkeys", pia, device.register(dupOpts.challenge));
+      expect("the same credential cannot be registered twice (409)",
+        duplicate.status === 409 && duplicate.json.code === "passkey_duplicate");
+
+      /* --- registration refusals --- */
+      const noUvOpts = await regChallenge(pia);
+      const noUv = await api("POST", "/api/me/passkeys", pia, authenticator().register(noUvOpts.challenge, { flags: 0x41 }));
+      expect("a passkey that skipped user verification is refused", noUv.status === 400);
+
+      const wrongOriginOpts = await regChallenge(pia);
+      const wrongOrigin = await api("POST", "/api/me/passkeys", pia,
+        authenticator().register(wrongOriginOpts.challenge, { origin: "https://veyra.test.evil.com" }));
+      expect("a registration from a lookalike origin is refused", wrongOrigin.status === 400);
+
+      const wrongRpOpts = await regChallenge(pia);
+      const wrongRp = await api("POST", "/api/me/passkeys", pia, authenticator("evil.test").register(wrongRpOpts.challenge));
+      expect("a credential bound to another relying party is refused", wrongRp.status === 400);
+
+      const junk = await api("POST", "/api/me/passkeys", pia,
+        { clientDataJSON: "bm90LWpzb24", attestationObject: "bm90LWNib3I" });
+      expect("malformed registration data is 400, never 500", junk.status === 400);
+
+      /* --- signing in --- */
+      const signIn = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge));
+      expect("a passkey signs in and mints a Veyra session",
+        signIn.status === 200 && signIn.json.user.email === "pia@passkey.test" && Boolean(signIn.json.token));
+      expect("the minted session is a normal Veyra session",
+        (await api("GET", "/api/me/state", signIn.json.token)).status === 200);
+      expect("signing in records when the passkey was last used",
+        (await api("GET", "/api/me/passkeys", pia)).json.passkeys[0].lastUsedAt !== null);
+
+      const loginOpts = await loginChallenge();
+      expect("the login challenge names no credentials, so it cannot enumerate accounts",
+        Array.isArray(loginOpts.allowCredentials) && loginOpts.allowCredentials.length === 0 &&
+        loginOpts.userVerification === "required");
+
+      /* --- the phishing defence, which is the entire point --- */
+      const phished = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { origin: "https://veyra-secure.test" }));
+      expect("an assertion collected by a phishing origin does not verify (400)",
+        phished.status === 400 && phished.json.code === "passkey_rejected");
+
+      const assertion = device.assert((await loginChallenge()).challenge);
+      await api("POST", "/api/auth/passkey/login", undefined, assertion);
+      const replayed = await api("POST", "/api/auth/passkey/login", undefined, assertion);
+      expect("a captured assertion cannot be replayed", replayed.status === 400);
+
+      const unsolicited = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert(u(rnd(32))));
+      expect("an assertion for a challenge the server never issued is refused", unsolicited.status === 400);
+
+      const tampered = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { tamper: true }));
+      expect("editing authenticator data after signing breaks the signature (401)", tampered.status === 401);
+
+      const impostor = authenticator();
+      const forged = { ...impostor.assert((await loginChallenge()).challenge), id: device.id };
+      expect("a signature from a different key under a known credential id is refused (401)",
+        (await api("POST", "/api/auth/passkey/login", undefined, forged)).status === 401);
+
+      const unknown = await api("POST", "/api/auth/passkey/login", undefined,
+        authenticator().assert((await loginChallenge()).challenge));
+      expect("an unregistered credential is refused (401)",
+        unknown.status === 401 && unknown.json.code === "passkey_unknown");
+
+      const noUvLogin = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { flags: 0x01 }));
+      expect("signing in without user verification is refused (403)", noUvLogin.status === 403);
+
+      const incomplete = await api("POST", "/api/auth/passkey/login", undefined, { id: device.id });
+      expect("an incomplete assertion is 400, never 500",
+        incomplete.status === 400 && incomplete.json.code === "passkey_incomplete");
+
+      /* --- a stalled signature counter is a clone signal --- */
+      const cloneTitle = "Unusual passkey activity";
+      const warned = async () => (await api("GET", "/api/me/notifications", pia))
+        .json.notifications.some((n: any) => n.title === cloneTitle);
+      expect("ordinary sign-ins do not raise a clone warning", (await warned()) === false);
+      await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { count: 40 }));
+      const regressed = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge, { count: 12 }));
+      expect("a counter that goes backwards still signs in but warns the member",
+        regressed.status === 200 && (await warned()) === true);
+
+      /* --- removal --- */
+      const foreign = await api("DELETE", `/api/me/passkeys/${device.id}`, tom);
+      expect("another member cannot remove your passkey (404)", foreign.status === 404);
+      expect("the passkey survived that attempt",
+        (await api("GET", "/api/me/passkeys", pia)).json.passkeys.length === 1);
+
+      const removed = await api("DELETE", `/api/me/passkeys/${device.id}`, pia);
+      expect("the member can remove their own passkey", removed.status === 200);
+      expect("removal notifies the member",
+        (await api("GET", "/api/me/notifications", pia)).json.notifications
+          .some((n: any) => n.title === "Passkey removed"));
+      const afterRemoval = await api("POST", "/api/auth/passkey/login", undefined,
+        device.assert((await loginChallenge()).challenge));
+      expect("a removed passkey no longer signs in (401)", afterRemoval.status === 401);
+      expect("the password still works after the passkey is gone",
+        (await api("POST", "/api/auth/login", undefined,
+          { email: "pia@passkey.test", password: "member-pass-7" })).status === 200);
+    } finally {
+      for (const key of ["WEBAUTHN_RP_ID", "WEBAUTHN_ORIGINS", "WEBAUTHN_RP_NAME"]) {
+        if (restore[key] === undefined) delete process.env[key]; else process.env[key] = restore[key];
+      }
+      resetWebauthnConfig();
       resetRateLimits();
     }
   }

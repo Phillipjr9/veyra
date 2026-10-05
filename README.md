@@ -165,12 +165,13 @@ server/
     security.ts         scrypt hashing, HS256 tokens, rate limiter, TOKEN_SECRET
     recaptcha.ts        reCAPTCHA v3 / Enterprise verifier for the anonymous routes
     federated.ts        Firebase ID token verification + provider registry + account linking
+    webauthn.ts         Passkeys: CBOR/COSE decode, origin binding, signature verification
     rbac.ts             Server-authoritative permission matrix (DB overrides)
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
   scripts/test-api.ts   235-check integration suite (boots the real server)
-  scripts/audit-routes.ts  80 routes × 6 identities gate/isolation audit
+  scripts/audit-routes.ts  86 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -303,7 +304,7 @@ funds) to the status columns.
 
 ### API surface (summary)
 
-- **Auth** — `POST /api/auth/login · register · federated · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA + federated settings), `GET /api/health`
+- **Auth** — `POST /api/auth/login · register · federated · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA + federated settings), `POST /api/auth/passkey/challenge · passkey/login`, `GET /api/health`
 - **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
@@ -376,6 +377,49 @@ frontend rebuild, and a cached bundle can never disagree with the server about
 whether tokens are required. If the script is blocked (ad blocker, strict
 extension, corporate proxy) the client sends no token and the **server**
 decides — `src/lib/recaptcha.ts` never pre-emptively blocks the member.
+
+### Passkeys (WebAuthn)
+
+The only sign-in method here with no third party in the trust path, and the
+strongest one Veyra offers. The authenticator generates a key pair, keeps the
+private half, and signs a server-issued challenge with it. There is no shared
+secret — a full dump of the `passkeys` table lets an attacker *verify*
+signatures, not produce them.
+
+**Why it resists phishing**, which no password or OTP does: the browser will
+only release a credential to the origin that created it, and the origin it was
+asked by is inside what gets signed. A lookalike domain therefore cannot
+collect anything usable — it cannot even ask the right question. The member
+does not have to notice the URL is wrong, which is the whole problem with
+every credential that can be typed.
+
+**Verified server-side** in `webauthn.ts`, with `node:crypto` and no
+dependency: the challenge (server-issued, single-use, 5-minute TTL), the
+origin against an allowlist, the RP ID hash, the user-presence and
+user-verification flags, and the ECDSA/RSA/EdDSA signature over
+`authenticatorData || sha256(clientDataJSON)`. Attestation is deliberately not
+verified — we ask for `attestation: "none"` and ignore `attStmt`, because
+attestation answers "which authenticator model is this?", and Veyra wants
+members using the device already in their hand.
+
+| Rule | Behaviour |
+|---|---|
+| User verification | **Required**, at registration and at sign-in. A passkey is then two factors in one gesture: the device, plus the biometric or PIN that unlocked it. |
+| Registration | Needs a live session. A passkey is added to an account and **never opens one** — same rule as the federated providers. |
+| Challenge ownership | The challenge carries the user id it was issued to; a registration redeemed on a different session is refused (403). |
+| Credential reuse | Credential ID is the primary key, so one credential unlocks exactly one Veyra account. |
+| Sign-in | Discoverable (resident) credentials, no email asked for, `allowCredentials` empty — so neither route can answer "does this account exist?" |
+| Signature counter | Checked, but advisory. Synced passkeys report 0 forever, so a regression notifies the member rather than locking them out. |
+| Removal | Scoped to `(id, user_id)`; another member's credential reads as 404. |
+
+Configure `WEBAUTHN_RP_ID` and `WEBAUTHN_ORIGINS` for your domain — the
+defaults are localhost dev values and **passkeys will not work in production
+until you set them**. The RP ID is a bare domain (no scheme, no port) and must
+equal the site's domain or a parent of it.
+
+> A passkey is bound to `rpId`. Changing it invalidates every passkey already
+> registered, so pick the broadest domain you will ever serve from (`veyra.com`
+> rather than `app.veyra.com`) before members start enrolling.
 
 ### Federated sign-in (Google, Apple, Microsoft — via Firebase)
 
@@ -462,7 +506,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (244) = 285 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (278) = 319 checks
 ```
 
 > **Production notes:** the frontend is API-only (no offline mode). Password

@@ -17,6 +17,10 @@ import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToD
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
 import { requireRecaptcha, publicRecaptchaConfig, RECAPTCHA_ACTIONS } from "./recaptcha.js";
 import { verifyFirebaseIdToken, federatedConfig, publicFederatedConfig, PROVIDER_REGISTRY } from "./federated.js";
+import {
+  webauthnConfig, issueChallenge, verifyRegistration, verifyAuthentication,
+  registrationOptions, authenticationOptions,
+} from "./webauthn.js";
 import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
@@ -213,6 +217,28 @@ export function createApp(dbPath?: string) {
       .run(rid("n"), userId, type, title, detail, now());
 
   /**
+   * Passkeys as the browser sees them. The public key, algorithm and signature
+   * counter stay server-side: they are useless to the UI and listing them
+   * would only widen what a stolen session can read.
+   */
+  type PasskeyRow = {
+    id: string; label: string; transports: string; backed_up: number;
+    created_at: number; last_used_at: number | null;
+  };
+  const shapePasskey = (row: PasskeyRow) => ({
+    id: row.id,
+    label: row.label,
+    transports: row.transports ? row.transports.split(",").filter(Boolean) : [],
+    /** Synced to a provider keychain, so it survives losing the device. */
+    syncedToCloud: row.backed_up === 1,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at,
+  });
+  const passkeyRow = (id: string) => shapePasskey(db.prepare(
+    "SELECT id, label, transports, backed_up, created_at, last_used_at FROM passkeys WHERE id = ?",
+  ).get(id) as PasskeyRow);
+
+  /**
    * Member-management routes operate on member accounts only. Staff and Super
    * Admin accounts are not member surface: an operator with customer
    * permissions must not be able to credit, debit or restrict a colleague
@@ -393,6 +419,172 @@ export function createApp(dbPath?: string) {
       linked: linkedNow,
       provider: providerId,
     });
+  }));
+
+  /* ---------- passkeys (WebAuthn) ----------
+   *
+   * Four ceremonies. Two are public because signing in necessarily happens
+   * before there is a session; two require one because a passkey is added to
+   * an account that already exists.
+   *
+   * The security story lives in server/src/webauthn.ts. What matters here is
+   * that a challenge is minted server-side, consumed exactly once, and the
+   * user it belongs to is read from the challenge rather than the request.
+   */
+
+  app.post("/api/auth/passkey/challenge", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`passkey-challenge:${ip}`, 60, 60_000)) {
+      return void res.status(429).json({ error: "Too many attempts — wait a minute, then try again." });
+    }
+    // No email is asked for and none is accepted. The browser already knows
+    // which passkeys it holds for this site, so requiring one would add an
+    // enumeration oracle for nothing.
+    res.json({ challenge: issueChallenge("login"), ...authenticationOptions() });
+  }));
+
+  app.post("/api/auth/passkey/login", wrap((req, res) => {
+    const ip = req.ip ?? "unknown";
+    if (!rateLimit(`passkey-login:${ip}`, 30, 60_000)) {
+      return void res.status(429).json({ error: "Too many attempts — wait a minute, then try again." });
+    }
+    const { id, clientDataJSON, authenticatorData, signature } = req.body ?? {};
+    if (!id || !clientDataJSON || !authenticatorData || !signature) {
+      return void res.status(400).json({ error: "That sign-in was incomplete. Try again.", code: "passkey_incomplete" });
+    }
+
+    const stored = db.prepare(
+      "SELECT id, user_id, public_key, alg, sign_count FROM passkeys WHERE id = ?",
+    ).get(String(id)) as { id: string; user_id: string; public_key: string; alg: number; sign_count: number } | undefined;
+    // Same wording as a bad signature: whether a credential ID is known is not
+    // something an unauthenticated caller should be able to probe.
+    if (!stored) {
+      console.warn(`[passkey] rejected — unknown credential ${String(id).slice(0, 16)}…`);
+      return void res.status(401).json({ error: "That passkey isn't registered here.", code: "passkey_unknown" });
+    }
+
+    const verdict = verifyAuthentication({
+      clientDataJSON: String(clientDataJSON),
+      authenticatorData: String(authenticatorData),
+      signature: String(signature),
+      credential: {
+        credentialId: stored.id, publicKeyJwk: stored.public_key,
+        alg: stored.alg, signCount: stored.sign_count,
+      },
+    });
+    if (!verdict.ok) {
+      console.warn(`[passkey] rejected — ${verdict.detail}`);
+      return void res.status(verdict.status).json({ error: verdict.error, code: "passkey_rejected" });
+    }
+
+    const user = loadUser(stored.user_id);
+    if (!user) return void res.status(404).json({ error: "That account no longer exists.", code: "passkey_no_account" });
+    if (user.status === "suspended") {
+      return void res.status(403).json({ error: "This account is suspended. Contact support.", code: "passkey_suspended" });
+    }
+
+    db.prepare("UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE id = ?")
+      .run(verdict.value.signCount, now(), stored.id);
+
+    // A counter that went backwards is the one signal WebAuthn gives that a
+    // credential may have been copied. It is too unreliable to block on (see
+    // webauthn.ts), but the member should hear about it.
+    if (verdict.value.clonedWarning) {
+      console.warn(`[passkey] sign counter did not advance for credential ${stored.id.slice(0, 16)}… — possible clone`);
+      notify(user.id, "security", "Unusual passkey activity",
+        "A passkey on your account reported a counter that did not advance, which can indicate a copied device. " +
+        "If you did not just sign in, remove your passkeys and change your password.");
+    }
+
+    const tokenId = randomUUID();
+    db.prepare("INSERT INTO sessions (token_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .run(tokenId, user.id, now(), now() + TOKEN_TTL_MS);
+    res.json({ token: signToken({ sub: user.id, jti: tokenId, role: user.role }), user: publicUser(user) });
+  }));
+
+  app.post("/api/me/passkeys/challenge", requireAuth, wrap((req, res) => {
+    const me = req.user!;
+    const existing = db.prepare("SELECT id FROM passkeys WHERE user_id = ?").all(me.id) as Array<{ id: string }>;
+    const user = loadUser(me.id);
+    res.json({
+      // The challenge carries the user id, so the registration that follows
+      // cannot be pointed at a different account by editing the request.
+      challenge: issueChallenge("register", me.id),
+      ...registrationOptions(
+        { id: me.id, email: me.email, name: user?.name ?? me.email },
+        existing.map(row => row.id),
+      ),
+    });
+  }));
+
+  app.post("/api/me/passkeys", requireAuth, wrap((req, res) => {
+    const me = req.user!;
+    const { clientDataJSON, attestationObject, transports, label } = req.body ?? {};
+    if (!clientDataJSON || !attestationObject) {
+      return void res.status(400).json({ error: "That passkey was incomplete. Try again.", code: "passkey_incomplete" });
+    }
+
+    const verdict = verifyRegistration({
+      clientDataJSON: String(clientDataJSON),
+      attestationObject: String(attestationObject),
+    });
+    if (!verdict.ok) {
+      console.warn(`[passkey] registration rejected — ${verdict.detail}`);
+      return void res.status(verdict.status).json({ error: verdict.error, code: "passkey_rejected" });
+    }
+    // The challenge was issued to a session; this request arrived on one. If
+    // they disagree, someone is replaying a challenge across accounts.
+    if (verdict.value.userId !== me.id) {
+      console.warn(`[passkey] registration rejected — challenge belongs to ${verdict.value.userId}, not ${me.id}`);
+      return void res.status(403).json({ error: "That passkey could not be verified. Try again.", code: "passkey_rejected" });
+    }
+
+    const taken = db.prepare("SELECT user_id FROM passkeys WHERE id = ?").get(verdict.value.credentialId) as
+      | { user_id: string } | undefined;
+    if (taken) {
+      return void res.status(409).json({
+        error: taken.user_id === me.id
+          ? "That passkey is already on your account."
+          : "That passkey is already registered to another account.",
+        code: "passkey_duplicate",
+      });
+    }
+
+    const clean = String(label ?? "").trim().slice(0, 60) || "Passkey";
+    db.prepare(
+      `INSERT INTO passkeys (id, user_id, public_key, alg, sign_count, transports, aaguid, backed_up, label, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      verdict.value.credentialId, me.id, verdict.value.publicKeyJwk, verdict.value.alg,
+      verdict.value.signCount,
+      Array.isArray(transports) ? transports.map(String).join(",").slice(0, 120) : "",
+      verdict.value.aaguid, verdict.value.backedUp ? 1 : 0, clean, now(),
+    );
+
+    notify(me.id, "security", "Passkey added",
+      `"${clean}" can now sign in to your account. If this wasn't you, remove it and change your password immediately.`);
+    res.status(201).json({ passkey: passkeyRow(verdict.value.credentialId) });
+  }));
+
+  app.get("/api/me/passkeys", requireAuth, wrap((req, res) => {
+    const rows = db.prepare(
+      "SELECT id, label, transports, backed_up, created_at, last_used_at FROM passkeys WHERE user_id = ? ORDER BY created_at DESC",
+    ).all(req.user!.id) as PasskeyRow[];
+    res.json({ passkeys: rows.map(shapePasskey), rpId: webauthnConfig().rpId });
+  }));
+
+  app.delete("/api/me/passkeys/:id", requireAuth, wrap((req, res) => {
+    const me = req.user!;
+    // Scoped by user_id as well as id: a credential ID from another account
+    // must read as "not found", not as someone else's row.
+    const row = db.prepare("SELECT id, label FROM passkeys WHERE id = ? AND user_id = ?")
+      .get(String(req.params.id), me.id) as { id: string; label: string } | undefined;
+    if (!row) return void res.status(404).json({ error: "That passkey isn't on your account." });
+
+    db.prepare("DELETE FROM passkeys WHERE id = ? AND user_id = ?").run(row.id, me.id);
+    notify(me.id, "security", "Passkey removed",
+      `"${row.label}" can no longer sign in to your account.`);
+    res.json({ ok: true });
   }));
 
   app.post("/api/auth/login", requireRecaptcha(RECAPTCHA_ACTIONS.login), wrap((req, res) => {

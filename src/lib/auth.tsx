@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { apiGet, apiPost, apiPatch, probeApi, getToken, setToken, clearToken, onUnauthorized, ApiError } from "./api";
 import { recaptchaField } from "./recaptcha";
 import { federatedIdToken, type ProviderId } from "./federated";
+import { signInWithPasskey } from "./passkey";
 
 export type UserRole = "user" | "support" | "compliance" | "admin" | "superadmin";
 
@@ -42,6 +43,12 @@ type AuthValue = {
    * (see server/src/federated.ts) and mints the Veyra session the app runs on.
    */
   loginWithProvider: (provider: ProviderId) => Promise<User>;
+  /**
+   * Passkey sign-in. No email is collected: the credential is discoverable,
+   * so the browser shows the member whichever passkeys it holds for this site
+   * and the server identifies them from the signed credential id.
+   */
+  loginWithPasskey: () => Promise<User>;
   /** `profile` carries the full account application (see server/src/identity.ts). */
   signup: (input: {
     name: string; phone?: string; business?: string; accountType: User["accountType"];
@@ -153,6 +160,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return me;
   }, []);
 
+  const loginWithPasskey = useCallback(async (): Promise<User> => {
+    // As in login(): a stale token must not ride along, or a refusal would be
+    // reported as "your session ended" rather than the real reason.
+    clearToken();
+    if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
+    const { token, user: me } = await signInWithPasskey() as { token: string; user: User };
+    setToken(token);
+    setActiveToken(token);
+    setUser(me);
+    setSessionNotice("");
+    return me;
+  }, []);
+
   const signup = useCallback<AuthValue["signup"]>(async ({ name, phone = "", business = "", accountType, email, password, plan = "Pro", profile }) => {
     if (!(await probeApi(true))) throw new Error("Cannot reach the Veyra server. Check your connection and try again.");
     const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/register", {
@@ -196,8 +216,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, loginWithProvider, loginWithPasskey, signup, logout, updateUser, changePassword, forgotPassword, resetPassword],
 
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;

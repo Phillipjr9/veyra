@@ -21,6 +21,7 @@ const CLIENT_FILES = [
   "src/lib/recaptcha.ts",
   "src/lib/authConfig.ts",
   "src/lib/federated.ts",
+  "src/lib/passkey.ts",
   "src/lib/store.tsx",
   "src/pages/Dashboard.tsx",
   "src/pages/SuperAdmin.tsx",

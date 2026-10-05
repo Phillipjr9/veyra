@@ -17,7 +17,11 @@ import { CommandPalette } from "../../components/CommandPalette";
 import { MobileCheckDepositModal } from "../../components/MobileCheckDeposit";
 import { ZelleHubModal } from "../../components/ZelleHubModal";
 import { InvoiceDetailModal } from "../../components/InvoiceDetailModal";
-import { Camera } from "lucide-react";
+import { Camera, Loader2 } from "lucide-react";
+import {
+  listPasskeys, createPasskey, deletePasskey, passkeySupported, passkeyRegistrationAvailable,
+  suggestPasskeyLabel, passkeyErrorMessage, isPasskeyCancellation, type Passkey,
+} from "../../lib/passkey";
 import { useAuth } from "../../lib/auth";
 import { BackButton } from "../../components/BackButton";
 import { lockScroll } from "../../lib/scrollLock";
@@ -2964,6 +2968,108 @@ export function KYCPage() {
 /* ============================================================
    Security center
    ============================================================ */
+/**
+ * Passkey management.
+ *
+ * A passkey is the only credential on the account that cannot be phished,
+ * reused across sites, or read out of a breach of Veyra's database — the
+ * private half never leaves the member's device. This panel is where they are
+ * added and removed; the ceremony itself lives in src/lib/passkey.ts.
+ */
+function PasskeysPanel() {
+  const toast = useToast();
+  const [keys, setKeys] = useState<Passkey[] | null>(null);
+  const [canAdd, setCanAdd] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    void listPasskeys()
+      .then(result => { if (live) setKeys(result.passkeys); })
+      .catch(() => { if (live) setKeys([]); });
+    void passkeyRegistrationAvailable().then(available => { if (live) setCanAdd(available); });
+    return () => { live = false; };
+  }, []);
+
+  const add = async () => {
+    setAdding(true);
+    try {
+      const created = await createPasskey(suggestPasskeyLabel());
+      setKeys(current => [created, ...(current ?? [])]);
+      toast({ tone: "success", title: `${created.label} added`, description: "You can now sign in without your password." });
+    } catch (err) {
+      // Backing out of the OS prompt is a decision, not an error.
+      if (isPasskeyCancellation(err)) return;
+      toast({ tone: "info", title: "Couldn't add that passkey", description: passkeyErrorMessage(err) });
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const remove = async (key: Passkey) => {
+    setRemoving(key.id);
+    try {
+      await deletePasskey(key.id);
+      setKeys(current => (current ?? []).filter(k => k.id !== key.id));
+      toast({ tone: "info", title: `${key.label} removed` });
+    } catch (err) {
+      toast({ tone: "info", title: "Couldn't remove that passkey", description: (err as Error).message });
+    } finally {
+      setRemoving("");
+    }
+  };
+
+  const supported = passkeySupported();
+  return (
+    <section className="panel sessions-panel">
+      <div className="panel-head">
+        <div><h2>Passkeys</h2><span className="panel-sub">Sign in with your fingerprint, face or device PIN</span></div>
+        {supported && canAdd && (
+          <button type="button" className="ghost-btn sm" onClick={add} disabled={adding}>
+            {adding ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}
+            {adding ? "Waiting for your device…" : "Add passkey"}
+          </button>
+        )}
+      </div>
+
+      {!supported ? (
+        <p className="passkey-empty">This browser doesn't support passkeys. Your password still works everywhere.</p>
+      ) : keys === null ? (
+        <p className="passkey-empty">Loading…</p>
+      ) : keys.length === 0 ? (
+        <p className="passkey-empty">
+          No passkeys yet. A passkey replaces your password with the lock you already use on this device —
+          and unlike a password it can't be phished, guessed, or reused anywhere else.
+          {!canAdd && " This device has no fingerprint, face or PIN set up, so add one from a phone or laptop that does."}
+        </p>
+      ) : (
+        <div className="session-list">
+          {keys.map(key => (
+            <div className="session-row" key={key.id}>
+              <span className="session-icon"><KeyRound size={17} /></span>
+              <div className="session-main">
+                <strong>
+                  {key.label}
+                  {key.syncedToCloud && <span className="chip chip-green">Synced</span>}
+                </strong>
+                <small>
+                  Added {new Date(key.createdAt).toLocaleDateString()}
+                  {key.lastUsedAt ? ` · last used ${timeAgo(key.lastUsedAt)}` : " · never used"}
+                </small>
+              </div>
+              <span />
+              <button type="button" className="ghost-btn sm" onClick={() => remove(key)} disabled={removing === key.id}>
+                <Trash2 size={13} /> Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function SecurityCenterPage() {
   const { account, setPreference, revokeSession, toggleTrustedSession, freezeAllCards } = useAcct();
   const toast = useToast();
@@ -2978,6 +3084,7 @@ export function SecurityCenterPage() {
         <section className="panel"><div className="panel-head"><div><h2>Sign-in protection</h2><span className="panel-sub">Recommended settings</span></div></div><Toggle checked={prefs.twoFactor} onChange={value => { setPreference("twoFactor", value); toast({ tone: "info", title: `Two-factor authentication ${value ? "on" : "off"}` }); }} label="Two-factor authentication" description="Require a one-time code on new devices." /><Toggle checked={prefs.loginAlerts} onChange={value => { setPreference("loginAlerts", value); toast({ tone: "info", title: `Login alerts ${value ? "on" : "off"}` }); }} label="New device alerts" description="Notify me when a new browser signs in." /><div className="security-tip"><Lock size={15} /><span>Your password is stored server-side as a scrypt hash — never in plain text.</span></div></section>
         <section className="panel emergency-panel"><div className="panel-head"><div><h2>Emergency controls</h2><span className="panel-sub">Use these if something feels wrong</span></div></div><button type="button" className="emergency-action" onClick={() => setConfirmFreeze(true)}><Snowflake size={18} /><span><b>Freeze every card</b><small>Immediately decline new purchases on all cards.</small></span><ArrowRight size={15} /></button><Link className="emergency-action" to="/app/disputes"><ShieldAlert size={18} /><span><b>Report a transaction</b><small>Open and track a card-purchase dispute.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/kyc"><UserRound size={18} /><span><b>Review KYC</b><small>Check your identity verification status and next steps.</small></span><ArrowRight size={15} /></Link><Link className="emergency-action" to="/app/settings"><KeyRound size={18} /><span><b>Change password</b><small>Update your account password.</small></span><ArrowRight size={15} /></Link></section>
       </div>
+      <PasskeysPanel />
       <section className="panel sessions-panel"><div className="panel-head"><div><h2>Devices & sessions</h2><span className="panel-sub">Sign out a device you no longer use or recognize</span></div></div><div className="session-list">{account.sessions.map(session => <div className="session-row" key={session.id}><span className="session-icon">{session.browser.toLowerCase().includes("mobile") ? <Smartphone size={17} /> : <Monitor size={17} />}</span><div className="session-main"><strong>{session.device} {session.current && <span className="chip chip-green">This device</span>}</strong><small>{session.browser} · {session.location} · {timeAgo(session.lastActive)}</small></div><button type="button" className={`trust-btn ${session.trusted ? "trusted" : ""}`} onClick={() => toggleTrustedSession(session.id)}>{session.trusted ? <ShieldCheck size={13} /> : <AlertTriangle size={13} />}{session.trusted ? "Trusted" : "Untrusted"}</button>{!session.current && <button type="button" className="ghost-btn sm" onClick={() => { revokeSession(session.id); toast({ tone: "success", title: `${session.device} signed out` }); }}>Sign out</button>}</div>)}</div></section>
       <Modal open={confirmFreeze} onClose={() => setConfirmFreeze(false)} title="Freeze every card?" subtitle="All new card purchases will be declined until you unfreeze cards individually."><div className="freeze-confirm"><Snowflake size={30} /><p>This does not close cards or cancel transfers that are already processing.</p><div className="modal-actions"><button type="button" className="ghost-btn" onClick={() => setConfirmFreeze(false)}>Cancel</button><button type="button" className="danger-btn" onClick={() => { freezeAllCards(); setConfirmFreeze(false); toast({ tone: "info", title: "All cards frozen" }); }}>Freeze all cards</button></div></div></Modal>
     </div>

@@ -618,6 +618,43 @@ CREATE UNIQUE INDEX idx_federated_user ON federated_identities(provider, user_id
 CREATE INDEX idx_federated_lookup ON federated_identities(user_id);
 `,
   },
+  {
+    version: 9,
+    sql: `
+-- v9: passkeys (WebAuthn credentials). See server/src/webauthn.ts.
+--
+-- Each row is a public key an authenticator generated and kept the private half
+-- of. Nothing here is a secret: a stolen copy of this table lets an attacker
+-- verify signatures, not produce them. That is the whole point of the method —
+-- there is no shared secret to breach, phish or reuse.
+--
+-- id is the credential ID as base64url, and it is the PRIMARY KEY rather than a
+-- surrogate: credential IDs are globally unique, so making it the key means one
+-- physical credential can unlock exactly one Veyra account, enforced by SQLite
+-- instead of by a check someone can forget to write.
+--
+-- sign_count is the authenticator's own counter, stored to detect a cloned
+-- device. Synced passkeys report 0 forever, so it is advisory — see the note in
+-- verifyAuthentication().
+--
+-- A passkey is ADDED to an account that already exists and is never a way to
+-- create one, which is why there is no application data here.
+CREATE TABLE passkeys (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL REFERENCES users(id),
+  public_key   TEXT NOT NULL,
+  alg          INTEGER NOT NULL,
+  sign_count   INTEGER NOT NULL DEFAULT 0,
+  transports   TEXT NOT NULL DEFAULT '',
+  aaguid       TEXT NOT NULL DEFAULT '',
+  backed_up    INTEGER NOT NULL DEFAULT 0,
+  label        TEXT NOT NULL DEFAULT '',
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+CREATE INDEX idx_passkeys_user ON passkeys(user_id);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */
