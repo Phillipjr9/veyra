@@ -686,6 +686,7 @@ function useAccountState() {
     const next = normalize(raw, { name, business, email, accountType });
     ref.current = next;
     setAccount(next);
+    setAccountError(null);
   }, [name, business, email, accountType]);
   const enqueue = useCallback((run: () => Promise<unknown>, onResult?: (result: unknown) => void) => {
     syncQueue.current = syncQueue.current.then(async () => {
@@ -1339,16 +1340,20 @@ function useAccountState() {
         alertPercent: Math.round(input.alertPercent), createdAt: Date.now(),
       };
       commit(a => ({ ...a, budgets: [budget, ...a.budgets] }));
-      syncPost("/api/me/budgets", { name: budget.name, category: budget.category, monthlyLimit: budget.monthlyLimit, alertPercent: budget.alertPercent });
+      syncPost(
+        "/api/me/budgets",
+        { name: budget.name, category: budget.category, monthlyLimit: budget.monthlyLimit, alertPercent: budget.alertPercent },
+        result => adoptId(budget.id, (result as { budget?: { id?: string } } | null)?.budget?.id),
+      );
       return budget;
     },
-    [commit, syncPost],
+    [adoptId, commit, syncPost],
   );
 
   const removeBudget = useCallback((id: string) => {
     commit(a => ({ ...a, budgets: a.budgets.filter(budget => budget.id !== id) }));
-    syncDelete(`/api/me/budgets/${id}`);
-  }, [commit, syncDelete]);
+    syncDelete(() => `/api/me/budgets/${resolveId(id)}`);
+  }, [commit, resolveId, syncDelete]);
 
   const createDispute = useCallback(
     (input: DisputeInput): Dispute | null => {
@@ -1436,6 +1441,8 @@ function useAccountState() {
       account,
       accountError,
       user,
+      // Reconcile mutations made by features with their own API client (crypto).
+      refreshAccount: refreshFromServer,
       deposit,
       depositCheck,
       sendPayment,
@@ -1481,7 +1488,7 @@ function useAccountState() {
       setPreference,
       exportCSV,
     }),
-    [account, accountError, user, deposit, depositCheck, sendPayment, redeemRewards, applyScoutSavings, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createBudget, removeBudget, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
+    [account, accountError, user, refreshFromServer, deposit, depositCheck, sendPayment, redeemRewards, applyScoutSavings, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createBudget, removeBudget, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
   );
 }
 

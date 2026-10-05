@@ -1242,7 +1242,7 @@ export function SuperAdminPage() {
                         <td><small>{q.kyc.submission ? longDate(q.kyc.submission.submittedAt) : "—"}</small></td>
                         <td>{q.kyc.submission?.legalName ?? "—"}</td>
                         <td><small>{q.kyc.submission?.documentType ?? q.kyc.documentType}</small></td>
-                        <td><small>{q.kyc.submission?.documents.filter(d => d.name).length ?? 0} uploaded</small></td>
+                        <td><small>{(q.kyc.submission?.documents ?? []).filter(d => d.name).length} uploaded</small></td>
                         <td><small>{q.kyc.submission?.source ?? "—"}</small></td>
                         <td className="ta-r">
                           {allow("kyc.review")
@@ -1795,10 +1795,10 @@ export function SuperAdminPage() {
                     <div className="kyc-review-rows">
                       {rows.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
                     </div>
-                    {s && s.documents.length > 0 && (
+                    {s && (s.documents ?? []).length > 0 && (
                       <div className="kyc-doc-review-list">
                         <label>Submitted documents</label>
-                        {s.documents.map(d => (
+                        {(s.documents ?? []).map(d => (
                           <div key={d.key} className="kyc-doc-review-item">
                             <FileText size={14} />
                             <span>{d.label}</span>

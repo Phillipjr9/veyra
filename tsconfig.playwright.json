@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"],
+    "noEmit": true
+  },
+  "include": [
+    "playwright.config.ts",
+    "scripts/e2e-server.ts",
+    "server/scripts/fixtures.ts",
+    "server/scripts/price-fixture.ts",
+    "tests/e2e/**/*.ts"
+  ]
+}

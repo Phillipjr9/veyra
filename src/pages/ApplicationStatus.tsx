@@ -7,8 +7,8 @@
  * something — exactly what to send. It is a real page, not a toast, because
  * people come back to it over a couple of days.
  */
-import { useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState, type ReactNode } from "react";
+import { Link, Navigate } from "react-router-dom";
 import { motion } from "motion/react";
 import {
   AlertTriangle, ArrowRight, Check, Clock, FileText, Landmark, LifeBuoy,
@@ -41,7 +41,9 @@ function Shell({ children, tone = "violet" }: { children: ReactNode; tone?: "vio
 }
 
 /** The waiting state: the message the brief asks for, on its own page. */
-function UnderReview({ submittedAt }: { submittedAt?: number | null }) {
+function UnderReview({ submittedAt, checking, onRefresh }: {
+  submittedAt?: number | null; checking: boolean; onRefresh: () => void;
+}) {
   const { user } = useAuth();
   const first = user?.name.split(" ")[0] ?? "there";
   const when = submittedAt ? new Date(submittedAt).toLocaleDateString("en-US", { month: "long", day: "numeric" }) : null;
@@ -70,6 +72,10 @@ function UnderReview({ submittedAt }: { submittedAt?: number | null }) {
         <span>We'll notify you here the moment there's news — you don't need to do anything else. Nothing is charged while you wait.</span>
       </div>
 
+      <button type="button" className="ghost-btn" onClick={onRefresh} disabled={checking}>
+        {checking && <Loader2 size={14} className="spin" />}
+        {checking ? "Checking…" : "Check for updates"}
+      </button>
       <p className="appstatus-foot">
         You can close this page and come back any time; sign in to see this status again.
         Need help? <Link to="/support">Contact support</Link>.
@@ -224,8 +230,40 @@ function SignOutRow() {
 }
 
 export function ApplicationStatusPage() {
-  const { account, accountError } = useAcct();
+  const { account, accountError, refreshAccount } = useAcct();
+  const toast = useToast();
+  const [checking, setChecking] = useState(false);
   const review = account?.kyc.review;
+
+  // A decision is made in another session. Keep the waiting member's shared
+  // account snapshot current, rather than leaving the route guard stuck on
+  // the review state it loaded at signup. Hidden tabs do not keep polling.
+  useEffect(() => {
+    let inFlight = false;
+    const check = () => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      void refreshAccount().catch(() => undefined).finally(() => { inFlight = false; });
+    };
+    check();
+    const timer = window.setInterval(check, 15_000);
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, [refreshAccount]);
+
+  const checkNow = async () => {
+    setChecking(true);
+    try { await refreshAccount(); }
+    catch (err) {
+      toast({ tone: "info", title: "Couldn't check your application",
+        description: err instanceof Error ? err.message : "Please try again in a moment." });
+    } finally { setChecking(false); }
+  };
 
   if (accountError) {
     return (
@@ -247,13 +285,14 @@ export function ApplicationStatusPage() {
     );
   }
 
+  if (review.state === "approved") return <Navigate to="/app" replace />;
   if (review.state === "more_info") {
     return <MoreInformation note={review.note} requirements={review.requirements} reviewedBy={review.reviewedBy} />;
   }
   if (review.state === "rejected") {
     return <Rejected note={review.note} reviewedBy={review.reviewedBy} />;
   }
-  return <UnderReview submittedAt={review.submittedAt} />;
+  return <UnderReview submittedAt={review.submittedAt} checking={checking} onRefresh={() => { void checkNow(); }} />;
 }
 
 /** A compact summary of what was submitted, shared by the status screens. */

@@ -32,7 +32,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 let failures = 0;
+let checks = 0;
 const expect = (label: string, cond: boolean, extra?: string) => {
+  checks++;
   console.log(`${cond ? "✓" : "✗ FAIL:"} ${label}${extra && !cond ? ` — ${extra}` : ""}`);
   if (!cond) failures++;
 };
@@ -136,6 +138,12 @@ try {
   const leoReg = await register("Leo Frost", "leo@staff.test", "staff-pass-2", { accountType: "business", business: "Veyra Financial HQ" });
   expect("members register through the API", [raeReg, alexReg, adaReg, leoReg].every(r => r.status === 201));
   const raeId = raeReg.json.user.id, alexId = alexReg.json.user.id;
+  const signupQueue = (await api("GET", "/api/admin/kyc/queue", admin)).json.queue;
+  expect("signup review submissions contain an empty documents array", signupQueue.some((q: any) =>
+    q.userId === alexId && Array.isArray(q.submission.documents) && q.submission.documents.length === 0));
+  const signupAggregate = (await api("GET", "/api/admin/state", admin)).json.kycQueue;
+  expect("the admin aggregate preserves the signup documents contract", signupAggregate.some((q: any) =>
+    q.userId === alexId && Array.isArray(q.kyc.submission.documents) && q.kyc.submission.documents.length === 0));
 
   const promoteCompliance = await api("POST", `/api/admin/staff/${adaReg.json.user.id}/role`, admin, { role: "compliance" });
   const promoteSupport = await api("POST", `/api/admin/staff/${leoReg.json.user.id}/role`, admin, { role: "support" });
@@ -1780,7 +1788,7 @@ try {
   const memberState = await api("GET", "/api/admin/state", rae);
   expect("admin state blocked for members (403)", memberState.status === 403);
 
-  console.log(failures === 0 ? "\nALL API INTEGRATION TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
+  console.log(failures === 0 ? `\nALL API INTEGRATION TESTS PASSED (${checks} checks)` : `\n${failures} OF ${checks} TEST(S) FAILED`);
 } finally {
   server && await new Promise<void>(r => (server as any).close ? (server as any).close(() => r()) : r());
   // allow the event loop to drain

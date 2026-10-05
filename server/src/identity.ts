@@ -321,6 +321,9 @@ export function submissionFor(accountType: AccountType, v: ApplicationValues, su
   const legalName = `${v.firstName}${v.middleName ? ` ${v.middleName}` : ""} ${v.lastName}`.trim();
   return {
     legalName, dob: v.dob, country: v.country, documentType: v.idType, taxId: v.ssn,
+    // An application collects identity fields, not uploaded file records yet.
+    // Keep the review payload shape consistent with later KYC submissions.
+    documents: [],
     source: v.sourceOfFunds, application: { accountType, ...v }, submittedAt, via: "signup",
   };
 }

@@ -1437,3 +1437,10 @@
   .market-badge { display: none; }
   .market-spark { max-width: 88px; }
 }
+
+/* Keep the business header's controls reachable at tablet widths too. */
+@media (max-width: 900px) {
+  .business-shell .topbar-search-trigger { flex: none; width: 38px; padding: 0; justify-content: center; }
+  .business-shell .topbar-search-trigger span,
+  .business-shell .topbar-search-trigger kbd { display: none; }
+}

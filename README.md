@@ -155,7 +155,11 @@ scripts/
   test-permissions.ts  RBAC mirror unit tests (14 checks)
   check-emails.mjs     Email template validation (25 checks)
   check-api-coverage.mjs  Route coverage: every server route has a caller (1 check)
+  e2e-server.ts       Disposable real-API browser-test host + local price feed
   build-emails.ts      Email export
+playwright.config.ts   Production-bundle Chromium integration gate
+tests/e2e/             Browser flows for member / business / admin integration
+tsconfig.playwright.json  Strict E2E harness typecheck
 public/images/email/    Hosted logo PNG for emails (Gmail/Outlook-safe)
 server/
   src/
@@ -170,8 +174,9 @@ server/
     audit.ts            logAdminAction — the only write path to audit_log
     seed.ts             Production bootstrap: settings, role grants, env admin
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
-  scripts/test-api.ts   235-check integration suite (boots the real server)
-  scripts/audit-routes.ts  86 routes × 6 identities gate/isolation audit
+  scripts/test-api.ts   HTTP integration suite (boots the real server)
+  scripts/price-fixture.ts Offline market quotes/history for audit and browser tests
+  scripts/audit-routes.ts  90 routes × 6 identities gate/isolation audit
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -215,7 +220,7 @@ as `src/lib/permissions.ts`, enforced server-side on every admin route.
 
 ```bash
 npm run server            # http://localhost:8787 (seed runs automatically)
-npm run test:api          # 235-check integration suite (fresh DB, ephemeral port)
+npm run test:api          # 347 runtime assertions (fresh DB, ephemeral port)
 npm run check:routes      # fails if a server route has no caller in the app
 npm run audit:routes      # gate/isolation audit of every route × every role
 npm run typecheck:server  # strict NodeNext typecheck
@@ -340,7 +345,7 @@ mint). The in-memory budgets in `security.ts` throttle one address; reCAPTCHA
 is what answers a distributed run from many.
 
 **It is off until configured** — no site key means every check is a
-pass-through, so development, CI and the 235-check suite run without a Google
+pass-through, so development, CI and the 347-assertion suite run without a Google
 round-trip. Pick one provider:
 
 | Provider | Variables | Endpoint |
@@ -659,6 +664,40 @@ never enters float math. It is exact on all 200,000 values, and **identical to
 the old behaviour on every two-decimal amount** — the rejection contract
 (objects, arrays, booleans, `"12abc"`, empty strings) is unchanged.
 
+## Whole-app verification
+
+Use Node **22 or newer** (the server uses `node:sqlite`). Install the browser once,
+then run the combined gate:
+
+```sh
+npm ci
+npx playwright install --with-deps chromium
+npm run verify              # tests + frontend/server/E2E typechecks + build + browser integration
+```
+
+`npm run test:e2e` runs the browser gate independently. It exercises the **built**
+app served by the real Express API, not a Vite mock or a client-only demo. Its
+SQLite database and accounts are disposable; quotes/history come from a local
+fixture. External sign-in providers and reCAPTCHA are disabled only in this
+fixture; provider verification and security controls have separate API tests.
+Browser WebAuthn ceremonies use a virtual authenticator.
+
+The browser suite covers both member designs, shared Markets/Holdings/Passkeys
+and money plans, signup → admin approval → dashboard, cash/crypto reconciliation,
+plan/invoice persistence, member and staff passkey sign-in, CSV/PDF exports,
+admin navigation, expired sessions, blocked storage, and unavailable market
+history. Navigation is checked at desktop, tablet, and phone widths.
+
+The test server defaults to port `8877` (`E2E_PORT` overrides it). Failure traces
+and screenshots go to `/tmp/veyra-e2e-results` (`E2E_ARTIFACT_DIR` overrides it).
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` can select an existing Chromium executable.
+The standard Playwright install above is recommended outside restricted sandboxes.
+
+See [the integration verification report](docs/integration-verification-2026-10-05.md)
+for tested scope, fixes, and the remaining **real-money production** requirements.
+Passing this gate is application-integration evidence, not bank, payment-rail,
+identity-provider, or blockchain-custody certification.
+
 ## Scripts
 
 ```bash
@@ -667,7 +706,7 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (320) = 361 checks
+npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (347 runtime assertions); the audit exercises 561 HTTP security probes
 node scripts/dev-prices.mjs  # offline crypto price feed (see Digital assets)
 ```
 
