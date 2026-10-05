@@ -225,6 +225,8 @@ export type Account = {
   perks: Perk[];
   notifications: NotificationItem[];
   preferences: Preferences;
+  /** Number of unused recovery codes; plaintext codes are only returned once. */
+  recoveryCodesRemaining?: number;
   savingsPockets: SavingsPocket[];
   payees: Payee[];
   scheduledPayments: ScheduledPayment[];
@@ -235,6 +237,13 @@ export type Account = {
   kyc: KycRecord;
   /** Platform-level status set by admins ("restricted" blocks outgoing sends). */
   accountStatus?: "active" | "restricted";
+  /**
+   * Why the account is on hold — the sentence the admin chose when suspending,
+   * shown verbatim on the member's own dashboard.
+   */
+  statusReason?: string;
+  statusChangedAt?: number;
+  statusChangedBy?: string;
 };
 
 export type Profile = { name: string; business: string; email: string; accountType: "personal" | "business" };
@@ -369,7 +378,7 @@ const emptyAccount = (): Account => ({
   cards: [], transactions: [], invoices: [],
   bankDetails: { accountNumber: "", routingNumber: "", bankName: "", accountType: "Business checking", holder: "" },
   team: [], perks: [], notifications: [],
-  preferences: { twoFactor: true, loginAlerts: true, scoutAuto: true, weeklyDigest: false },
+  preferences: { twoFactor: false, loginAlerts: true, scoutAuto: true, weeklyDigest: false },
   savingsPockets: [], payees: [], scheduledPayments: [], disputes: [], sessions: [], budgets: [], scoutApplied: [],
   kyc: {
     review: { state: "approved", note: "", requirements: [] },
@@ -510,6 +519,9 @@ function normalize(raw: unknown, p: Profile): Account {
     budgets: list<Budget>(r.budgets) ?? base.budgets,
     scoutApplied: list<string>(r.scoutApplied) ?? [],
     accountStatus: r.accountStatus === "restricted" ? "restricted" : "active",
+    statusReason: typeof r.statusReason === "string" && r.statusReason ? r.statusReason : undefined,
+    statusChangedAt: num(r.statusChangedAt, 0) || undefined,
+    statusChangedBy: typeof r.statusChangedBy === "string" && r.statusChangedBy ? r.statusChangedBy : undefined,
     kyc: {
       review,
       status: kyc.status === "not_started" || kyc.status === "requested" || kyc.status === "in_review" || kyc.status === "approved" || kyc.status === "needs_attention" ? kyc.status : base.kyc.status,
@@ -595,6 +607,9 @@ export type PlatformAccount = {
   pendingTxns: number;
   kycStatus: KycStatus;
   accountStatus: "active" | "restricted";
+  /** Why the account is restricted, as stored when the hold was applied. */
+  statusReason?: string | null;
+  statusChangedAt?: number | null;
   lastActivity: number;
   /** From the member's account application — staff see these in the console. */
   dob?: string | null;
@@ -1461,7 +1476,8 @@ function useAccountState() {
       account,
       accountError,
       user,
-      // Reconcile mutations made by features with their own API client (crypto).
+      // Reconcile mutations made by features with their own API client
+      // (crypto, Security Center).
       refreshAccount: refreshFromServer,
       deposit,
       depositCheck,

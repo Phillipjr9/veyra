@@ -73,10 +73,12 @@ function migrate(db: DatabaseSync): void {
   /**
    * Reconcile a database built by this branch before it merged main.
    *
-   * Main and this branch each numbered their first two migrations 4 and 5, so a
-   * database that predates the merge can hold one numbering for work the other
-   * numbering describes — the account application (identity_profiles) and the
-   * review columns where the current list has spending plans and casework.
+   * Main and this branch each numbered their first two migrations 4 and 5 (and
+   * later, independently, 8 through 10), so a database that predates a merge
+   * can hold one numbering for work the other numbering describes — the
+   * account application (identity_profiles) and the review columns where the
+   * current list has spending plans and casework, or TOTP sign-in where the
+   * current list has federated identities.
    * Applying a migration whose result is already present aborts boot
    * ("table ... already exists"), and skipping one whose result is missing
    * leaves the tables the UI queries nowhere to be found.
@@ -88,17 +90,33 @@ function migrate(db: DatabaseSync): void {
     Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
   const columnExists = (table: string, column: string) =>
     Boolean(db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name = ?`).get(column));
-  const presentButUnapplied: Array<[number, boolean]> = [
+  const shapes: Array<[number, boolean]> = [
     [4, tableExists("budgets")],
     [5, tableExists("operation_cases")],
     [6, tableExists("identity_profiles")],
     [7, columnExists("kyc_records", "review_state")],
+    [8, tableExists("federated_identities")],
+    [9, tableExists("passkeys")],
+    [10, tableExists("crypto_assets")],
+    [11, tableExists("support_messages")],
+    [12, columnExists("users", "team_owner_id")],
+    // 13–15 were numbered 8–10 on the branch that introduced them (suspension
+    // reasons, TOTP sign-in, recovery codes) before it merged main's 8–12.
+    [13, columnExists("users", "status_reason")],
+    [14, columnExists("users", "totp_secret_encrypted")],
+    [15, tableExists("totp_recovery_codes")],
   ];
   const recordApplied = db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)");
-  for (const [version, present] of presentButUnapplied) {
+  const forgetApplied = db.prepare("DELETE FROM schema_migrations WHERE version = ?");
+  for (const [version, present] of shapes) {
     if (present && !applied.has(version)) {
       recordApplied.run(version, Date.now());
       applied.add(version);
+    } else if (!present && applied.has(version)) {
+      // Recorded under this number by the other lineage, but the schema it
+      // describes is not here: let the runner below create it.
+      forgetApplied.run(version);
+      applied.delete(version);
     }
   }
 
@@ -397,7 +415,7 @@ CREATE INDEX idx_sec_sessions_user ON security_sessions(user_id);
 
 CREATE TABLE preferences (
   user_id       TEXT PRIMARY KEY REFERENCES users(id),
-  two_factor    INTEGER NOT NULL DEFAULT 1,
+  two_factor    INTEGER NOT NULL DEFAULT 0,
   login_alerts  INTEGER NOT NULL DEFAULT 1,
   scout_auto    INTEGER NOT NULL DEFAULT 1,
   weekly_digest INTEGER NOT NULL DEFAULT 0
@@ -762,6 +780,59 @@ ALTER TABLE team_members ADD COLUMN invite_token_hash TEXT;
 ALTER TABLE team_members ADD COLUMN invite_expires_at INTEGER;
 ALTER TABLE team_members ADD COLUMN member_user_id TEXT REFERENCES users(id);
 CREATE UNIQUE INDEX idx_team_members_invite ON team_members(invite_token_hash) WHERE invite_token_hash IS NOT NULL;
+`,
+  },
+  {
+    version: 13,
+    sql: `
+-- v13: why an account is suspended.
+--
+-- The status column has always said *that* an account is restricted; the member
+-- dashboard now says *why*, and the console picks the reason from a catalogue
+-- instead of typing one. The stored text is the sentence the member reads, kept
+-- as written at suspend time so a later edit to the catalogue cannot change
+-- history.
+ALTER TABLE users ADD COLUMN status_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN status_changed_at INTEGER;
+ALTER TABLE users ADD COLUMN status_changed_by TEXT;
+`,
+  },
+  {
+    version: 14,
+    sql: `
+-- v14: real authenticator-backed two-step sign-in and revocable device sessions.
+-- Old preference-only 2FA switches never gated authentication, so turn them
+-- off rather than claim an account is protected without an enrolled secret.
+ALTER TABLE users ADD COLUMN totp_secret_encrypted TEXT;
+ALTER TABLE users ADD COLUMN totp_pending_secret_encrypted TEXT;
+ALTER TABLE users ADD COLUMN totp_pending_expires_at INTEGER;
+ALTER TABLE security_sessions ADD COLUMN auth_token_id TEXT;
+ALTER TABLE security_sessions ADD COLUMN device_key TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_security_sessions_auth_token ON security_sessions(auth_token_id) WHERE auth_token_id IS NOT NULL;
+CREATE TABLE login_challenges (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_login_challenges_expiry ON login_challenges(expires_at);
+DELETE FROM security_sessions;
+UPDATE preferences SET two_factor = 0;
+`,
+  },
+  {
+    version: 15,
+    sql: `
+-- v15: one-time hashed account recovery codes for authenticator lockout recovery.
+CREATE TABLE totp_recovery_codes (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash  TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (user_id, code_hash)
+);
+CREATE INDEX idx_totp_recovery_codes_user ON totp_recovery_codes(user_id);
 `,
   },
 ];

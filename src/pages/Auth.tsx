@@ -218,7 +218,7 @@ function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]
 }
 
 export function LoginPage() {
-  const { login, loginWithProvider, loginWithPasskey, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
+  const { login, verifyLoginCode, loginWithProvider, loginWithPasskey, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
 
   const toast = useToast();
   const navigate = useNavigate();
@@ -232,6 +232,12 @@ export function LoginPage() {
   const [busyProvider, setBusyProvider] = useState("");
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [providers, setProviders] = useState<Array<{ id: string; label: string }>>([]);
+  // Set once a correct password meets an account with an authenticator
+  // enrolled: the form switches to the code step until it is verified or
+  // abandoned. No session exists while this is set.
+  const [challengeId, setChallengeId] = useState("");
+  const [challengeEmail, setChallengeEmail] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
   const demos = useDemoAccounts();
 
   // The server decides which providers exist, so a deployment with none
@@ -247,7 +253,15 @@ export function LoginPage() {
   async function signIn(asEmail: string, asPassword: string) {
     setError(""); setErrorHint("");
     try {
-      afterSignIn(await login(asEmail, asPassword));
+      const result = await login(asEmail, asPassword);
+      if ("twoFactorRequired" in result) {
+        setChallengeId(result.challengeId);
+        setChallengeEmail(asEmail.trim());
+        setVerificationCode("");
+        setPassword("");
+        return;
+      }
+      afterSignIn(result);
     } catch (err) {
       // Say what happened AND what to do about it: the server's own wording, a
       // hint for the cause, and the status code. "Can't log in" with no reason
@@ -261,8 +275,22 @@ export function LoginPage() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
-    await signIn(email, password);
-    setBusy(false);
+    if (!challengeId) {
+      await signIn(email, password);
+      setBusy(false);
+      return;
+    }
+
+    setError(""); setErrorHint("");
+    try {
+      afterSignIn(await verifyLoginCode(challengeId, verificationCode.trim()));
+    } catch (err) {
+      const described = describeAuthError(err, "verify your authenticator code");
+      setError(described.message);
+      setErrorHint(described.status ? `${described.hint} (HTTP ${described.status})` : described.hint);
+    } finally {
+      setBusy(false);
+    }
   }
 
   /** One click: show the credentials in the form, then sign in with them. */
@@ -350,17 +378,46 @@ export function LoginPage() {
         </div>
       )}
 
-      {demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
+      {!challengeId && demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
 
 
-      <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey}
-        busyProvider={busyProvider} passkeyBusy={passkeyBusy} />
+      {!challengeId && (
+        <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey}
+          busyProvider={busyProvider} passkeyBusy={passkeyBusy} />
+      )}
 
       <form className="auth-form" onSubmit={submit}>
-        <label htmlFor="email">Email</label>
-        <input id="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
-        <div className="label-row"><label htmlFor="password">Password</label><Link to="/forgot-password">Forgot?</Link></div>
-        <PasswordField id="password" value={password} onChange={setPassword} autoComplete="current-password" />
+        {challengeId ? (
+          <>
+            <div className="auth-code-prompt">
+              <ShieldCheck size={21} />
+              <div>
+                <strong>Verify it’s you</strong>
+                <small>Enter a six-digit authenticator code or one of your unused recovery codes for {challengeEmail}.</small>
+              </div>
+            </div>
+            <label htmlFor="authenticator-code">Authenticator or recovery code</label>
+            <input
+              id="authenticator-code"
+              type="text"
+              inputMode="text"
+              autoComplete="one-time-code"
+              maxLength={24}
+              required
+              autoFocus
+              placeholder="123456 or ABCD-EFGH-JKLM"
+              value={verificationCode}
+              onChange={e => setVerificationCode(e.target.value.toUpperCase().replace(/[^A-Z0-9 -]/g, "").slice(0, 24))}
+            />
+          </>
+        ) : (
+          <>
+            <label htmlFor="email">Email</label>
+            <input id="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+            <div className="label-row"><label htmlFor="password">Password</label><Link to="/forgot-password">Forgot?</Link></div>
+            <PasswordField id="password" value={password} onChange={setPassword} autoComplete="current-password" />
+          </>
+        )}
         {error && (
           <div className="form-error" role="alert">
             <strong>{error}</strong>
@@ -368,9 +425,13 @@ export function LoginPage() {
           </div>
         )}
         <button className="auth-submit" type="submit" disabled={busy}>
-          {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Signing in…" : "Sign in"}
+          {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Signing in…" : challengeId ? "Verify and sign in" : "Sign in"}
         </button>
-        {storageBlocked() && (
+        {challengeId ? (
+          <button type="button" className="auth-code-back" disabled={busy} onClick={() => {
+            setChallengeId(""); setChallengeEmail(""); setVerificationCode(""); setError(""); setErrorHint("");
+          }}>Use a different account</button>
+        ) : storageBlocked() && (
           <p className="auth-storage-note">
             This browser blocks web storage (preview frames and private mode often do), so sign-in works for this
             tab only — a reload asks again.

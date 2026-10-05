@@ -10,7 +10,32 @@
  */
 
 const TOKEN_KEY = "veyra.token";
+const DEVICE_KEY = "veyra.device_id";
 const HEALTH_TIMEOUT_MS = 2500;
+let memoryDeviceId: string | null = null;
+
+/** Stable, non-secret browser id used only to group sessions in Security Center. */
+export function getDeviceId(): string {
+  if (memoryDeviceId) return memoryDeviceId;
+  for (const storage of [() => localStorage, () => sessionStorage]) {
+    try {
+      const stored = storage().getItem(DEVICE_KEY);
+      if (stored && /^[a-f0-9-]{32,36}$/i.test(stored)) {
+        memoryDeviceId = stored;
+        return stored;
+      }
+    } catch { /* storage blocked */ }
+  }
+
+  const bytes = new Uint8Array(16);
+  try { crypto.getRandomValues(bytes); }
+  catch { for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256); }
+  const id = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  memoryDeviceId = id;
+  try { localStorage.setItem(DEVICE_KEY, id); }
+  catch { try { sessionStorage.setItem(DEVICE_KEY, id); } catch { /* memory for this page only */ } }
+  return id;
+}
 
 let cachedOnline: boolean | null = null;
 let probe: Promise<boolean> | null = null;
@@ -173,7 +198,13 @@ export function describeAuthError(err: unknown, action = "sign in"): { message: 
   if (err instanceof ApiError) {
     switch (err.status) {
       case 401:
-        return { message: err.message, hint: "Check the email and password — they have to match the account exactly.", status: err.status };
+        return action.toLowerCase().includes("authenticator code")
+          ? { message: err.message, hint: "Enter the current six-digit code from your authenticator app. Check your device clock, then try again.", status: err.status }
+          : { message: err.message, hint: "Check the email and password — they have to match the account exactly.", status: err.status };
+      case 400:
+        return action.toLowerCase().includes("authenticator code")
+          ? { message: err.message, hint: "The sign-in code request may have expired. Start again with your email and password.", status: err.status }
+          : { message: err.message, hint: `The server refused the ${action} request (HTTP ${err.status}).`, status: err.status };
       case 403:
         return { message: err.message, hint: "This account is not allowed to sign in. Contact support if that is unexpected.", status: err.status };
       case 404:
@@ -221,7 +252,7 @@ function authHeaders(token: string, only?: "custom"): Record<string, string> {
 export async function api<T = unknown>(method: string, path: string, body?: unknown, opts: ApiOptions = {}): Promise<T> {
   const token = getToken();
   const send = (only?: "custom") => {
-    const headers: Record<string, string> = { "Content-Type": "application/json", ...(token ? authHeaders(token, only) : {}) };
+    const headers: Record<string, string> = { "Content-Type": "application/json", "X-Veyra-Device": getDeviceId(), ...(token ? authHeaders(token, only) : {}) };
     return fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   };
   let res = await send();
@@ -252,7 +283,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
  */
 export async function apiGetText(path: string): Promise<string> {
   const token = getToken();
-  const send = (only?: "custom") => fetch(path, { headers: token ? authHeaders(token, only) : {} });
+  const send = (only?: "custom") => fetch(path, { headers: { "X-Veyra-Device": getDeviceId(), ...(token ? authHeaders(token, only) : {}) } });
   let res = await send();
   let text = await res.text();
   if (res.status === 401 && token && text.includes("no_token")) {
