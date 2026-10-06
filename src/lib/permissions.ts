@@ -74,7 +74,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "customers.adjust_balance": "Credit / debit balances",
   "accounts.view": "View accounts",
   "accounts.set_status": "Restrict / restore accounts",
-  "accounts.edit_number": "Edit account numbers",
+  "accounts.edit_number": "Edit bank details and funding methods",
   "transactions.view": "View transactions",
   "transactions.export": "Export transactions",
   "kyc.request": "Request verification",

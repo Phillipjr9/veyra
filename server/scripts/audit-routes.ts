@@ -63,6 +63,10 @@ const BASELINE: Policy[] = [
   // anyone can sign in — and carries no secret: the site key is designed to
   // ship inside the page, while the secret/API key never leaves the server.
   { method: "GET", path: "/api/auth/config", auth: false, perm: null },
+  // Public during signup; fixed upstream, bounded input, session-bound details,
+  // per-connection and instance request budgets, and server-only credentials.
+  { method: "POST", path: "/api/address/autocomplete", auth: false, perm: null },
+  { method: "POST", path: "/api/address/details", auth: false, perm: null },
   { method: "POST", path: "/api/auth/login", auth: false, perm: null },
   // Second step of a password sign-in for accounts with an authenticator
   // enrolled. Public of necessity — it runs before a session exists — and
@@ -92,6 +96,16 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/auth/change-password", auth: true, perm: null },
   { method: "GET", path: "/api/me/account", auth: true, perm: null },
   { method: "GET", path: "/api/me/transactions", auth: true, perm: null },
+  { method: "GET", path: "/api/admin/members/:id/account-details", auth: true, perm: "accounts.view" },
+  { method: "PATCH", path: "/api/admin/members/:id/account-details", auth: true, perm: "accounts.edit_number" },
+  { method: "GET", path: "/api/admin/members/:id/funding", auth: true, perm: "accounts.view" },
+  { method: "PUT", path: "/api/admin/members/:id/funding", auth: true, perm: "accounts.edit_number" },
+  { method: "POST", path: "/api/admin/members/:id/funding/:requestId/review", auth: true, perm: "customers.adjust_balance" },
+  { method: "GET", path: "/api/me/funding", auth: true, perm: null },
+  { method: "GET", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto-withdrawals/:id/cancel", auth: true, perm: null },
+
   { method: "POST", path: "/api/me/deposits", auth: true, perm: null },
   { method: "POST", path: "/api/me/transfers", auth: true, perm: null },
   { method: "GET", path: "/api/me/notifications", auth: true, perm: null },
@@ -331,7 +345,7 @@ const grants: Record<string, string[]> = Object.fromEntries(rolesResponse.json.r
 
 /* ---------- resources owned by `owner`, for isolation probing ---------- */
 
-await call("POST", "/api/me/deposits", ownerToken, { amount: 5000, source: "Audit funding" });
+await call("POST", `/api/admin/members/${owner.user.id}/adjust`, superadmin, { direction: "credit", amount: 5000, memo: "Audit fixture funding" });
 const ownerCard = (await call("POST", "/api/me/cards", ownerToken, { label: "Audit card", limit: 1000, type: "virtual", cardholder: "Route Owner" })).json.card;
 const ownerInvoice = (await call("POST", "/api/me/invoices", ownerToken, { client: "Audit Client", clientEmail: "c@audit.test", amount: 10, dueDays: 1 })).json.invoice;
 const ownerPocket = (await call("POST", "/api/me/pockets", ownerToken, { name: "Audit pocket", target: 100, color: "#7558dc", icon: "general" })).json.pocket;

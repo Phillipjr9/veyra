@@ -1,3 +1,4 @@
+import { ASSETS } from "../../shared/catalog.js";
 /**
  * SQLite database layer for the Veyra backend.
  *
@@ -833,6 +834,45 @@ CREATE TABLE totp_recovery_codes (
   UNIQUE (user_id, code_hash)
 );
 CREATE INDEX idx_totp_recovery_codes_user ON totp_recovery_codes(user_id);
+`,
+  },
+  {
+    version: 16,
+    sql: `
+-- Prospective actor-attributed spend enforcement. Do not invent actors for
+-- historical transactions. applied_at records when tracking became available.
+CREATE INDEX idx_txns_actor_spend ON transactions(user_id, performed_by, created_at)
+  WHERE amount_cents < 0;
+`,
+  },
+  {
+    version: 17,
+    sql: `
+ALTER TABLE accounts ADD COLUMN bank_account_type TEXT NOT NULL DEFAULT 'Checking' CHECK (bank_account_type IN ('Checking','Savings'));
+CREATE TABLE funding_methods (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), label TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('bank','wire','card','check','other')), instructions TEXT NOT NULL,
+ bank_name TEXT NOT NULL DEFAULT '', routing_number TEXT NOT NULL DEFAULT '', account_number TEXT NOT NULL DEFAULT '',
+ recipient TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL
+);
+CREATE INDEX idx_funding_methods_user ON funding_methods(user_id);
+CREATE TABLE funding_requests (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), method_id TEXT NOT NULL REFERENCES funding_methods(id),
+ amount_cents INTEGER NOT NULL CHECK(amount_cents > 0), status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','rejected')),
+ reference TEXT NOT NULL, method_snapshot TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '',
+ request_key TEXT NOT NULL, created_at INTEGER NOT NULL, reviewed_at INTEGER, reviewed_by TEXT REFERENCES users(id),
+ UNIQUE(user_id, request_key)
+);
+CREATE INDEX idx_funding_requests_user ON funding_requests(user_id, created_at);
+CREATE TABLE crypto_withdrawals (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), asset TEXT NOT NULL REFERENCES crypto_assets(code),
+ units TEXT NOT NULL CHECK(units NOT LIKE '-%'), network TEXT NOT NULL, address TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cancelled')),
+ reference TEXT NOT NULL, request_key TEXT NOT NULL, created_at INTEGER NOT NULL, cancelled_at INTEGER,
+ UNIQUE(user_id, request_key)
+);
+CREATE INDEX idx_crypto_withdrawals_user ON crypto_withdrawals(user_id, status);
+${ASSETS.map((a, i) => `INSERT OR IGNORE INTO crypto_assets(code,name,decimals,kind,sort_order) VALUES ('${a.code}','${a.name}',${a.decimals},'${'stable' in a ? 'stablecoin' : 'crypto'}',${i+1});`).join("\n")}
 `,
   },
 ];

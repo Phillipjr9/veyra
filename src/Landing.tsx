@@ -1,3 +1,4 @@
+import CryptoHome from "./components/CryptoHome";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence, useInView, useReducedMotion, useScroll, useTransform } from "motion/react";
@@ -453,7 +454,7 @@ export function FinalCTA({ mode = "business" }: { mode?: "business" | "personal"
             <div className="plan-badge"><Sparkles /></div>
             <div className="plan-head"><h3>Pro</h3><span>$99<small>/mo</small></span></div>
             <ul><li><Check /> Unlimited 2% rewards</li><li><Check /> Up to 25 virtual cards</li><li><Check /> Scout AI savings</li></ul>
-            <p>If Scout doesn't earn you at least $100 a month in cash back, that month's fee is on us.</p>
+            <p>Scout helps review spending with estimates, not guaranteed cash savings. Subscription collection is not enabled in this preview.</p>
             <Link to="/pricing" className="text-link plan-link">Compare plans <ArrowRight size={14} /></Link>
           </div>
         </div>
@@ -463,10 +464,5 @@ export function FinalCTA({ mode = "business" }: { mode?: "business" | "personal"
 }
 
 export default function Landing() {
-  return (
-    <>
-      <Hero /><Ticker /><FeatureOverview /><ScoutSteps /><AISavingsSection />
-      <RewardsCalculator /><BusinessTools /><SecuritySection /><SupportSection /><FinalCTA />
-    </>
-  );
+  return <CryptoHome />;
 }

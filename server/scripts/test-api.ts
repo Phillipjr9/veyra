@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { ASSETS } from "../../shared/catalog.js";
 /**
  * API integration tests — boots the real server on an ephemeral port with a
  * fresh database and exercises the full surface over HTTP:
@@ -89,6 +91,16 @@ const api = async (method: string, path: string, token?: string, body?: unknown,
   try { json = JSON.parse(text); } catch { /* csv or empty */ }
   return { status: res.status, json, text, headers: res.headers };
 };
+
+async function fund(token: string, amount: number, source: string, admin: string) {
+  const user = (await api("GET", "/api/auth/me", token)).json.user;
+  const setup = await api("PUT", `/api/admin/members/${user.id}/funding`, admin, { methods: [{ label: source, kind: "bank", instructions: "Synthetic test settlement instructions", enabled: true }] });
+  const submitted = await api("POST", "/api/me/deposits", token, { amount, methodId: setup.json.methods[0].id, requestKey: randomUUID() });
+  if(submitted.status !== 201) throw new Error(JSON.stringify(submitted.json));
+  const confirmed = await api("POST", `/api/admin/members/${user.id}/funding/${submitted.json.request.id}/review`, admin, { decision: "confirmed", evidence: "Synthetic test receipt verified" });
+  if(confirmed.status !== 200) throw new Error(JSON.stringify(confirmed.json));
+  return submitted;
+}
 
 const register = async (name: string, email: string, password: string, extra: Record<string, unknown> = {}) => {
   const accountType = extra.accountType === "personal" ? "personal" : "business";
@@ -357,7 +369,7 @@ try {
   expect("member search finds the API-registered member", members.status === 200 && members.json.members.length === 1 && members.json.members[0].name === "Rae Kim");
 
   await api("PUT", "/api/me/preferences", rae, { key: "scoutAuto", value: false }); // deterministic balances
-  await api("POST", "/api/me/deposits", rae, { amount: 5000, source: "Opening deposit" });
+  await fund(rae, 5000, "Opening deposit", admin);
 
   const memberDetail = await api("GET", `/api/admin/members/${raeId}`, admin);
   expect("member detail with account + transactions", memberDetail.status === 200 && memberDetail.json.member.balance.cents > 0 && memberDetail.json.transactions.length > 0);
@@ -413,7 +425,7 @@ try {
     restrictedState.statusChangedBy === "Ops Admin" && typeof restrictedState.statusChangedAt === "number");
   const blockedTransfer = await api("POST", "/api/me/transfers", rae, { counterparty: "Y", amount: 5 });
   expect("restricted member's transfers blocked server-side (403)", blockedTransfer.status === 403);
-  const depositStillWorks = await api("POST", "/api/me/deposits", rae, { amount: 25, source: "Incoming ACH" });
+  const depositStillWorks = await fund(rae, 25, "Incoming ACH", admin);
   expect("deposits still land while restricted", depositStillWorks.status === 201);
   const restore = await api("POST", `/api/admin/members/${raeId}/status`, admin, { status: "active" });
   const restoredState = (await api("GET", "/api/me/state", rae)).json.account;
@@ -655,7 +667,7 @@ try {
   const juneApproval = await decideFor(juneId);
   expect("reviewer approves the application", juneApproval.status === 200);
   await api("PUT", "/api/me/preferences", juneToken, { key: "scoutAuto", value: false }); // deterministic balances
-  await api("POST", "/api/me/deposits", juneToken, { amount: 1200, source: "Payroll" });
+  await fund(juneToken, 1200, "Payroll", admin);
   const juneCard = await api("POST", "/api/me/cards", juneToken, { label: "Everyday", type: "virtual", limit: 500, cardholder: "June Okafor" });
   await api("POST", "/api/me/transfers", juneToken, { counterparty: "Acme Supplies", amount: 180, category: "Operations", method: "Card", cardId: juneCard.json.card.id });
   const juneAfter = (await api("GET", "/api/me/state", juneToken)).json.account;
@@ -745,10 +757,13 @@ try {
   state = (await api("GET", "/api/me/state", rae)).json.account;
   expect("rewards redeem 1:1 into checking", redeem.status === 200 && Math.abs(state.balance - (rewardsPre.balance + rewardsPre.rewards)) < 0.001 && state.rewards === 0);
 
-  // Scout idempotency
+  // Scout cannot mint money from a browser-supplied estimate
+  const scoutBefore = (await api("GET", "/api/me/state", rae)).json.account;
   const scout1 = await api("POST", "/api/me/scout/apply", rae, { opportunityId: "opp-test-1", merchant: "Fable Cloud", amount: 42.5, note: "Annual plan" });
   const scout2 = await api("POST", "/api/me/scout/apply", rae, { opportunityId: "opp-test-1", merchant: "Fable Cloud", amount: 42.5, note: "Annual plan" });
-  expect("scout savings apply exactly once", scout1.json.applied === true && scout2.json.applied === false);
+  expect("Scout estimate credits are disabled", scout1.status === 410 && scout2.status === 410 && scout1.json.code === "scout_credit_disabled");
+  const scoutAfter = (await api("GET", "/api/me/state", rae)).json.account;
+  expect("rejected Scout credits leave balance and ledger unchanged", scoutAfter.balance === scoutBefore.balance && scoutAfter.scoutSaved === scoutBefore.scoutSaved && scoutAfter.transactions.length === scoutBefore.transactions.length);
 
   // Preferences + profile + KYC patch
   const pref = await api("PUT", "/api/me/preferences", rae, { key: "weeklyDigest", value: true });
@@ -838,7 +853,7 @@ try {
 
   /* ---------- card controls are enforced when the card spends ---------- */
 
-  await api("POST", "/api/me/deposits", juneToken, { amount: 900, source: "Card control funding" });
+  await fund(juneToken, 900, "Card control funding", admin);
   const controlled = await api("POST", "/api/me/cards", juneToken, { label: "Controls", limit: 300, type: "virtual" });
   const controlId = controlled.json.card.id;
   const spendWithCard = (body: Record<string, unknown>) =>
@@ -1806,7 +1821,7 @@ try {
     const mkt = (prices: Record<string, number>, extra: Record<string, unknown> = {}) =>
       Object.entries(prices).map(([id, usd], i) => ({
         id,
-        symbol: ({ bitcoin: "btc", ethereum: "eth", solana: "sol", "usd-coin": "usdc", dogecoin: "doge" } as Record<string, string>)[id] ?? id,
+        symbol: ({ bitcoin: "btc", ethereum: "eth", solana: "sol", "usd-coin": "usdc", "example-coin": "example" } as Record<string, string>)[id] ?? id,
         name: id,
         image: `https://example.test/${id}.png`,
         current_price: usd,
@@ -1848,9 +1863,9 @@ try {
       const start = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
       const empty = await api("GET", "/api/me/holdings", rae);
       expect("holdings list every registered asset, starting at zero", empty.status === 200 &&
-        empty.json.holdings.length === 4 && empty.json.holdings.every((h: any) => h.units === "0") &&
+        empty.json.holdings.length === ASSETS.length && empty.json.holdings.every((h: any) => h.units === "0") &&
         empty.json.totalUsd === "0.00" && empty.json.partial === false);
-      expect("holdings are quoted with a price and a timestamp", empty.json.holdings
+      expect("holdings are quoted with a price and a timestamp", empty.json.holdings.filter((h: any) => ["BTC","ETH","SOL","USDC"].includes(h.asset))
         .every((h: any) => h.priceUsd !== null && typeof h.quotedAt === "number"));
       expect("holdings carry the not-insured disclosure", /not FDIC insured/i.test(empty.json.disclosure));
       expect("holdings require a session (401)", (await api("GET", "/api/me/holdings")).status === 401);
@@ -1876,7 +1891,7 @@ try {
       expect("buying beyond the checking balance is refused (400)", (await api("POST", "/api/me/holdings/trade", rae,
         { asset: "BTC", side: "buy", amount: "99999999" })).status === 400);
       expect("an unknown asset is a 404", (await api("POST", "/api/me/holdings/trade", rae,
-        { asset: "DOGE", side: "buy", amount: "10" })).status === 404);
+        { asset: "UNKNOWN", side: "buy", amount: "10" })).status === 404);
       expect("an invalid side is a 400", (await api("POST", "/api/me/holdings/trade", rae,
         { asset: "BTC", side: "hodl", amount: "10" })).status === 400);
       expect("a zero amount is a 400", (await api("POST", "/api/me/holdings/trade", rae,
@@ -1938,7 +1953,7 @@ try {
       expect("an unpriced holding flags the total as partial", partial.json.partial === true);
 
       /* ---- markets table ---- */
-      priceBody = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1, dogecoin: 0.42 });
+      priceBody = mkt({ bitcoin: 100000, ethereum: 4000, solana: 200, "usd-coin": 1, "example-coin": 0.42 });
       resetPrices();
       await new Promise(r => setTimeout(r, 60));
       const markets = await api("GET", "/api/me/markets", rae);
@@ -1956,7 +1971,7 @@ try {
       // in the local registry, so it must be listed and explicitly untradeable
       // — otherwise the UI would offer a buy we have no decimals to settle.
       expect("a coin outside the registry is listed but not tradeable", (() => {
-        const doge = markets.json.markets.find((m: any) => m.code === "DOGE");
+        const doge = markets.json.markets.find((m: any) => m.code === "EXAMPLE");
         return doge && doge.tradeable === false && doge.decimals === null &&
           doge.quantity === null && doge.valueUsd === null && doge.priceUsd === "0.42";
       })());
@@ -1998,7 +2013,7 @@ try {
         candles.json.candles[0].o === 9900000 && candles.json.candles[0].c === 10050000 &&
         candles.json.candles[2].t > candles.json.candles[0].t);
       expect("candles require a session (401)", (await api("GET", "/api/me/holdings/BTC/candles")).status === 401);
-      expect("an unknown asset has no history (404)", (await api("GET", "/api/me/holdings/DOGE/candles", rae)).status === 404);
+      expect("an unknown asset has no history (404)", (await api("GET", "/api/me/holdings/UNKNOWN/candles", rae)).status === 404);
       expect("an invalid range is a 400", (await api("GET", "/api/me/holdings/BTC/candles?range=all-time", rae)).status === 400);
       expect("every advertised range is accepted", (await Promise.all(
         ["1d", "7d", "30d", "90d"].map(r => api("GET", `/api/me/holdings/ETH/candles?range=${r}`, rae)),

@@ -334,8 +334,8 @@ export function PersonalOverview() {
 
           <motion.section className="p-scout" {...rise(6)}>
             <Sparkles size={18} />
-            <div><strong>{money(account.scoutSaved, false)} found for you</strong><small>Scout watches your bills and moves you to better rates automatically.</small></div>
-            <Link to="/app/scout">See what Scout did <ArrowRight size={13} /></Link>
+            <div><strong>{money(account.scoutSaved, false)} historical Scout entries</strong><small>Estimates are informational. Legacy entries may include demo credits; no new savings credits are issued.</small></div>
+            <Link to="/app/scout">Review Scout estimates <ArrowRight size={13} /></Link>
           </motion.section>
         </div>
       </div>

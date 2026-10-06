@@ -1,3 +1,4 @@
+import { ASSETS } from "../../shared/catalog.js";
 /**
  * Market prices for digital assets.
  *
@@ -28,12 +29,7 @@
  */
 
 /** CoinGecko ids for the seeded registry — free, keyless, widely mirrored. */
-const UPSTREAM_IDS: Record<string, string> = {
-  BTC: "bitcoin",
-  ETH: "ethereum",
-  SOL: "solana",
-  USDC: "usd-coin",
-};
+export const UPSTREAM_IDS: Record<string, string> = Object.fromEntries(ASSETS.map(a => [a.code, a.id]));
 
 // One call does everything. /coins/markets returns price, 1h/24h/7d change,
 // market cap, volume and a 7-day sparkline for up to 250 coins — so the
@@ -41,7 +37,7 @@ const UPSTREAM_IDS: Record<string, string> = {
 // rather than each paying for their own.
 const DEFAULT_URL =
   "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc" +
-  "&per_page=100&page=1&sparkline=true&price_change_percentage=1h,24h,7d";
+  "&per_page=250&page=1&sparkline=true&price_change_percentage=1h,24h,7d";
 
 export type Quote = {
   /** USD cents for one whole unit. bigint so a $100k BTC price stays exact. */
@@ -88,6 +84,7 @@ const ttlMs = () => Number(process.env.CRYPTO_PRICES_TTL_MS) || 300_000;
  * the gap between a quote expiring and the refetch landing.
  */
 const maxAgeMs = () => Number(process.env.CRYPTO_PRICE_MAX_AGE_MS) || Math.round(ttlMs() * 1.2);
+export const quoteIsFresh = (at: number | null) => !!at && Date.now() - at <= maxAgeMs();
 const timeoutMs = () => Number(process.env.CRYPTO_PRICES_TIMEOUT_MS) || 4_000;
 const upstreamUrl = () => (process.env.CRYPTO_PRICES_URL ?? "").trim() || DEFAULT_URL;
 
@@ -144,6 +141,8 @@ async function refresh(): Promise<void> {
       // A row with no usable price is dropped rather than carried as a zero.
       if (!id || !code || cents === null) continue;
 
+      // A reused ticker must never borrow a supported asset's identity/price.
+      if ((UPSTREAM_IDS[code] && UPSTREAM_IDS[code] !== id) || markets.some(m => m.code === code)) continue;
       byId.set(id, cents);
       const spark = Array.isArray(row.sparkline_in_7d?.price)
         ? downsample(row.sparkline_in_7d.price.map((v: unknown) => toCents(v)).filter((v: bigint | null): v is bigint => v !== null).map(Number))

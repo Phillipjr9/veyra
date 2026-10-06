@@ -1,3 +1,6 @@
+import { CryptoSendDialog, CryptoWithdrawalHistory } from "../../components/CryptoSend";
+import { downloadTransactionReceipt } from "../../lib/receipts";
+import { PLANS, PLAN_NOTICE } from "../../../shared/catalog";
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { useMailingAddress } from "../../lib/mailingAddress";
 import { createPortal } from "react-dom";
@@ -10,7 +13,7 @@ import {
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
 import { Footer } from "../../components/Chrome";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { CashFlowExplorer, PersonalShortcuts } from "../../components/DashboardIntelligence";
 import { Confetti, ETA, useMoneyFlow, ZelleLogo, type SendMethod } from "../../components/MoneyFlow";
 import { useToast } from "../../components/Toast";
 import { ScoutQuickDrawer, ScoutAIPage as ScoutWorkspace } from "../../components/ScoutAIAssistant";
@@ -31,7 +34,7 @@ import { CandleChart } from "../../components/CandleChart";
 import { BackButton } from "../../components/BackButton";
 import { lockScroll } from "../../lib/scrollLock";
 import {
-  categories, copyText, downloadFile, longDate, money, rewardRate, shortDate, useAcct,
+  categories, copyText, longDate, money, rewardRate, shortDate, useAcct,
   type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type NotificationItem, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
 } from "../../lib/store";
 import { SuspensionBanner } from "./parts";
@@ -57,19 +60,6 @@ function timeAgo(ts: number) {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   return d < 7 ? `${d}d ago` : shortDate(ts);
-}
-
-function weeklyFlow(txns: Txn[], weeks = 8) {
-  const WEEK = 7 * DAY;
-  const now = Date.now();
-  const buckets = Array.from({ length: weeks }, (_, i) => ({ label: shortDate(now - (weeks - i) * WEEK), inflow: 0, outflow: 0 }));
-  txns.forEach(t => {
-    const idx = weeks - 1 - Math.floor((now - t.date) / WEEK);
-    if (idx < 0 || idx >= weeks) return;
-    if (t.amount > 0) buckets[idx].inflow += t.amount;
-    else buckets[idx].outflow += Math.abs(t.amount);
-  });
-  return buckets;
 }
 
 function topCategories(txns: Txn[], limit = 5) {
@@ -455,19 +445,10 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
     : [];
   const steps = incoming ? ["Initiated by sender", "Received", "Funds available"] : ["Authorized", "Processing", "Cleared"];
 
-  const download = () => {
+  const download = async () => {
     if (!txn) return;
-    const lines = [
-      "VEYRA — TRANSACTION RECEIPT",
-      "========================================",
-      `${"Merchant:".padEnd(16)}${txn.merchant}`,
-      `${"Amount:".padEnd(16)}${incoming ? "+" : "-"}${money(Math.abs(txn.amount))}`,
-      ...rows.map(([k, v]) => `${`${k}:`.padEnd(16)}${v}`),
-      "",
-      "Keep this receipt for your records.",
-    ];
-    downloadFile(`veyra-receipt-${txn.reference ?? txn.id}.txt`, lines.join("\n"));
-    toast({ tone: "success", title: "Receipt downloaded" });
+    try { await downloadTransactionReceipt(txn, account?.bankDetails); toast({ tone: "success", title: "PDF receipt prepared" }); }
+    catch (error) { toast({ tone: "error", title: "Receipt could not be generated", description: error instanceof Error ? error.message : "Please try again." }); }
   };
   const copyRef = async () => {
     if (!txn?.reference) return;
@@ -518,37 +499,6 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
       )}
     </AnimatePresence>,
     document.body,
-  );
-}
-
-function CashflowChart({ weeks }: { weeks: Array<{ label: string; inflow: number; outflow: number }> }) {
-  return (
-    <div className="recharts-cashflow-container" style={{ width: "100%", height: 220 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={weeks} margin={{ top: 12, right: 10, left: -16, bottom: 0 }}>
-          <defs>
-            <linearGradient id="barInflow" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#4aa870" stopOpacity={0.95} />
-              <stop offset="100%" stopColor="#35754f" stopOpacity={0.8} />
-            </linearGradient>
-            <linearGradient id="barOutflow" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#9d86ff" stopOpacity={0.95} />
-              <stop offset="100%" stopColor="#7558dc" stopOpacity={0.85} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(24, 23, 29, 0.07)" />
-          <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
-          <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${v >= 1000 ? Math.round(v / 1000) + "k" : v}`} />
-          <Tooltip
-            cursor={{ fill: "rgba(117, 88, 220, 0.05)", radius: 6 }}
-            formatter={(value, name) => [money(Number(value), false), name === "inflow" ? "Inflow (+)" : "Outflow (−)"]}
-            contentStyle={{ borderRadius: 12, border: "1px solid var(--line)", background: "rgba(255, 255, 255, 0.95)", backdropFilter: "blur(8px)", fontSize: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.1)" }}
-          />
-          <Bar dataKey="inflow" fill="url(#barInflow)" radius={[4, 4, 0, 0]} maxBarSize={16} />
-          <Bar dataKey="outflow" fill="url(#barOutflow)" radius={[4, 4, 0, 0]} maxBarSize={16} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
   );
 }
 
@@ -740,7 +690,15 @@ export function DashboardLayout() {
   useEffect(() => {
     if (!navOpen) return;
     const unlock = lockScroll();
-    return unlock;
+    const close = () => setNavOpen(false);
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { close(); document.querySelector<HTMLButtonElement>(".app-burger")?.focus(); }
+    };
+    const desktop = window.matchMedia("(min-width: 1101px)");
+    const resized = () => { if (desktop.matches) close(); };
+    desktop.addEventListener("change", resized);
+    window.addEventListener("keydown", escape);
+    return () => { unlock(); desktop.removeEventListener("change", resized); window.removeEventListener("keydown", escape); };
   }, [navOpen]);
 
   if (user?.role && user.role !== "user" && !location.pathname.startsWith("/app/superadmin")) {
@@ -759,8 +717,8 @@ export function DashboardLayout() {
   const nav = user.accountType === "personal" ? PERSONAL_NAV : BUSINESS_NAV;
 
   return (
-    <div className="app-shell">
-      <aside className={`app-nav ${navOpen ? "open" : ""}`} aria-label="Dashboard navigation">
+    <div className="app-shell dx-member-shell dx-personal-shell">
+      <aside className={`app-nav ${navOpen ? "open" : ""}`} aria-label="Dashboard navigation" id="dx-personal-navigation">
         <div className="app-nav-top">
           <Logo to="/app" />
           <button type="button" className="app-nav-close" onClick={() => setNavOpen(false)} aria-label="Close menu"><X size={18} /></button>
@@ -826,7 +784,7 @@ export function DashboardLayout() {
       <div className="app-main">
         <header className="app-topbar">
           <div className="topbar-left">
-            <button type="button" className="app-burger icon-btn" onClick={() => setNavOpen(true)} aria-label="Open menu"><Menu size={18} /></button>
+            <button type="button" className="app-burger icon-btn" onClick={() => setNavOpen(true)} aria-expanded={navOpen} aria-controls="dx-personal-navigation" aria-label="Open menu"><Menu size={18} /></button>
             <BackButton />
             <div className="topbar-balance">
               <span>Available balance</span>
@@ -947,10 +905,10 @@ export function Overview() {
   const [burst, setBurst] = useState(0);
   const [revealAcct, setRevealAcct] = useState(false);
   const [copied, setCopied] = useState(false);
-  const weeks = useMemo(() => (account ? weeklyFlow(account.transactions) : []), [account]);
   const cats = useMemo(() => (account ? topCategories(account.transactions, 5) : []), [account]);
   const balanceFlash = useValueFlash(account?.balance ?? 0);
   const rewardsFlash = useValueFlash(account?.rewards ?? 0);
+  const movement = useMemo(() => account ? monthOverMonth(account.transactions) : null, [account]);
   if (!account) return null;
 
   const first = user?.name.split(" ")[0] ?? "there";
@@ -958,9 +916,6 @@ export function Overview() {
   const bank = account.bankDetails;
   const primary = account.cards[0];
   const upcoming = account.invoices.filter(i => i.status !== "paid").sort((a, b) => a.due - b.due).slice(0, 3);
-  const totalIn = weeks.reduce((s, w) => s + w.inflow, 0);
-  const totalOut = weeks.reduce((s, w) => s + w.outflow, 0);
-  const movement = useMemo(() => (account ? monthOverMonth(account.transactions) : null), [account]);
 
   const onRedeem = () => {
     const amount = redeemRewards();
@@ -979,7 +934,7 @@ export function Overview() {
   };
 
   return (
-    <div className="app-page">
+    <div className="app-page dx-personal-overview">
       <PageHeader eyebrow={`${greeting()} · ${new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}`} title={<>Welcome back, {first}</>}>
         <button type="button" className="ghost-btn" onClick={() => openDeposit()}><ArrowDownLeft size={15} /> Add funds</button>
         <Link className="solid-btn" to="/app/transfers"><Send size={15} /> Send money</Link>
@@ -1019,7 +974,7 @@ export function Overview() {
         <motion.div className="stat stat-scout" {...rise(2)}>
           <div className="stat-top"><span>Scout savings</span><span className="chip chip-violet">AI</span></div>
           <AnimatedMoney value={account.scoutSaved} className="stat-value" cents fromZero />
-          <p className="stat-note">Recovered automatically this year.</p>
+          <p className="stat-note">Historical ledger credits. New credits disabled.</p>
           <Link to="/app/scout" className="stat-link">View report <ArrowRight size={13} /></Link>
         </motion.div>
 
@@ -1034,6 +989,8 @@ export function Overview() {
           </div>
         </motion.div>
       </div>
+
+      <PersonalShortcuts />
 
       <motion.section className="routing-card" {...rise(4)}>
         <div className="routing-left">
@@ -1052,12 +1009,8 @@ export function Overview() {
 
       <div className="overview-grid">
         <div className="overview-main">
-        <motion.section className="panel real-charts-panel" {...rise(5)}>
-          <div className="panel-head">
-            <div><h2>Cash Flow & Activity Analytics</h2><span className="panel-sub">Interactive Recharts visualization with weekly inflows vs outflows</span></div>
-            <div className="legend"><span><i className="in" /> In {money(totalIn, false)}</span><span><i className="out" /> Out {money(totalOut, false)}</span></div>
-          </div>
-          <CashflowChart weeks={weeks} />
+        <motion.section className="panel dx-flow-panel" {...rise(5)}>
+          <CashFlowExplorer transactions={account.transactions} title="Your money in motion" />
         </motion.section>
           <motion.section className="panel" {...rise(6)}>
             <div className="panel-head">
@@ -1613,7 +1566,7 @@ export function PaymentsPage() {
   const [method, setMethod] = useState<SendMethod>("ACH");
   const [payee, setPayee] = useState("");
   const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState(categories[0]);
+  const [category, setCategory] = useState(user?.accountType === "personal" ? "" : categories[0]);
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [errorKey, setErrorKey] = useState(0);
@@ -1760,8 +1713,9 @@ export function PaymentsPage() {
               </div>
             </div>
             <div>
-              <label htmlFor="pay-cat">Category</label>
-              <select id="pay-cat" value={category} onChange={e => setCategory(e.target.value)}>
+              <label htmlFor="pay-cat">Category{user?.accountType === "personal" ? " (optional)" : " (required)"}</label>
+              <select id="pay-cat" required={user?.accountType !== "personal"} value={category} onChange={e => setCategory(e.target.value)}>
+                {user?.accountType === "personal" && <option value="">No category</option>}
                 {categories.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
@@ -2079,6 +2033,7 @@ export function TeamPage() {
       </div>
       <motion.section className="panel" {...rise(3)}>
         <div className="panel-head"><h2>Members</h2></div>
+        <p className="team-spend-policy">Admin and Member limits cover transfers, card payments, bill payments and crypto purchases together, per UTC calendar month. $0 permits no outgoing spend. Deposits and sales do not restore the allowance. Usage includes only actor-attributed payments; historical unattributed activity is excluded.</p>
         <div className="team-list">
           <AnimatePresence initial={false}>
             {members.map(m => (
@@ -2086,7 +2041,7 @@ export function TeamPage() {
                 <span className="team-avatar">{m.name.split(" ").map(p => p.charAt(0)).slice(0, 2).join("").toUpperCase()}</span>
                 <div className="team-info"><strong>{m.name}</strong><small>{m.email}</small></div>
                 <span className={`role-badge role-${m.role.toLowerCase()}`}>{m.role}</span>
-                <div className="team-limit"><b>{m.monthlyLimit ? money(m.monthlyLimit, false) : "View only"}</b><small>{m.cardCount} {m.cardCount === 1 ? "card" : "cards"}</small></div>
+                <div className="team-limit"><b>{m.role === "Owner" ? "Owner · no teammate cap" : m.role === "Bookkeeper" ? "Read-only" : `${money(m.monthlyLimit)} / month`}</b>{m.role !== "Owner" && m.role !== "Bookkeeper" && <small>{m.monthlySpent === undefined ? "Usage pending refresh" : `${money(m.monthlySpent)} used · ${money(m.monthlyRemaining ?? 0)} left`}</small>}<small>{m.role === "Owner" || m.role === "Bookkeeper" ? `${m.cardCount} cards` : "Resets on the 1st · UTC"}</small></div>
                 <span className={`status-pill team-status ${m.status}`}>{m.status === "active" ? <span className="dot" /> : <Mail size={11} />}{m.status}</span>
                 <div className="team-act">
                   {m.status === "invited" && m.inviteUrl && canManage && (
@@ -2274,7 +2229,7 @@ export function MarketsPage() {
         </span>
       </div>
 
-      {failed && <p className="holdings-warning"><AlertTriangle size={14} /> Market data is unavailable right now. Nothing below is current.</p>}
+      {(failed || data?.quoteStatus === "unavailable" || data?.quoteStatus === "stale") && <p className="holdings-warning"><AlertTriangle size={14} /> Market data is unavailable right now. Nothing below is current.</p>}
 
       {loading && !data ? <p className="holding-chart-msg">Loading markets…</p> : (
         <div className="market-table-wrap">
@@ -2359,6 +2314,7 @@ export function MarketsPage() {
                             <div><dt>Volume 24H</dt><dd>{compactUsd(m.volumeUsd)}</dd></div>
                           </dl>
 
+                          {m.tradeable && data?.tradingEnabled && <Link className="solid-btn sm" to={`/app/accounts?buy=${m.code}`}>Buy {m.code}</Link>}
                           {/* Only registry assets have candle history: the route
                               refuses anything it cannot also price in units. */}
                           {!m.tradeable
@@ -2567,7 +2523,7 @@ function CryptoStat({ index }: { index: number }) {
   const { data, loading } = useHoldings();
   const reduce = useReducedMotion();
 
-  const held = data?.holdings.filter(h => h.units !== "0") ?? [];
+  const held = data?.holdings.filter(h => h.units !== "0" || (h.reservedUnits && h.reservedUnits !== "0")) ?? [];
   const unpricedHeld = held.filter(h => h.valueUsd === null).length;
   const everythingDark = held.length > 0 && unpricedHeld === held.length;
 
@@ -2626,14 +2582,27 @@ function CryptoStat({ index }: { index: number }) {
  * An unpriced asset renders as "Price unavailable", never as $0.00 — a zero is
  * a number people believe.
  */
-export function HoldingsPanel() {
+export function AssetsPage() { return <div className="app-page"><HoldingsPanel catalog /></div>; }
+
+export function HoldingsPanel({ catalog = false }: { catalog?: boolean }) {
   const toast = useToast();
+  const [sending, setSending] = useState<Holding | null>(null);
+  const [revision,setRevision] = useState(0);
   const { refreshAccount } = useAcct();
   const { data, loading, reload } = useHoldings();
   const [trade, setTrade] = useState<{ holding: Holding; side: "buy" | "sell" } | null>(null);
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  const [assetParams,setAssetParams] = useSearchParams();
+  const buyAsset=assetParams.get("buy");
+  useEffect(() => {
+    if(!buyAsset || !data) return;
+    const holding=data.holdings.find(h => h.asset === buyAsset);
+    if(holding && data.tradingEnabled && holding.priceUsd) {setTrade({holding,side:"buy"});setAmount("");}
+    else toast({tone:"error",title:"This asset has no current tradeable quote"});
+    const next=new URLSearchParams(assetParams);next.delete("buy");setAssetParams(next,{replace:true});
+  },[buyAsset,data,assetParams,setAssetParams,toast]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -2642,7 +2611,7 @@ export function HoldingsPanel() {
     if (!value || Number.parseFloat(value) <= 0) return toast({ tone: "error", title: "Enter an amount above zero" });
     setBusy(true);
     try {
-      const result = await tradeHolding(trade.holding.asset, trade.side, value);
+      const result = await tradeHolding(trade.holding.asset, trade.side, value, trade.holding.priceUsd);
       setTrade(null); setAmount("");
       toast({
         tone: "success",
@@ -2662,21 +2631,23 @@ export function HoldingsPanel() {
   };
 
   if (loading || !data) return null;
-  const owned = data.holdings.filter(h => h.units !== "0");
+  const owned = data.holdings.filter(h => h.units !== "0" || (h.reservedUnits && h.reservedUnits !== "0"));
 
   return (
     <>
       <div className="savings-head holdings-head">
-        <div><h2>Digital assets</h2><p>Held separately from your deposit account. {data.disclosure}</p></div>
-        <span>{owned.length ? `${owned.length} held` : "None held"}</span>
+        <div><h2>{catalog ? "Digital asset catalog" : "Your digital assets"}</h2><p>Held separately from your deposit account. {data.disclosure}</p></div>
+        <Link className="ghost-btn sm" to={catalog ? "/app/accounts" : "/app/assets"}>{catalog ? "View your holdings" : "Browse assets"}</Link>
       </div>
 
+      {data.quoteStatus === "stale" && <p className="holdings-warning">Prices are stale. Refresh the feed before buying or selling.</p>}
       {data.partial && (
         <p className="holdings-warning"><AlertTriangle size={14} /> A price feed is unavailable, so the total below is incomplete.</p>
       )}
 
+      {!catalog && !owned.length && <p>No assets held yet. Browse assets to explore the catalog.</p>}
       <div className="holdings-grid">
-        {data.holdings.map((holding, index) => (
+        {(catalog ? data.holdings : owned).map((holding, index) => (
           <motion.article key={holding.asset} className="holding-card"
             initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * .04, duration: .35, ease }}>
             <div className="holding-top">
@@ -2692,16 +2663,18 @@ export function HoldingsPanel() {
             <div className="holding-value">
               {holding.valueUsd === null
                 ? <span className="holding-unpriced">Price unavailable</span>
-                : <><b>{holding.valueUsd}</b><small>{holding.quantity} {holding.asset}</small></>}
+                : <b>${holding.valueUsd}</b>}<small>{holding.totalQuantity ?? holding.quantity} {holding.asset}</small>
             </div>
             <div className="holding-price">
               {holding.priceUsd ? <>{holding.priceUsd} per {holding.asset} <em>{quoteAge(holding.quotedAt)}</em></> : <>No current quote</>}
             </div>
+            <p className="holding-price">Available: {holding.quantity} {holding.asset}{holding.reservedUnits && holding.reservedUnits !== "0" ? ` · ${holding.reservedQuantity} reserved (pending)` : ""}</p>
             <div className="holding-actions">
               {data.tradingEnabled ? (
                 <>
-                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "buy" }); setAmount(""); }} disabled={!holding.priceUsd}>Buy</button>
-                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "sell" }); setAmount(""); }} disabled={!holding.priceUsd || holding.units === "0"}>Sell</button>
+                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "buy" }); setAmount(""); }} disabled={!holding.priceUsd || data.quoteStatus === "stale"}>Buy</button>
+                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "sell" }); setAmount(""); }} disabled={!holding.priceUsd || data.quoteStatus === "stale" || holding.units === "0"}>Sell</button>
+                  <button type="button" className="ghost-btn sm" disabled={!holding.withdrawalNetwork || holding.units === "0"} title={!holding.withdrawalNetwork ? "Withdrawal network not supported yet" : "Create a pending withdrawal request"} onClick={() => setSending(holding)}>Send</button>
                 </>
               ) : <span className="holding-locked">View only</span>}
               <button
@@ -2714,6 +2687,9 @@ export function HoldingsPanel() {
           </motion.article>
         ))}
       </div>
+
+      {!catalog && <CryptoWithdrawalHistory revision={revision} changed={() => { void reload(); }} />}
+      {sending && <CryptoSendDialog holding={sending} close={() => setSending(null)} submitted={() => { void reload(); setRevision(r => r+1); }} />}
 
       <Modal
         open={!!trade} onClose={() => { setTrade(null); setAmount(""); }}
@@ -2764,6 +2740,7 @@ export function HoldingsPanel() {
    ============================================================ */
 export function BillsPage() {
   const { account, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow } = useAcct();
+  const [payingId, setPayingId] = useState<string | null>(null);
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ payeeId: "", payeeName: "", amount: "", category: "Utilities", frequency: "monthly" as "once" | "weekly" | "monthly", date: new Date(Date.now() + 7 * DAY).toISOString().slice(0, 10), autopay: true, memo: "" });
@@ -2782,11 +2759,16 @@ export function BillsPage() {
     setForm(f => ({ ...f, payeeId: "", payeeName: "", amount: "", memo: "" }));
     toast({ tone: "success", title: `Payment scheduled for ${shortDate(payment.nextDate)}`, description: `${money(payment.amount)} to ${payment.payeeName}.` });
   };
-  const pay = (id: string) => {
+  const pay = async (id: string) => {
     const payment = account.scheduledPayments.find(p => p.id === id);
-    if (!payment) return;
-    const ok = payScheduledNow(id);
-    toast(ok ? { tone: "success", title: `${money(payment.amount)} paid`, description: `Sent to ${payment.payeeName}.` } : { tone: "error", title: "Payment could not be sent", description: "Check the available balance and payment status." });
+    if (!payment || payingId) return;
+    setPayingId(id);
+    try {
+      await payScheduledNow(id);
+      toast({ tone: "success", title: `${money(payment.amount)} paid`, description: `Sent to ${payment.payeeName}.` });
+    } catch (error) {
+      toast({ tone: "error", title: "Payment could not be sent", description: error instanceof Error ? error.message : "Check the balance and payment status." });
+    } finally { setPayingId(null); }
   };
 
   return (
@@ -2804,7 +2786,7 @@ export function BillsPage() {
                 <div className="bill-main"><strong>{payment.payeeName}</strong><small>{payment.memo || payment.category} · {payment.frequency === "once" ? "One time" : `Every ${payment.frequency === "weekly" ? "week" : "month"}`}</small></div>
                 <div className="bill-badges"><span className={`status-pill ${payment.status === "active" ? "active" : payment.status === "paused" ? "open" : "paid"}`}>{payment.status === "paused" ? <Pause size={11} /> : payment.status === "active" ? <Play size={11} /> : <Check size={11} />}{payment.status}</span>{payment.autopay && <span className="chip chip-violet">Autopay</span>}</div>
                 <b className="bill-amount">{money(payment.amount)}</b>
-                <div className="bill-actions">{payment.status !== "completed" && <><button type="button" className="ghost-btn sm" onClick={() => toggleScheduledPayment(payment.id)}>{payment.status === "paused" ? <Play size={12} /> : <Pause size={12} />}{payment.status === "paused" ? "Resume" : "Pause"}</button><button type="button" className="solid-btn sm" onClick={() => pay(payment.id)}>Pay now</button></>}<button type="button" className="icon-btn" onClick={() => removeScheduledPayment(payment.id)} aria-label={`Remove ${payment.payeeName}`}><Trash2 size={13} /></button></div>
+                <div className="bill-actions">{payment.status !== "completed" && <><button type="button" className="ghost-btn sm" onClick={() => toggleScheduledPayment(payment.id)}>{payment.status === "paused" ? <Play size={12} /> : <Pause size={12} />}{payment.status === "paused" ? "Resume" : "Pause"}</button><button type="button" className="solid-btn sm" disabled={payingId !== null} onClick={() => void pay(payment.id)}>{payingId === payment.id ? "Paying…" : "Pay now"}</button></>}<button type="button" className="icon-btn" onClick={() => removeScheduledPayment(payment.id)} aria-label={`Remove ${payment.payeeName}`}><Trash2 size={13} /></button></div>
               </motion.div>
             ))}
           </AnimatePresence>
@@ -3624,7 +3606,8 @@ export function SettingsPage() {
               </>
             )}
             <span className="field-label">Plan</span>
-            <Segmented id="plan" value={user.plan} onChange={setPlan} options={personal ? [{ value: "Starter", label: "Everyday · $0" }, { value: "Pro", label: "Plus · $9/mo" }] : [{ value: "Starter", label: "Starter · $0" }, { value: "Pro", label: "Pro · $99/mo" }]} />
+            <Segmented id="plan" value={user.plan} onChange={setPlan} options={PLANS[personal ? "personal" : "business"].map(p => ({ value: p.id, label: `${p.name} · $${p.monthly}/mo` }))} />
+            <p className="form-intro">{PLAN_NOTICE}</p>
             <button type="submit" className="solid-btn dash-submit"><Check size={15} /> Save changes</button>
           </motion.form>
 
@@ -3632,7 +3615,7 @@ export function SettingsPage() {
             <div className="panel-head"><div><h2>Notifications</h2><span className="panel-sub">Choose what we tell you about</span></div></div>
             <Toggle checked={prefs.loginAlerts} onChange={v => pref("loginAlerts", v, "Sign-in alerts")} label="Sign-in alerts" description="Show an in-app security notification for sign-ins from untrusted browsers." />
             <Toggle checked={prefs.weeklyDigest} onChange={v => pref("weeklyDigest", v, "Weekly digest")} label="Weekly digest" description="A Monday summary of spend, rewards and savings." />
-            <Toggle checked={prefs.scoutAuto} onChange={v => pref("scoutAuto", v, "Scout auto-savings")} label="Scout auto-savings" description="Apply offers and credit savings automatically." />
+            <Toggle checked={prefs.scoutAuto} onChange={v => pref("scoutAuto", v, "Scout auto-savings")} label="Scout monitoring" description="Analyze saved activity. Estimates never credit your balance." />
           </motion.section>
         </div>
 
@@ -3680,6 +3663,7 @@ export function ClassicApp() {
         <Route path="bills" element={<BillsPage />} />
         <Route path="scout" element={<ScoutWorkspace />} />
         <Route path="markets" element={<MarketsPage />} />
+        <Route path="assets" element={<AssetsPage />} />
         <Route path="plan" element={<MoneyPlanPage />} />
         <Route path="rewards" element={<RewardsPage />} />
         <Route path="perks" element={<PerksPage />} />

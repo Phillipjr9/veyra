@@ -1,9 +1,11 @@
+import { downloadTransactionReceipt } from "../lib/receipts";
+import { PLANS, PLAN_NOTICE } from "../../shared/catalog";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { useMailingAddress } from "../lib/mailingAddress";
 import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { CashFlowExplorer } from "../components/DashboardIntelligence";
 import {
   ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Building2, CalendarClock, CandlestickChart, Check, Clock, Copy, CreditCard,
   Download, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, MessageSquare, PackageCheck, Pause, PiggyBank, Play, Plus,
@@ -28,7 +30,7 @@ import { Camera } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { lockScroll } from "../lib/scrollLock";
 import {
-  categories, copyText, downloadFile, longDate, money, rewardRate, shortDate, useAcct,
+  categories, copyText, longDate, money, rewardRate, shortDate, useAcct,
   type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
 } from "../lib/store";
 
@@ -325,19 +327,10 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
     : [];
   const steps = incoming ? ["Initiated by sender", "Received", "Funds available"] : ["Authorized", "Processing", "Cleared"];
 
-  const download = () => {
+  const download = async () => {
     if (!txn) return;
-    const lines = [
-      "VEYRA — TRANSACTION RECEIPT",
-      "========================================",
-      `${"Merchant:".padEnd(16)}${txn.merchant}`,
-      `${"Amount:".padEnd(16)}${incoming ? "+" : "-"}${money(Math.abs(txn.amount))}`,
-      ...rows.map(([k, v]) => `${`${k}:`.padEnd(16)}${v}`),
-      "",
-      "Keep this receipt for your records.",
-    ];
-    downloadFile(`veyra-receipt-${txn.reference ?? txn.id}.txt`, lines.join("\n"));
-    toast({ tone: "success", title: "Receipt downloaded" });
+    try { await downloadTransactionReceipt(txn, account?.bankDetails); toast({ tone: "success", title: "PDF receipt prepared" }); }
+    catch (error) { toast({ tone: "error", title: "Receipt could not be generated", description: error instanceof Error ? error.message : "Please try again." }); }
   };
   const copyRef = async () => {
     if (!txn?.reference) return;
@@ -682,52 +675,6 @@ export function Overview() {
   return user?.accountType === "business" ? <BusinessOverview /> : <PersonalOverview />;
 }
 
-/** Weekly inflow/outflow buckets — the shape both the chart and the KPI strip read. */
-function weeklyFlow(txns: Txn[], weeks = 8) {
-  const WEEK = 7 * DAY;
-  const now = Date.now();
-  const buckets = Array.from({ length: weeks }, (_, i) => ({ label: shortDate(now - (weeks - i) * WEEK), inflow: 0, outflow: 0 }));
-  txns.forEach(t => {
-    const idx = weeks - 1 - Math.floor((now - t.date) / WEEK);
-    if (idx < 0 || idx >= weeks) return;
-    if (t.amount > 0) buckets[idx].inflow += t.amount;
-    else buckets[idx].outflow += Math.abs(t.amount);
-  });
-  return buckets;
-}
-
-/** Cash in vs cash out, week by week, for the business dashboard. */
-function CashflowChart({ weeks }: { weeks: Array<{ label: string; inflow: number; outflow: number }> }) {
-  return (
-    <div className="recharts-cashflow-container" style={{ width: "100%", height: 220 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={weeks} margin={{ top: 12, right: 10, left: -16, bottom: 0 }}>
-          <defs>
-            <linearGradient id="barInflow" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#4aa870" stopOpacity={0.95} />
-              <stop offset="100%" stopColor="#35754f" stopOpacity={0.8} />
-            </linearGradient>
-            <linearGradient id="barOutflow" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#9d86ff" stopOpacity={0.95} />
-              <stop offset="100%" stopColor="#7558dc" stopOpacity={0.85} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(24, 23, 29, 0.07)" />
-          <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
-          <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${v >= 1000 ? Math.round(v / 1000) + "k" : v}`} />
-          <Tooltip
-            cursor={{ fill: "rgba(117, 88, 220, 0.05)", radius: 6 }}
-            formatter={(value, name) => [money(Number(value), false), name === "inflow" ? "Inflow (+)" : "Outflow (−)"]}
-            contentStyle={{ borderRadius: 12, border: "1px solid var(--line)", background: "rgba(255, 255, 255, 0.95)", backdropFilter: "blur(8px)", fontSize: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.1)" }}
-          />
-          <Bar dataKey="inflow" fill="url(#barInflow)" radius={[4, 4, 0, 0]} maxBarSize={16} />
-          <Bar dataKey="outflow" fill="url(#barOutflow)" radius={[4, 4, 0, 0]} maxBarSize={16} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
 /* ============================================================
    Business overview
    ============================================================ */
@@ -735,7 +682,6 @@ function BusinessOverview() {
   const { account, user } = useAcct();
   const { openDeposit } = useMoneyFlow();
   const [selected, setSelected] = useState<Txn | null>(null);
-  const weeks = useMemo(() => (account ? weeklyFlow(account.transactions) : []), [account]);
   if (!account) return null;
 
   const businessName = user?.business || "Your business";
@@ -745,7 +691,7 @@ function BusinessOverview() {
   const scheduledBills = account.scheduledPayments
     .filter(payment => payment.status === "active")
     .sort((a, b) => a.nextDate - b.nextDate);
-  const recentActivity = account.transactions.filter(transaction => transaction.date >= Date.now() - 30 * DAY);
+  const recentActivity = account.transactions.filter(transaction => transaction.date >= Date.now() - 30 * DAY && transaction.date <= Date.now() && transaction.status !== "pending");
   const monthlyIn = recentActivity.filter(transaction => transaction.amount > 0).reduce((sum, transaction) => sum + transaction.amount, 0);
   const monthlyOut = recentActivity.filter(transaction => transaction.amount < 0).reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
   const expectedReceivables = openInvoices.reduce((sum, invoice) => sum + invoice.amount, 0);
@@ -755,8 +701,6 @@ function BusinessOverview() {
   const totalCardLimit = account.cards.filter(card => !card.frozen).reduce((sum, card) => sum + card.limit, 0);
   const runwayDays = monthlyOut > 0 ? Math.floor((account.balance / monthlyOut) * 30) : null;
   const overdueInvoices = openInvoices.filter(invoice => invoice.status === "overdue");
-  const totalIn = weeks.reduce((sum, week) => sum + week.inflow, 0);
-  const totalOut = weeks.reduce((sum, week) => sum + week.outflow, 0);
 
   return (
     <div className="app-page business-dashboard">
@@ -778,9 +722,9 @@ function BusinessOverview() {
           <AnimatedMoney value={account.balance} className="business-cash-value" cents fromZero />
           <div className="business-cash-foot">
             <div><span>Pending</span><strong>{money(account.pendingBalance)}</strong></div>
-            <div><span>Next 30 days</span><strong className={monthlyIn >= monthlyOut ? "is-positive" : ""}>{monthlyIn >= monthlyOut ? "+" : "−"}{money(Math.abs(monthlyIn - monthlyOut), false)}</strong></div>
+            <div><span>Last 30 days · net</span><strong className={monthlyIn >= monthlyOut ? "is-positive" : ""}>{monthlyIn >= monthlyOut ? "+" : "−"}{money(Math.abs(monthlyIn - monthlyOut), false)}</strong></div>
           </div>
-          <div className="business-cash-progress" aria-label="Monthly operating position">
+          <div className="business-cash-progress" aria-hidden="true">
             <i style={{ width: `${Math.min(100, monthlyIn || monthlyOut ? (monthlyIn / Math.max(monthlyIn, monthlyOut || 1)) * 100 : 0)}%` }} />
           </div>
         </div>
@@ -789,7 +733,7 @@ function BusinessOverview() {
       <nav className="business-action-grid" aria-label="Business shortcuts">
         <Link to="/app/invoices"><span className="business-action-icon invoice"><ReceiptText size={17} /></span><span><b>Invoice clients</b><small>{openInvoices.length ? `${openInvoices.length} awaiting payment` : "Create a branded invoice"}</small></span><ArrowRight size={15} /></Link>
         <Link to="/app/bills"><span className="business-action-icon bills"><CalendarClock size={17} /></span><span><b>Plan bills</b><small>{scheduledBills.length ? `${scheduledBills.length} active scheduled payments` : "Schedule a vendor payment"}</small></span><ArrowRight size={15} /></Link>
-        <Link to="/app/cards"><span className="business-action-icon cards"><CreditCard size={17} /></span><span><b>Control cards</b><small>{activeCards} active · {money(totalCardLimit, false)} available</small></span><ArrowRight size={15} /></Link>
+        <Link to="/app/cards"><span className="business-action-icon cards"><CreditCard size={17} /></span><span><b>Control cards</b><small>{activeCards} active · {money(totalCardLimit, false)} combined limit</small></span><ArrowRight size={15} /></Link>
         <Link to="/app/team"><span className="business-action-icon team"><Users size={17} /></span><span><b>Manage team</b><small>{activeTeam} active teammates</small></span><ArrowRight size={15} /></Link>
       </nav>
 
@@ -802,13 +746,13 @@ function BusinessOverview() {
         </motion.article>
         <motion.article className="business-metric-card accent-receivable" {...rise(2)}>
           <span>Receivables</span>
-          <strong>{money(expectedReceivables, false)}</strong>
+          <AnimatedMoney value={expectedReceivables} className="business-metric-value" />
           <small>{openInvoices.length} open · {overdueInvoices.length ? `${overdueInvoices.length} overdue` : "none overdue"}</small>
           <Link to="/app/invoices">Review invoices <ArrowRight size={13} /></Link>
         </motion.article>
         <motion.article className="business-metric-card accent-payable" {...rise(3)}>
           <span>Planned payables</span>
-          <strong>{money(plannedPayables, false)}</strong>
+          <AnimatedMoney value={plannedPayables} className="business-metric-value" />
           <small>{scheduledBills.length} scheduled payments</small>
           <Link to="/app/bills">Review schedule <ArrowRight size={13} /></Link>
         </motion.article>
@@ -822,11 +766,7 @@ function BusinessOverview() {
 
       <div className="business-workspace-grid">
         <motion.section className="panel business-flow-panel" {...rise(5)}>
-          <div className="business-panel-head">
-            <div><span className="business-panel-kicker">Cash intelligence</span><h2>Cash movement</h2><p>Incoming and outgoing ledger activity across the last eight weeks.</p></div>
-            <div className="business-flow-legend"><span><i className="in" /> In {money(totalIn, false)}</span><span><i className="out" /> Out {money(totalOut, false)}</span></div>
-          </div>
-          <CashflowChart weeks={weeks} />
+          <CashFlowExplorer transactions={account.transactions} title="Operating cash flow" business />
           <div className="business-flow-footer"><span><TrendingUp size={14} /> {monthlyIn >= monthlyOut ? "Cash-positive over the past 30 days" : "Outflows are higher than inflows over the past 30 days"}</span><Link to="/app/transactions">Open ledger <ArrowRight size={13} /></Link></div>
         </motion.section>
 
@@ -1366,7 +1306,7 @@ export function PaymentsPage() {
   const [method, setMethod] = useState<SendMethod>("ACH");
   const [payee, setPayee] = useState("");
   const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState(categories[0]);
+  const [category, setCategory] = useState(user?.accountType === "personal" ? "" : categories[0]);
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [errorKey, setErrorKey] = useState(0);
@@ -1513,8 +1453,9 @@ export function PaymentsPage() {
               </div>
             </div>
             <div>
-              <label htmlFor="pay-cat">Category</label>
-              <select id="pay-cat" value={category} onChange={e => setCategory(e.target.value)}>
+              <label htmlFor="pay-cat">Category{user?.accountType === "personal" ? " (optional)" : " (required)"}</label>
+              <select id="pay-cat" required={user?.accountType !== "personal"} value={category} onChange={e => setCategory(e.target.value)}>
+                {user?.accountType === "personal" && <option value="">No category</option>}
                 {categories.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
@@ -1832,6 +1773,7 @@ export function TeamPage() {
       </div>
       <motion.section className="panel" {...rise(3)}>
         <div className="panel-head"><h2>Members</h2></div>
+        <p className="team-spend-policy">Admin and Member limits cover transfers, card payments, bill payments and crypto purchases together, per UTC calendar month. $0 permits no outgoing spend. Deposits and sales do not restore the allowance. Usage includes only actor-attributed payments; historical unattributed activity is excluded.</p>
         <div className="team-list">
           <AnimatePresence initial={false}>
             {members.map(m => (
@@ -1839,7 +1781,7 @@ export function TeamPage() {
                 <span className="team-avatar">{m.name.split(" ").map(p => p.charAt(0)).slice(0, 2).join("").toUpperCase()}</span>
                 <div className="team-info"><strong>{m.name}</strong><small>{m.email}</small></div>
                 <span className={`role-badge role-${m.role.toLowerCase()}`}>{m.role}</span>
-                <div className="team-limit"><b>{m.monthlyLimit ? money(m.monthlyLimit, false) : "View only"}</b><small>{m.cardCount} {m.cardCount === 1 ? "card" : "cards"}</small></div>
+                <div className="team-limit"><b>{m.role === "Owner" ? "Owner · no teammate cap" : m.role === "Bookkeeper" ? "Read-only" : `${money(m.monthlyLimit)} / month`}</b>{m.role !== "Owner" && m.role !== "Bookkeeper" && <small>{m.monthlySpent === undefined ? "Usage pending refresh" : `${money(m.monthlySpent)} used · ${money(m.monthlyRemaining ?? 0)} left`}</small>}<small>{m.role === "Owner" || m.role === "Bookkeeper" ? `${m.cardCount} cards` : "Resets on the 1st · UTC"}</small></div>
                 <span className={`status-pill team-status ${m.status}`}>{m.status === "active" ? <span className="dot" /> : <Mail size={11} />}{m.status}</span>
                 <div className="team-act">
                   {m.status === "invited" && m.inviteUrl && canManage && (
@@ -2047,6 +1989,7 @@ export function AccountsPage() {
    ============================================================ */
 export function BillsPage() {
   const { account, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow } = useAcct();
+  const [payingId, setPayingId] = useState<string | null>(null);
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ payeeId: "", payeeName: "", amount: "", category: "Utilities", frequency: "monthly" as "once" | "weekly" | "monthly", date: new Date(Date.now() + 7 * DAY).toISOString().slice(0, 10), autopay: true, memo: "" });
@@ -2065,11 +2008,16 @@ export function BillsPage() {
     setForm(f => ({ ...f, payeeId: "", payeeName: "", amount: "", memo: "" }));
     toast({ tone: "success", title: `Payment scheduled for ${shortDate(payment.nextDate)}`, description: `${money(payment.amount)} to ${payment.payeeName}.` });
   };
-  const pay = (id: string) => {
+  const pay = async (id: string) => {
     const payment = account.scheduledPayments.find(p => p.id === id);
-    if (!payment) return;
-    const ok = payScheduledNow(id);
-    toast(ok ? { tone: "success", title: `${money(payment.amount)} paid`, description: `Sent to ${payment.payeeName}.` } : { tone: "error", title: "Payment could not be sent", description: "Check the available balance and payment status." });
+    if (!payment || payingId) return;
+    setPayingId(id);
+    try {
+      await payScheduledNow(id);
+      toast({ tone: "success", title: `${money(payment.amount)} paid`, description: `Sent to ${payment.payeeName}.` });
+    } catch (error) {
+      toast({ tone: "error", title: "Payment could not be sent", description: error instanceof Error ? error.message : "Check the balance and payment status." });
+    } finally { setPayingId(null); }
   };
 
   return (
@@ -2087,7 +2035,7 @@ export function BillsPage() {
                 <div className="bill-main"><strong>{payment.payeeName}</strong><small>{payment.memo || payment.category} · {payment.frequency === "once" ? "One time" : `Every ${payment.frequency === "weekly" ? "week" : "month"}`}</small></div>
                 <div className="bill-badges"><span className={`status-pill ${payment.status === "active" ? "active" : payment.status === "paused" ? "open" : "paid"}`}>{payment.status === "paused" ? <Pause size={11} /> : payment.status === "active" ? <Play size={11} /> : <Check size={11} />}{payment.status}</span>{payment.autopay && <span className="chip chip-violet">Autopay</span>}</div>
                 <b className="bill-amount">{money(payment.amount)}</b>
-                <div className="bill-actions">{payment.status !== "completed" && <><button type="button" className="ghost-btn sm" onClick={() => toggleScheduledPayment(payment.id)}>{payment.status === "paused" ? <Play size={12} /> : <Pause size={12} />}{payment.status === "paused" ? "Resume" : "Pause"}</button><button type="button" className="solid-btn sm" onClick={() => pay(payment.id)}>Pay now</button></>}<button type="button" className="icon-btn" onClick={() => removeScheduledPayment(payment.id)} aria-label={`Remove ${payment.payeeName}`}><Trash2 size={13} /></button></div>
+                <div className="bill-actions">{payment.status !== "completed" && <><button type="button" className="ghost-btn sm" onClick={() => toggleScheduledPayment(payment.id)}>{payment.status === "paused" ? <Play size={12} /> : <Pause size={12} />}{payment.status === "paused" ? "Resume" : "Pause"}</button><button type="button" className="solid-btn sm" disabled={payingId !== null} onClick={() => void pay(payment.id)}>{payingId === payment.id ? "Paying…" : "Pay now"}</button></>}<button type="button" className="icon-btn" onClick={() => removeScheduledPayment(payment.id)} aria-label={`Remove ${payment.payeeName}`}><Trash2 size={13} /></button></div>
               </motion.div>
             ))}
           </AnimatePresence>
@@ -2904,7 +2852,8 @@ export function SettingsPage() {
               </>
             )}
             <span className="field-label">Plan</span>
-            <Segmented id="plan" value={user.plan} onChange={setPlan} options={personal ? [{ value: "Starter", label: "Everyday · $0" }, { value: "Pro", label: "Plus · $9/mo" }] : [{ value: "Starter", label: "Starter · $0" }, { value: "Pro", label: "Pro · $99/mo" }]} />
+            <Segmented id="plan" value={user.plan} onChange={setPlan} options={PLANS[personal ? "personal" : "business"].map(p => ({ value: p.id, label: `${p.name} · $${p.monthly}/mo` }))} />
+            <p className="form-intro">{PLAN_NOTICE}</p>
             <button type="submit" className="solid-btn dash-submit"><Check size={15} /> Save changes</button>
           </motion.form>
 
@@ -2912,7 +2861,7 @@ export function SettingsPage() {
             <div className="panel-head"><div><h2>Notifications</h2><span className="panel-sub">Choose what we tell you about</span></div></div>
             <Toggle checked={prefs.loginAlerts} onChange={v => pref("loginAlerts", v, "Sign-in alerts")} label="Sign-in alerts" description="Show an in-app security notification for sign-ins from untrusted browsers." />
             <Toggle checked={prefs.weeklyDigest} onChange={v => pref("weeklyDigest", v, "Weekly digest")} label="Weekly digest" description="A Monday summary of spend, rewards and savings." />
-            <Toggle checked={prefs.scoutAuto} onChange={v => pref("scoutAuto", v, "Scout auto-savings")} label="Scout auto-savings" description="Apply offers and credit savings automatically." />
+            <Toggle checked={prefs.scoutAuto} onChange={v => pref("scoutAuto", v, "Scout auto-savings")} label="Scout monitoring" description="Analyze saved activity. Estimates never credit your balance." />
           </motion.section>
         </div>
 

@@ -1,0 +1,372 @@
+/* Homepage-only design system. Shared product and authenticated surfaces stay unchanged. */
+.crypto-site { --home-paper: #f8f7f3; --home-ink: #24212d; --home-muted: #77737d; --home-line: #e3e0e5; background: var(--home-paper); }
+.veyra-home { color: var(--home-ink); overflow: clip; }
+.veyra-home h1, .veyra-home h2, .veyra-home h3, .veyra-home p { margin: 0; }
+.veyra-home button, .veyra-home a { -webkit-tap-highlight-color: transparent; }
+.veyra-home button:focus-visible, .veyra-home a:focus-visible, .veyra-home summary:focus-visible { outline: 2px solid #7457bf; outline-offset: 5px; }
+.vh-container { width: min(1240px, calc(100% - 112px)); margin-inline: auto; }
+.veyra-home section[id] { scroll-margin-top: 110px; }
+.crypto-site .site-header { padding: 0; background: rgba(248,247,243,.93); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(58,48,76,.09); }
+.crypto-site .nav-wrap { max-width: 1240px; width: calc(100% - 112px); height: 92px; padding: 0; gap: 36px; border: 0; border-radius: 0; }
+.crypto-site .is-scrolled .nav-wrap { background: none; box-shadow: none; }
+.crypto-site .nav-wrap > .logo { font-size: 30px; letter-spacing: -.07em; gap: 8px; }
+.crypto-site .nav-wrap > .logo .logo-mark { width: 35px; height: 35px; color: #74658e; }
+.crypto-site .desktop-nav { gap: 28px; }
+.crypto-site .desktop-nav a { font-size: 13px; color: #4c4755; }
+.crypto-site .nav-actions { display: flex; gap: 25px; }
+.crypto-site .nav-actions .button { height: 42px; padding: 0 17px; font-size: 12px; border-radius: 5px; box-shadow: none; background: #292431; }
+.crypto-site .nav-actions .sign-in { font-size: 12px; }
+.crypto-site .nav-wrap > .back-button { display: none; }
+.vh-hero { padding-top: 162px; position: relative; display: grid; grid-template-columns: 1.03fr 1fr; column-gap: 24px; }
+.vh-hero-copy { padding: 24px 0 50px; position: relative; z-index: 2; }
+.vh-announcement { display: inline-flex; gap: 9px; align-items: center; color: #645879; font-size: 9px; letter-spacing: 1.65px; font-weight: 600; padding: 8px 10px; border: 1px solid #dfdbe5; border-radius: 4px; background: #f1edf5; }
+.vh-announcement > svg { margin-left: 7px; }
+.vh-status-dot { display: inline-block; width: 6px; height: 6px; background: #8c78b2; border-radius: 50%; flex: none; box-shadow: 0 0 0 3px #8c78b212; }
+.veyra-home .vh-hero h1 { font-family: var(--display); font-size: clamp(48px, 5.1vw, 73px); font-weight: 500; line-height: 1.12; letter-spacing: -.067em; margin: 28px 0 25px; text-wrap: nowrap; }
+.vh-hero h1 > span { color: #827099; }
+.veyra-home .vh-hero-copy > p { font-size: 15px; line-height: 1.85; color: #6d6177; max-width: 425px; }
+.vh-hero-actions { margin-top: 30px; display: flex; align-items: center; gap: 27px; }
+.vh-button { display: inline-flex; height: 49px; padding: 0 21px; gap: 28px; justify-content: center; align-items: center; background: #2a2533; color: #fff; border: 1px solid #2a2533; border-radius: 5px; font-size: 12px; font-weight: 500; transition: background .2s, transform .2s, box-shadow .2s; }
+.vh-button:hover { background: #574267; transform: translateY(-2px); box-shadow: 0 7px 17px #31223b16; }
+.vh-secondary { display: inline-flex; align-items: center; gap: 14px; font-size: 12px; padding-block: 12px; }
+.vh-secondary svg, .vh-link svg { transition: transform .25s; }
+.vh-secondary:hover svg, .vh-link:hover svg { transform: translate(3px,-2px); }
+.vh-hero-note { display: flex; align-items: center; gap: 8px; margin-top: 23px; font-size: 10px; color: #6d6177; }
+.vh-hero-note svg { color: #8a7b9b; }
+.vh-hero-art { min-width: 0; align-self: center; margin-top: -27px; }
+.vh-vault { aspect-ratio: 1; position: relative; perspective: 1100px; isolation: isolate; }
+.vh-vault-grid { position: absolute; inset: 4% -3% 4%; z-index: -1; background-image: linear-gradient(#bdb3ca18 1px,transparent 1px),linear-gradient(90deg,#bdb3ca18 1px,transparent 1px); background-size: 49px 49px; mask-image: radial-gradient(ellipse,#000 30%,transparent 70%); }
+.vh-vault-perspective { position: absolute; inset: -5%; transform: rotateY(var(--vault-x,0deg)) rotateX(var(--vault-y,0deg)); transition: transform .8s cubic-bezier(.2,.8,.2,1); mix-blend-mode: multiply; }
+.vh-vault-float { width: 100%; height: 100%; position: relative; }
+.vh-vault img { width: 100%; height: 100%; object-fit: contain; mask-image: radial-gradient(ellipse at center,#000 52%,transparent 73%); }
+.vh-vault-glint { position: absolute; top: 10%; left: 29%; width: 40%; height: 69%; background: linear-gradient(115deg,transparent 32%,#fff7 48%,transparent 58%); clip-path: polygon(50% 0,100% 20%,95% 68%,50% 100%,5% 68%,0 20%); opacity: 0; }
+
+
+.vh-vault-coordinate { position: absolute; top: 0; left: 4%; font: 8px var(--mono); letter-spacing: 1px; color: #6d6177; }
+.vh-vault-coordinate span { margin-left: 17px; font-size: 7px; }
+.vh-vault-label { position: absolute; display: flex; align-items: center; background: #ffffffce; border: 1px solid #fff; box-shadow: 0 5px 24px #30223708; backdrop-filter: blur(8px); border-radius: 5px; gap: 9px; font-size: 10px; color: #61576c; }
+.vh-vault-label-top { top: 17%; right: -3%; padding: 12px; }
+.vh-vault-label-top > svg { margin-left: 10px; color: #9686aa; }
+.vh-vault-label-bottom { bottom: 15%; left: -2%; padding: 12px 18px 12px 12px; }
+.vh-vault-label-bottom small { display: block; font-size: 8px; color: #6d6177; margin-top: 3px; }
+.vh-mini-lock { display: grid; place-items: center; width: 32px; height: 32px; background: #f1edf6; border-radius: 4px; }
+.vh-vault-caption { position: absolute; bottom: -3%; left: 10%; right: 9%; display: flex; align-items: center; justify-content: space-between; color: #a49aaa; }
+.vh-vault-caption > span { display: inline-flex; gap: 7px; align-items: center; font: 7px var(--mono); letter-spacing: 1.5px; }
+.vh-vault-caption i { width: 12px; height: 1px; background: #a49aaa; }
+.vh-vault-caption button { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid #ded9e4; border-radius: 50%; background: none; color: #85778e; }
+.vh-vault-caption button:disabled { cursor: default; opacity: .5; }
+.vh-vault.is-still .vh-vault-perspective { transform: none; }
+.vh-hero-bottom { grid-column: 1/-1; display: flex; justify-content: space-between; padding: 26px 0; margin-top: 25px; color: #6d6177; font-size: 8px; letter-spacing: 1.3px; }
+.vh-hero-bottom a { display: inline-flex; gap: 11px; align-items: center; font-size: 9px; letter-spacing: .2px; }
+.vh-trust-strip { background: #eeedf0; border-block: 1px solid #e7e4e9; }
+.vh-trust-strip > div { display: grid; grid-template-columns: repeat(4, 1fr); padding-block: 26px; }
+.vh-trust-strip span { display: flex; align-items: center; justify-content: center; gap: 12px; font-size: 11px; color: #6d6177; border-right: 1px solid #d9d5df; }
+.vh-trust-strip span:first-child { justify-content: start; }
+.vh-trust-strip span:last-child { border: 0; justify-content: end; }
+.vh-trust-strip svg { width: 19px; height: 19px; stroke-width: 1.3; }
+.vh-possibilities { padding-block: 97px 90px; }
+.vh-section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 40px; margin-bottom: 39px; }
+.vh-eyebrow { display: inline-flex; align-items: center; gap: 9px; font: 500 9px/1.5 var(--body); letter-spacing: 1.6px; color: #6d6177; }
+.vh-eyebrow > span { width: 5px; height: 5px; background: currentColor; }
+.veyra-home h2 { font: 500 43px/1.18 var(--display); letter-spacing: -.055em; margin-top: 17px; }
+.vh-section-heading > p { color: #6d6177; font-size: 13px; line-height: 1.9; max-width: 310px; margin-bottom: 4px; }
+.vh-product-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 19px; }
+.vh-product-card { border: 1px solid #e4e0e8; border-radius: 8px; padding: 25px; background: #f1eff3; position: relative; overflow: hidden; transition: box-shadow .3s, border-color .3s; }
+.vh-product-card:hover { box-shadow: 0 15px 35px #4c3a6010; border-color: #c7bdd2; }
+.vh-card-topline { display: flex; justify-content: space-between; align-items: center; color: #6d6177; font: 8px var(--mono); letter-spacing: 1px; }
+.vh-card-topline svg { stroke-width: 1.1; }
+.vh-product-visual { height: 210px; position: relative; display: grid; place-items: center; }
+.veyra-home .vh-product-card h3 { font: 500 22px/1.3 var(--display); letter-spacing: -.7px; margin: 4px 0 12px; }
+.veyra-home .vh-product-card > p { font-size: 12px; color: #6d6177; line-height: 1.9; max-width: 290px; min-height: 68px; }
+.vh-link { display: inline-flex; align-items: center; gap: 25px; font-size: 11px; font-weight: 500; padding: 14px 0 3px; }
+.vh-product-card > .vh-link { width: 100%; justify-content: space-between; margin-top: 15px; border-top: 1px solid #ded9e5; padding-top: 18px; }
+.vh-bank-card { width: 220px; height: 133px; padding: 16px 18px; border-radius: 9px; color: #efe9f5; background: linear-gradient(115deg,#423646,#887490 49%,#322938); border: 1px solid #b5a6ba; box-shadow: 8px 13px 0 -7px #aa9ab0,9px 23px 25px -15px #4a3a6380; transform: perspective(650px) rotateX(14deg) rotateY(-17deg) rotateZ(-8deg); transition: transform .6s; }
+.vh-product-card:hover .vh-bank-card { transform: perspective(650px) rotateX(7deg) rotateY(-5deg) rotateZ(-4deg) translateY(-6px); }
+.vh-bank-card > div:first-child { display: flex; align-items: center; gap: 4px; font: 600 18px var(--display); }
+.vh-bank-card svg { width: 19px; height: 19px; }
+.vh-card-contactless { margin-left: auto; font: 12px var(--mono); transform: rotate(20deg); }
+.vh-chip { width: 24px; height: 18px; margin-top: 13px; border-radius: 4px; border: 1px solid #eee4c6aa; background: repeating-linear-gradient(90deg,transparent 0 7px,#84756166 7px 8px),linear-gradient(130deg,#c7b99c,#f1e2c7,#ad9a7d); }
+.vh-card-number { display: block; font: 9px var(--mono); letter-spacing: 2px; margin-top: 7px; }
+.vh-bank-card small { font: 5px var(--mono); letter-spacing: 1px; }
+.vh-payment-pill { display: flex; gap: 7px; align-items: center; position: absolute; right: 0; bottom: 27px; padding: 9px 11px; background: #ffffffed; border-radius: 5px; font-size: 8px; box-shadow: 0 4px 22px #5547680c; }
+.vh-payment-pill > span { color: #877691; background: #f0ecf4; border-radius: 50%; width: 21px; height: 21px; display: grid; place-items: center; }
+.vh-crypto-card { background: #eeedf3; }
+.vh-token-visual img { position: absolute; object-fit: contain; mix-blend-mode: multiply; transition: transform .7s; }
+.vh-product-bitcoin { width: 160px; height: 160px; left: 4%; top: 23px; transform: rotate(-12deg); }
+.vh-product-ethereum { width: 128px; height: 128px; right: 3%; top: 29px; transform: rotate(12deg); }
+.vh-product-card:hover .vh-product-bitcoin { transform: translateY(-7px) rotate(-18deg); }
+.vh-product-card:hover .vh-product-ethereum { transform: translateY(5px) rotate(18deg); }
+.vh-token-ring { position: absolute; width: 240px; height: 100px; border: 1px solid #c3b8ce; border-radius: 50%; transform: rotate(-24deg); }
+.vh-token-spark { position: absolute; bottom: 25px; right: 55px; color: #b2a3bd; font-size: 27px; font-weight: 300; }
+.vh-business-card { background: #f1efeb; }
+.vh-scout-orb { position: absolute; top: 35px; width: 98px; height: 98px; border-radius: 26px; display: grid; place-items: center; color: #fff8ff; background: radial-gradient(circle at 30% 15%,#e6dce8,#ad93b6 47%,#6b526f 88%); box-shadow: inset 1px 1px 4px #fff, inset -5px -5px 10px #5e3f5750,0 18px 30px -15px #80678990; transform: rotate(-12deg); }
+.vh-scout-line { display: flex; align-items: end; gap: 8px; position: absolute; bottom: 26px; left: 16px; right: 10px; height: 65px; transform: skewY(-7deg); opacity: .55; }
+.vh-scout-line span { flex: 1; height: 30%; border: 1px solid #b7a8bb; border-bottom: 0; background: linear-gradient(#d1bfd799,transparent); }
+.vh-scout-line span:nth-child(2) { height: 45%; }.vh-scout-line span:nth-child(3) { height: 38%; }.vh-scout-line span:nth-child(4) { height: 60%; }.vh-scout-line span:nth-child(5) { height: 50%; }.vh-scout-line span:nth-child(6) { height: 78%; }.vh-scout-line span:nth-child(7) { height: 100%; }
+.vh-scout-badge { position: absolute; bottom: 28px; right: 13px; font-size: 9px; padding: 9px 12px; background: #fffdfbd9; border-radius: 5px; display: flex; align-items: center; gap: 14px; }
+.vh-assets { padding: 25px 0 89px; }
+.vh-asset-tabs { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-top: 38px; }
+.vh-asset-tabs > button { display: flex; align-items: center; text-align: left; gap: 12px; padding: 19px; border: 1px solid #e4e0e6; border-radius: 6px; background: transparent; transition: background .2s,border-color .2s; }
+.vh-asset-tabs > button[aria-selected=true] { background: #eee9f2; border-color: #c3b1d4; }
+.vh-asset-tabs > button:hover { border-color: #a99bb8; }
+.vh-token { width: 33px; height: 33px; border-radius: 50%; color: white; display: grid; place-items: center; font-size: 23px; flex: none; font-family: var(--body); }
+.vh-asset-tabs > button > span:nth-child(2) { font-size: 12px; font-weight: 500; }
+.vh-asset-tabs small { display: block; margin-top: 3px; font-size: 9px; font-weight: 400; color: #6d6177; }
+.vh-asset-tabs > button > svg { margin-left: auto; color: #9c8ba9; width: 15px; }
+.vh-asset-panel { display: grid; grid-template-columns: 1fr 1fr; margin-top: 18px; min-height: 342px; border: 1px solid #e4e0e6; background: linear-gradient(100deg,#f3f0f5,#eeebf2); border-radius: 8px; overflow: hidden; }
+.vh-asset-copy { padding: 42px 47px; animation: vh-fade .45s both; }
+.vh-overline { font-size: 9px; color: #6d6177; letter-spacing: .5px; }
+.veyra-home .vh-asset-copy h3 { font: 500 31px/1.23 var(--display); letter-spacing: -1.3px; max-width: 330px; margin: 14px 0; }
+.veyra-home .vh-asset-copy > p { font-size: 12px; line-height: 1.9; color: #6d6177; max-width: 390px; }
+.vh-asset-copy .vh-link { margin-top: 5px; }
+.vh-asset-tags { display: flex; gap: 7px; margin-top: 25px; flex-wrap: wrap; }
+.vh-asset-tags span { font: 8px var(--mono); color: #6d6177; border: 1px solid #ddd4e4; padding: 6px 8px; border-radius: 3px; }
+.vh-coin-display { position: relative; display: grid; place-items: center; min-width: 0; }
+.vh-coin-display > .vh-coin-float { width: 270px; height: 270px; object-fit: contain; mix-blend-mode: multiply; transform: rotate(-13deg); z-index: 1; }
+.vh-coin-code { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-54%); color: #b5a7c222; font: 500 156px var(--display); letter-spacing: -10px; }
+.vh-coin-orbit { position: absolute; top: 50%; left: 50%; width: 340px; height: 200px; border: 1px solid #cfc4d788; border-radius: 50%; transform: translate(-50%,-50%) rotate(-25deg); }
+.vh-coin-orbit-two { width: 290px; height: 270px; transform: translate(-50%,-50%) rotate(40deg); }
+.vh-coin-footnote { position: absolute; bottom: 25px; font: 8px var(--mono); letter-spacing: .2px; color: #a296ac; text-align: center; padding-inline: 10px; }
+.veyra-home .vh-disclosure { font-size: 9px; line-height: 1.8; color: #6d6177; margin-top: 17px; }
+.vh-security { background: #211c2b; color: #f5f0f9; position: relative; overflow: hidden; }
+.vh-security-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 90px; padding-block: 85px; }
+.vh-security-art { position: relative; min-height: 485px; align-self: center; display: grid; place-items: center; background: radial-gradient(ellipse at center,#58456350,transparent 70%); }
+.vh-security-orbit { position: absolute; width: 95%; aspect-ratio: 1; border: 1px solid #9b82b018; border-radius: 50%; }
+.vh-security-orbit-inner { width: 78%; border-style: dashed; border-color: #9b82b02c; }
+.vh-security-cross { position: absolute; color: #7f668c; font-size: 20px; font-weight: 300; }
+.vh-security-cross-one { top: 14%; right: 19%; }.vh-security-cross-two { bottom: 16%; left: 13%; }
+.vh-shield-stack { width: 255px; height: 300px; position: relative; transform: perspective(900px) rotateY(-20deg) rotateX(8deg) rotateZ(-9deg); }
+.vh-shield-layer { position: absolute; inset: 0; clip-path: polygon(50% 0,70% 11%,100% 19%,98% 53%,91% 71%,75% 86%,50% 100%,25% 86%,9% 71%,2% 53%,0 19%,30% 11%); }
+.vh-shield-back { background: linear-gradient(140deg,#5c4c67,#a38cb6 40%,#342b3e); transform: translate(-27px,20px); opacity: .55; }
+.vh-shield-mid { background: linear-gradient(140deg,#8c739d,#514157 40%,#b5a0c2); transform: translate(-13px,10px); }
+.vh-shield-front { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 21px; padding-bottom: 22px; background: linear-gradient(140deg,#baaacb 0%,#6f5b80 19%,#4c3c59 42%,#88719a 75%,#c6b7d3 100%); color: #d5c5e3; }
+.vh-shield-front::before { content: ""; position: absolute; inset: 2px; clip-path: inherit; background: linear-gradient(135deg,#5c466e,#2f223d 65%,#695277); z-index: -1; }
+.vh-shield-front > span { font: 8px var(--mono); letter-spacing: 5px; padding-left: 5px; color: #b39ac6; }
+.vh-security-status { position: absolute; bottom: 53px; background: #30263e; border: 1px solid #655173; padding: 10px 15px; border-radius: 4px; display: flex; align-items: center; gap: 10px; font: 8px var(--mono); letter-spacing: 1px; }
+.vh-security-status .vh-status-dot { background: #b4a1ca; }
+.vh-security-art-label { position: absolute; bottom: 3px; font: 7px var(--mono); letter-spacing: 1px; color: #b7a0c5; }
+.vh-security-copy > .vh-eyebrow { color: #bfa5d0; }
+.veyra-home .vh-security-copy h2 { font-size: 43px; margin-top: 21px; }
+.veyra-home .vh-security-copy > p { font-size: 12px; color: #ab9db5; line-height: 1.9; margin-top: 21px; max-width: 420px; }
+.vh-security-controls { margin-top: 25px; }
+.vh-security-control { border-bottom: 1px solid #4a3d53; }
+.vh-security-control button { width: 100%; border: 0; background: none; color: #b9a9c4; padding: 18px 0; display: flex; align-items: center; gap: 16px; font-size: 12px; text-align: left; }
+.vh-security-control button > span { color: #b29bbf; font: 9px var(--mono); }
+.vh-security-control button > svg { margin-left: auto; transition: transform .2s; }
+.vh-security-control.is-active button { color: #f4eaf8; }
+.vh-security-control.is-active button > svg { transform: rotate(180deg); }
+.veyra-home .vh-security-control p { padding: 0 25px 20px 28px; font-size: 11px; line-height: 1.9; color: #a693b4; }
+.vh-security-copy > .vh-link { margin-top: 23px; color: #d3bddf; }
+.vh-faq { display: grid; grid-template-columns: 1fr 1.2fr; gap: 100px; padding-block: 98px; }
+.veyra-home .vh-faq h2 { font-size: 38px; }
+.veyra-home .vh-faq > div:first-child p { color: #6d6177; font-size: 12px; margin: 20px 0 9px; }
+.vh-faq-list details { border-bottom: 1px solid #e0d9e6; }
+.vh-faq-list summary { list-style: none; cursor: pointer; padding: 25px 0; display: flex; align-items: center; gap: 20px; justify-content: space-between; font-size: 12px; color: #53465e; }
+.vh-faq-list summary::-webkit-details-marker { display: none; }
+.vh-faq-list summary svg { flex: none; color: #9e8bad; transition: transform .2s; }
+.vh-faq-list details[open] summary svg { transform: rotate(180deg); }
+.veyra-home .vh-faq-list p { padding: 0 20px 23px 0; color: #6d6177; font-size: 12px; line-height: 1.9; }
+.vh-final-cta { background: #e9e3ee; border-top: 1px solid #ded5e4; overflow: hidden; }
+.vh-final-cta > .vh-container { position: relative; padding-block: 67px 38px; }
+.veyra-home .vh-final-cta h2 { font-size: 54px; margin-block: 18px; }
+.veyra-home .vh-final-cta p { font-size: 12px; color: #6d6177; margin-bottom: 25px; }
+.vh-cta-mark { position: absolute; right: 6%; top: 14%; width: 290px; height: 290px; transform: perspective(1000px) rotateY(-20deg) rotateZ(-12deg); color: #9f8ab04d; filter: drop-shadow(8px 9px 0 #e0d4e5) drop-shadow(17px 17px 0 #d1c0de) drop-shadow(10px 22px 15px #9a83b04d); }
+.vh-cta-mark > svg { width: 100%; height: 100%; }
+.vh-cta-fineprint { display: block; color: #6d6177; font-size: 8px; line-height: 1.8; margin-top: 33px; }
+.crypto-site > footer { background: #211c2b; padding-top: 65px; }
+.crypto-site > footer .footer-top { max-width: 1240px; }
+.crypto-site > footer .footer-brand p { color: #aa9bb5; }
+.crypto-site > footer .footer-bottom { color: #9f90aa; }
+.vh-skip-link { position: fixed; top: -80px; left: 20px; z-index: 200; padding: 12px 18px; background: #211c2b; color: white; border-radius: 4px; }
+.vh-skip-link:focus { top: 15px; }
+@keyframes vh-float { 0%,100% { transform: translateY(0) rotate(-.4deg); } 50% { transform: translateY(-11px) rotate(.5deg); } }
+@keyframes vh-shine { 0%,30%,70%,100% { opacity: 0; transform: translateX(-8%); } 48% { opacity: .4; } 60% { opacity: 0; transform: translateX(14%); } }
+@keyframes vh-fade { from { opacity: .4; } to { opacity: 1; } }
+@media (min-width: 1550px) { .vh-hero { padding-top: 184px; } .vh-hero-copy { padding-bottom: 70px; } .vh-hero-bottom { margin-top: 40px; } }
+@media (max-width: 1150px) {
+  .vh-container, .crypto-site .nav-wrap { width: calc(100% - 72px); }
+  .crypto-site .nav-wrap { gap: 24px; }
+  .crypto-site .desktop-nav { gap: 18px; }
+  .crypto-site .desktop-nav a { font-size: 11px; }
+  .crypto-site .nav-actions { gap: 16px; }
+  .vh-hero { padding-top: 145px; gap: 12px; }
+  .veyra-home .vh-hero h1 { font-size: 5.3vw; }
+  .vh-vault-label-top { right: -2%; top: 11%; font-size: 8px; }
+  .vh-hero-copy { padding-bottom: 25px; }
+  .vh-product-card { padding: 20px; }
+  .vh-product-bitcoin { width: 135px; height: 135px; top: 37px; }
+  .vh-product-ethereum { width: 110px; height: 110px; top: 38px; }
+  .vh-bank-card { width: 190px; }
+  .vh-security-grid { gap: 45px; }
+  .vh-faq { gap: 60px; }
+}
+@media (max-width: 950px) {
+  .crypto-site .desktop-nav { display: none; }
+  .crypto-site .nav-actions { margin-left: auto; }
+  .crypto-site .menu-button { margin-left: 0; }
+  .crypto-site .menu-button { display: grid; place-items: center; background: none; border: 0; color: #51475c; padding: 8px; width: 38px; height: 38px; }
+  .crypto-site .mobile-nav { display: flex; flex-direction: column; gap: 0; position: fixed; top: 77px; left: 0; right: 0; max-height: calc(100dvh - 77px); overflow-y: auto; background: #f8f7f3; border-bottom: 1px solid #d8cede; padding: 16px 36px 28px; box-shadow: 0 12px 20px #2a213c0a; }
+  .crypto-site .mobile-nav a { display: flex; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid #e7e0eb; font-size: 14px; }
+  .crypto-site .mobile-nav .button { padding: 14px 18px; margin-top: 15px; border-radius: 5px; }
+  .crypto-site .nav-wrap { height: 77px; }
+  .vh-hero { padding-top: 123px; }
+  .vh-hero-copy { padding-top: 10px; }
+  .vh-announcement { letter-spacing: 1px; font-size: 7px; }
+  .veyra-home .vh-hero-copy > p { font-size: 12px; max-width: 350px; }
+  .vh-hero-actions { gap: 16px; margin-top: 25px; }
+  .vh-hero-actions .vh-button { padding: 0 14px; font-size: 10px; gap: 15px; height: 44px; }
+  .vh-secondary { font-size: 10px; gap: 9px; }
+  .vh-hero-note { font-size: 8px; }
+  .vh-vault-label-bottom { padding: 9px; font-size: 8px; bottom: 9%; }
+  .vh-vault-label-bottom small { font-size: 7px; }
+  .vh-vault-label-top { right: -3%; padding: 9px; }
+  .vh-vault-caption { bottom: -7%; }
+  .vh-vault-caption > span { font-size: 5px; letter-spacing: 1px; }
+  .vh-vault-coordinate { top: -8%; font-size: 6px; }
+  .vh-vault-coordinate span { font-size: 5px; }
+  .vh-trust-strip span { font-size: 9px; gap: 7px; }
+  .vh-trust-strip svg { width: 16px; }
+  .veyra-home h2 { font-size: 35px; }
+  .vh-section-heading > p { font-size: 11px; max-width: 235px; }
+  .vh-product-grid { gap: 12px; }
+  .vh-product-card { padding: 16px; }
+  .vh-product-visual { height: 180px; }
+  .vh-bank-card { width: 155px; height: 114px; padding: 11px; }
+  .vh-payment-pill { font-size: 6px; padding: 7px; bottom: 18px; }
+  .vh-product-bitcoin { width: 110px; height: 110px; left: -9%; }
+  .vh-product-ethereum { width: 100px; height: 100px; right: -6%; }
+  .vh-token-ring { width: 180px; }
+  .veyra-home .vh-product-card h3 { font-size: 18px; }
+  .veyra-home .vh-product-card > p { font-size: 11px; min-height: 85px; }
+  .vh-product-card > .vh-link { font-size: 10px; gap: 10px; }
+  .vh-asset-tabs > button { padding: 13px; gap: 9px; }
+  .vh-asset-tabs > button > span:nth-child(2) { font-size: 11px; }
+  .vh-asset-tabs > button > svg { width: 12px; }
+  .vh-token { width: 28px; height: 28px; font-size: 20px; }
+  .vh-asset-copy { padding: 32px; }
+  .veyra-home .vh-asset-copy h3 { font-size: 28px; }
+  .vh-coin-display > .vh-coin-float { width: 220px; height: 220px; }
+  .vh-coin-orbit { width: 260px; }.vh-coin-orbit-two { width: 220px; height: 230px; }
+  .vh-coin-code { font-size: 110px; }
+  .vh-security-grid { gap: 30px; }
+  .vh-security-art { min-height: 380px; }
+  .vh-shield-stack { width: 185px; height: 230px; }
+  .vh-security-status { bottom: 30px; font-size: 6px; }
+  .vh-security-art-label { font-size: 5px; }
+  .veyra-home .vh-security-copy h2 { font-size: 35px; }
+  .vh-security-copy > .vh-eyebrow { font-size: 8px; }
+  .vh-security-control button { font-size: 11px; gap: 10px; }
+  .vh-faq { gap: 35px; }
+  .veyra-home .vh-faq h2 { font-size: 33px; }
+  .vh-cta-mark { right: 0; width: 235px; height: 235px; top: 20%; }
+}
+@media (max-width: 640px) {
+  .vh-container, .crypto-site .nav-wrap { width: calc(100% - 40px); }
+  .crypto-site .nav-wrap { height: 70px; gap: 12px; }
+  .crypto-site .nav-wrap > .logo { font-size: 26px; }
+  .crypto-site .nav-wrap > .logo .logo-mark { width: 28px; height: 28px; }
+  .crypto-site .nav-actions .sign-in, .crypto-site .nav-user-chip { display: none; }
+  .crypto-site .nav-actions .button { height: 36px; font-size: 10px; padding: 0 10px; gap: 9px; }
+  .crypto-site .mobile-nav { top: 70px; max-height: calc(100dvh - 70px); padding-inline: 25px; }
+  .vh-hero { display: flex; flex-direction: column; padding-top: 105px; gap: 0; }
+  .vh-hero-copy { padding: 0; }
+  .vh-announcement { font-size: 7px; letter-spacing: 1.1px; padding: 7px 9px; }
+  .veyra-home .vh-hero h1 { font-size: clamp(32px,9.6vw,60px); margin-block: 23px 20px; line-height: 1.12; letter-spacing: -.062em; }
+  .veyra-home .vh-hero-copy > p { font-size: 13px; line-height: 1.85; max-width: 375px; }
+  .vh-desktop-break { display: none; }
+  .vh-hero-actions { gap: 25px; margin-top: 23px; }
+  .vh-hero-actions .vh-button { height: 47px; font-size: 11px; padding: 0 17px; gap: 20px; }
+  .vh-secondary { font-size: 11px; }
+  .vh-hero-note { font-size: 8px; margin-top: 18px; }
+  .vh-hero-art { width: 100%; max-width: 430px; margin: 35px auto 16px; }
+  .vh-vault { width: 100%; }
+  .vh-vault-perspective { inset: -3%; }
+  .vh-vault-coordinate { top: 0; left: 4%; }
+  .vh-vault-label-top { right: 0; top: 16%; font-size: 8px; padding: 10px; }
+  .vh-vault-label-bottom { left: 0; bottom: 13%; padding: 10px; font-size: 9px; }
+  .vh-vault-caption { bottom: -2%; left: 7%; }
+  .vh-vault-caption > span { font-size: 6px; }
+  .vh-hero-bottom { width: 100%; margin-top: 14px; padding: 20px 0; font-size: 6px; letter-spacing: .7px; }
+  .vh-hero-bottom a { font-size: 8px; gap: 7px; }
+  .vh-trust-strip > div { grid-template-columns: repeat(2,1fr); gap: 22px 13px; padding-block: 23px; }
+  .vh-trust-strip span, .vh-trust-strip span:first-child, .vh-trust-strip span:last-child { justify-content: flex-start; font-size: 9px; gap: 9px; border: 0; }
+  .vh-possibilities { padding-block: 62px 47px; }
+  .vh-eyebrow { font-size: 8px; letter-spacing: 1.2px; }
+  .vh-section-heading { flex-direction: column; gap: 20px; align-items: flex-start; margin-bottom: 28px; }
+  .veyra-home h2 { font-size: 34px; }
+  .vh-section-heading > p { max-width: 325px; font-size: 12px; }
+  .vh-product-grid { grid-template-columns: 1fr; gap: 17px; }
+  .vh-product-card { padding: 25px; }
+  .vh-product-visual { height: 218px; }
+  .vh-card-topline { font-size: 9px; }
+  .vh-bank-card { width: 230px; height: 138px; padding: 17px; }
+  .vh-payment-pill { font-size: 8px; padding: 10px; bottom: 30px; right: 3%; }
+  .veyra-home .vh-product-card h3 { font-size: 24px; }
+  .veyra-home .vh-product-card > p { min-height: auto; font-size: 12px; max-width: 100%; }
+  .vh-product-card > .vh-link { font-size: 11px; margin-top: 24px; }
+  .vh-product-bitcoin { width: 172px; height: 172px; left: 6%; top: 17px; }
+  .vh-product-ethereum { width: 135px; height: 135px; right: 4%; top: 25px; }
+  .vh-token-ring { width: 265px; }
+  .vh-scout-orb { width: 110px; height: 110px; top: 30px; }
+  .vh-scout-line { width: 240px; margin: 0 auto; bottom: 31px; }
+  .vh-scout-badge { right: 9%; bottom: 24px; }
+  .vh-assets { padding-block: 22px 52px; }
+  .vh-asset-tabs { grid-template-columns: repeat(2,1fr); gap: 9px; margin-top: 27px; }
+  .vh-asset-tabs > button { padding: 15px 12px; }
+  .vh-asset-tabs > button > span:nth-child(2) { font-size: 12px; }
+  .vh-asset-panel { grid-template-columns: 1fr; }
+  .vh-asset-copy { padding: 30px 24px 12px; }
+  .veyra-home .vh-asset-copy h3 { font-size: 29px; max-width: 300px; }
+  .vh-coin-display { min-height: 268px; }
+  .vh-coin-display > .vh-coin-float { width: 225px; height: 225px; }
+  .vh-coin-footnote { bottom: 13px; font-size: 7px; }
+  .vh-coin-code { font-size: 140px; }
+  .vh-security-grid { display: flex; flex-direction: column-reverse; padding-block: 54px 36px; gap: 20px; }
+  .veyra-home .vh-security-copy h2 { font-size: 38px; }
+  .veyra-home .vh-security-copy > p { font-size: 12px; }
+  .vh-security-control button { font-size: 12px; padding-block: 20px; }
+  .vh-security-art { width: 100%; min-height: 360px; max-width: 350px; }
+  .vh-shield-stack { width: 190px; height: 235px; }
+  .vh-security-status { bottom: 22px; font-size: 7px; }
+  .vh-security-art-label { bottom: -9px; font-size: 6px; }
+  .vh-faq { display: block; padding-block: 61px; }
+  .vh-faq-list { margin-top: 25px; }
+  .vh-faq-list summary { font-size: 12px; padding-block: 22px; }
+  .vh-final-cta > .vh-container { padding-block: 49px 30px; }
+  .veyra-home .vh-final-cta h2 { font-size: 43px; }
+  .veyra-home .vh-final-cta p { max-width: 250px; font-size: 11px; line-height: 1.9; position: relative; }
+  .vh-cta-mark { width: 150px; height: 150px; top: 22%; right: -44px; opacity: .4; }
+  .vh-final-cta .vh-eyebrow { position: relative; }
+  .vh-cta-fineprint { font-size: 7px; }
+  .crypto-site > footer { padding-top: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .veyra-home *, .veyra-home *::before, .veyra-home *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .vh-vault-perspective { transform: none !important; }
+}
+
+/* Keep fine print readable and the shared footer balanced on the homepage. */
+.vh-hero-note { font-size: 11px; }
+.veyra-home .vh-disclosure { font-size: 11px; }
+.vh-cta-fineprint { font-size: 10px; }
+.crypto-site .footer-links strong { color: #b2a0be; }
+.crypto-site .footer-form input::placeholder { color: #b2a0be; }
+@media (max-width: 640px) {
+  .vh-hero-note { font-size: 9px; }
+  .veyra-home .vh-disclosure { font-size: 10px; }
+  .vh-cta-fineprint { font-size: 9px; }
+  .crypto-site > footer { padding-inline: 24px; }
+  .crypto-site .footer-links { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); width: 100%; gap: 28px 20px; }
+  .crypto-site .footer-links > div { gap: 5px; }
+  .crypto-site .footer-top { gap: 35px; }
+  .crypto-site .footer-bottom { gap: 12px; }
+}
+
+@media (max-width: 380px) {
+  .crypto-site .nav-wrap > .logo { font-size: 23px; gap: 5px; }
+  .crypto-site .nav-actions .button > svg { display: none; }
+  .crypto-site .nav-wrap { gap: 8px; }
+  .vh-hero-actions { gap: 18px; }
+  .vh-hero-actions .vh-button { font-size: 10px; padding-inline: 12px; gap: 13px; white-space: nowrap; }
+  .vh-secondary { font-size: 10px; white-space: nowrap; gap: 8px; }
+}

@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:emails": "tsx scripts/build-emails.ts",
-    "test": "tsx scripts/test-permissions.ts && node scripts/check-emails.mjs && node scripts/check-api-coverage.mjs && tsx server/scripts/audit-routes.ts && tsx server/scripts/test-api.ts",
+    "test": "npm run test:dashboard && npm run test:money-controls && tsx scripts/test-permissions.ts && node scripts/check-emails.mjs && node scripts/check-api-coverage.mjs && tsx server/scripts/audit-routes.ts && tsx server/scripts/test-api.ts && npm run test:addresses && npm run test:banking",
     "server": "tsx server/src/index.ts",
     "test:api": "tsx server/scripts/test-api.ts",
     "check:routes": "node scripts/check-api-coverage.mjs",
@@ -19,9 +19,15 @@
     "dev:all": "bash scripts/dev.sh",
     "test:e2e": "npm run build && playwright test",
     "typecheck:e2e": "tsc -p tsconfig.playwright.json",
-    "verify": "npm test && npm run typecheck && npm run typecheck:e2e && npm run test:e2e"
+    "verify": "npm test && npm run typecheck && npm run typecheck:e2e && npm run test:e2e",
+    "test:dashboard": "tsx scripts/test-dashboard-analytics.ts",
+    "test:money-controls": "tsx server/scripts/test-money-controls.ts",
+    "test:addresses": "tsx server/scripts/test-addresses.ts",
+    "test:banking": "tsx server/scripts/test-banking-update.ts"
   },
   "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "@scure/base": "1.2.6",
     "@types/express": "^5.0.6",
     "clsx": "2.1.1",
     "express": "^5.2.1",

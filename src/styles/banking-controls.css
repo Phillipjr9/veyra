@@ -1,0 +1,26 @@
+.banking-scrim { position:fixed; inset:0; z-index:1500; background:#20132f99; backdrop-filter:blur(8px); padding:24px 16px; display:grid; place-items:center; }
+.banking-panel { background:linear-gradient(145deg,#fff,#faf7ff); color:#292331; width:min(600px,100%); max-height:calc(100dvh - 48px); overflow-y:auto; overscroll-behavior:contain; border:1px solid #e7deee; border-radius:22px; padding:28px; box-shadow:0 28px 80px #130a2945; min-width:0; }
+.banking-wide { width:min(800px,100%); }
+.banking-panel h2 { font-size:24px; margin:0 0 12px; overflow-wrap:anywhere; }
+.banking-panel h3 { font-size:17px; margin:12px 0; }
+.banking-panel p { font-size:13px; line-height:1.7; margin:12px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.banking-panel :is(input,select,textarea) { width:100%; max-width:100%; min-width:0; margin-top:6px; }
+.banking-panel label { display:block; margin:12px 0; font-size:13px; }
+.banking-panel fieldset { padding:0; margin:0; border:0; min-width:0; }
+.banking-panel fieldset > button { margin:8px 8px 8px 0; }
+.banking-panel code,.banking-request code { display:block; overflow-wrap:anywhere; white-space:normal; font-size:13px; }
+.banking-panel .banking-check { display:flex; align-items:center; gap:10px; min-height:44px; }
+.banking-check input { width:18px; margin:0; }
+.funding-method-editor,.funding-instructions,.banking-request { padding:18px; border:1px solid #dfd4ec; background:#ffffffb8; border-radius:14px; margin:16px 0; min-width:0; }
+.funding-instructions dl div { margin:12px 0; }
+.funding-instructions dt { font-size:12px; color:#6d607b; }
+.funding-instructions dd { margin:4px 0 0; font-size:14px; overflow-wrap:anywhere; }
+.banking-request { display:flex; flex-direction:column; gap:9px; overflow-wrap:anywhere; }
+.banking-request span { font-size:12px; color:#675871; }
+.banking-error { color:#a02637; background:#fff0f2; border-radius:8px; padding:12px; }
+.banking-panel .modal-actions { display:flex; flex-wrap:wrap; gap:10px; margin:18px 0; }
+.banking-panel .modal-actions button { flex:1 1 160px; }
+.crypto-request-history { margin-top:24px; padding:20px; border:1px solid #e1d7ec; border-radius:18px; }
+.crypto-request-history > p { color:#72677e; font-size:13px; line-height:1.7; }
+.holding-actions { flex-wrap:wrap; }
+@media(max-width:600px) { .banking-scrim { padding:12px; } .banking-panel { padding:18px; max-height:calc(100dvh - 24px); border-radius:16px; } .banking-panel :is(input,select,textarea) { font-size:16px; } .banking-panel h2 { font-size:20px; } .banking-panel button { min-height:44px; white-space:normal; } .funding-method-editor,.funding-instructions,.banking-request { padding:14px; } }

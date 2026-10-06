@@ -10,6 +10,7 @@ import "./styles/admin-casework.css";
 import "./styles/personal.css";
 import "./styles/business.css";
 import "./styles/statements.css";
+import "./styles/dashboard-advanced.css";
 // Phone-first corrections — must stay last so it can override the sheets above.
 import "./styles/mobile.css";
 import App from "./App";

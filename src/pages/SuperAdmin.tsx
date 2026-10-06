@@ -1,3 +1,4 @@
+import { AccountEditor, FundingManager } from "../components/BankingControls";
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import {
@@ -6,11 +7,11 @@ import {
   TrendingUp, UserCheck, UserPlus, UserRound, Users, Wallet,
 } from "lucide-react";
 import {
-  Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Cell, Pie, PieChart,
+  ResponsiveContainer, Tooltip,
 } from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
-import { apiGet, apiGetText, apiPatch, apiPost, apiPut } from "../lib/api";
+import { apiGet, apiGetText, apiPost, apiPut } from "../lib/api";
 import {
   money, longDate, downloadFile,
   type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
@@ -22,6 +23,7 @@ import {
 } from "../lib/permissions";
 import { useToast } from "../components/Toast";
 import { Logo } from "../components/common";
+import { CashFlowExplorer } from "../components/DashboardIntelligence";
 
 type AdminUser = User & { role?: UserRole };
 type TabId =
@@ -143,6 +145,7 @@ export function SuperAdminPage() {
 
   const [activeTab, setActiveTab] = useState<TabId>("dashboard");
   const [tick, setTick] = useState(0);
+  const [snapshotAt, setSnapshotAt] = useState<number | null>(null);
   const refresh = () => setTick(t => t + 1);
 
   /** Opens the restrict/restore modal with a clean reason picker. */
@@ -183,8 +186,7 @@ export function SuperAdminPage() {
   const [txnFilter, setTxnFilter] = useState<"all" | "in" | "out" | "pending">("all");
   // Account number correction
   const [acctModal, setAcctModal] = useState(false);
-  const [acctNumber, setAcctNumber] = useState("");
-  const [acctSaving, setAcctSaving] = useState(false);
+  const [fundingUser, setFundingUser] = useState<AdminUser | null>(null);
   // Balance adjustment
   const [adjustModal, setAdjustModal] = useState(false);
   const [targetUser, setTargetUser] = useState<AdminUser | null>(null);
@@ -271,6 +273,7 @@ export function SuperAdminPage() {
       .then(data => {
         if (cancelled) return;
         setAdminData(data);
+        setSnapshotAt(Date.now());
         setAdminLoadError(null);
         setServerRoleMatrix(data.roles as Partial<Record<StaffRole, Permission[]>>);
         setInterestRate(data.settings.core_apy ?? "4.25");
@@ -516,36 +519,7 @@ export function SuperAdminPage() {
     toast({ tone: "success", title: "Export ready", description: `${kind[0].toUpperCase() + kind.slice(1)} CSV downloaded.` });
   };
 
-  const openAccountNumber = (u: AdminUser) => {
-    setTargetUser(u);
-    setAcctNumber(accountBy(u.id)?.accountNumber ?? "");
-    setAcctModal(true);
-  };
-
-  const handleSaveAccountNumber = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!targetUser) return;
-    if (!guard("accounts.edit_number", "edit account numbers")) return;
-    const digits = acctNumber.replace(/[\s-]/g, "");
-    if (!/^\d{12}$/.test(digits)) {
-      toast({ tone: "error", title: "Account number not saved", description: "An account number is exactly 12 digits." });
-      return;
-    }
-    setAcctSaving(true);
-    apiPatch<{ accountNumber: string; changed: boolean }>(`/api/admin/members/${targetUser.id}/account-number`, { accountNumber: digits })
-      .then(r => {
-        toast({
-          tone: "success",
-          title: r.changed ? "Account number updated" : "Account number unchanged",
-          description: r.changed
-            ? `${targetUser.name} is now addressed as ${r.accountNumber}. The change is on the audit trail.`
-            : `${targetUser.name} already had ${r.accountNumber}.`,
-        });
-        setAcctModal(false); setAcctNumber(""); refresh();
-      })
-      .catch((err: Error) => toast({ tone: "error", title: "Account number not saved", description: err.message }))
-      .finally(() => setAcctSaving(false));
-  };
+  const openAccountNumber = (u: AdminUser) => { setTargetUser(u); setAcctModal(true); };
 
   const handleSaveSettings = () => {
     if (!guard("settings.manage", "change banking settings")) return;
@@ -742,7 +716,7 @@ export function SuperAdminPage() {
   const trackedSources = new Set(operationCases.filter(item => item.sourceType && item.sourceId).map(item => `${item.sourceType}:${item.sourceId}`));
 
   return (
-    <div className="app-page superadmin-page">
+    <div className="app-page superadmin-page dx-admin">
       {/* Console chrome.
           The hero below is the page's banner and scrolls away with it, which
           used to leave a long tab with no brand, no status and no way out. This
@@ -799,7 +773,7 @@ export function SuperAdminPage() {
             <AlertOctagon size={13} /> SUPER ADMIN CONTROL CENTER
           </span>
           <h1>Platform command</h1>
-          <p>Real-time authority over member safety, money movement and platform configuration.</p>
+          <p>A clear view of member safety, money movement, and the decisions that need you.</p>
           <div className="admin-command-meta">
             <span className="admin-role-chip">{ROLE_LABELS[role]}</span>
             <span className="admin-identity">{systemFrozen ? "Payment rails halted platform-wide" : "All payment rails available"}</span>
@@ -808,7 +782,19 @@ export function SuperAdminPage() {
             <span className="admin-identity admin-identity-phone">{user?.name ?? "Operator"} · {user?.email ?? ""}</span>
           </div>
         </div>
+        <div className="dx-control-state" role="region" aria-label="Platform control status">
+          <span><ShieldCheck size={19} /> CONTROL STATUS</span>
+          <div><span>Payment rails</span><strong>{adminLoadError ? "Unavailable" : !adminData ? "Loading…" : systemFrozen ? "Halted" : "Enabled"}</strong></div>
+          <div><span>API connection</span><strong>{apiHealth === "online" ? "Connected" : apiHealth === "offline" ? "Degraded" : "Checking…"}</strong></div>
+          <p>Actions are permission-gated and audited.</p>
+        </div>
       </header>
+
+      <div className="dx-module-toolbar">
+        <div><span className="dx-kicker">OPERATIONS WORKSPACE</span><strong>{visibleModules.find(module => module.id === activeTab)?.label ?? "Console"}</strong></div>
+        <span className="dx-snapshot" role="status">{adminLoadError ? "Snapshot unavailable · retry above" : snapshotAt ? `Snapshot updated ${new Date(snapshotAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Loading snapshot…"}</span>
+        <label className="dx-module-picker"><span>Open a module</span><select aria-label="Open admin module" value={activeTab} onChange={event => { setActiveTab(event.target.value as TabId); setMatrixDraft(null); }}>{visibleModules.map(module => <option value={module.id} key={module.id}>{module.label}{moduleCount(module.id) !== undefined ? ` (${moduleCount(module.id)})` : ""}</option>)}</select></label>
+      </div>
 
       {/* Module navigation */}
       <div className="admin-tabs-nav" role="tablist" aria-label="Admin modules">
@@ -882,35 +868,8 @@ export function SuperAdminPage() {
           </div>
 
           <div className="admin-chart-grid">
-            <div className="admin-chart-panel admin-chart-main">
-              <div className="chart-panel-head">
-                <div>
-                  <span className="chart-panel-kicker">Live member ledger · 6 months</span>
-                  <h3>Incoming and outgoing movement</h3>
-                </div>
-                <span className={`chart-panel-badge ${sixMonthInflow >= sixMonthOutflow ? "positive" : "neutral"}`}>{sixMonthInflow >= sixMonthOutflow ? "Inflow-led" : "Outflow-led"}</span>
-              </div>
-              <div className="chart-panel-body">
-                <ResponsiveContainer width="100%" height={250}>
-                  <AreaChart data={adminNetFlow} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="netflow-fill" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="#7558dc" stopOpacity={0.32} />
-                        <stop offset="100%" stopColor="#7558dc" stopOpacity={0.04} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="rgba(24, 23, 29, 0.08)" strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
-                    <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
-                    <Tooltip
-                      formatter={(value, name) => [money(Number(value ?? 0), false), name === "inflow" ? "Inflow" : "Outflow"]}
-                      contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)", boxShadow: "0 18px 38px rgba(24,23,29,.12)" }}
-                    />
-                    <Area type="monotone" dataKey="outflow" stackId="1" stroke="#c2b4ff" strokeWidth={2.2} fill="rgba(117,88,220,0.14)" />
-                    <Area type="monotone" dataKey="inflow" stackId="2" stroke="#7558dc" strokeWidth={2.5} fill="url(#netflow-fill)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+            <div className="admin-chart-panel admin-chart-main dx-admin-flow">
+              <CashFlowExplorer transactions={allTxns} title="Platform cash movement" />
             </div>
 
             <div className="admin-chart-panel">
@@ -1010,7 +969,8 @@ export function SuperAdminPage() {
                       <span className="admin-activity-cat">{l.category}</span>
                       <div>
                         <strong>{l.summary}</strong>
-                        <small>{l.adminName} · {ago(l.at)} {l.before || l.after ? `· ${l.before ?? "—"} → ${l.after ?? "—"}` : ""}</small>
+                        <small>{l.adminName} · {ago(l.at)}</small>
+                        {(l.before || l.after) && <details className="admin-change-details"><summary>View changes</summary><pre>Before: {l.before ?? "—"}{"\n"}After: {l.after ?? "—"}</pre></details>}
                       </div>
                     </div>
                   ))}
@@ -1174,9 +1134,10 @@ export function SuperAdminPage() {
                             {allow("customers.adjust_balance") && (
                               <button type="button" className="solid-btn sm" onClick={() => { setTargetUser(u); setAdjustType("credit"); setAdjustModal(true); }}>Deposit / Withdraw</button>
                             )}
-                            {allow("accounts.edit_number") && acct && (
-                              <button type="button" className="ghost-btn sm" onClick={() => openAccountNumber(u)}><KeyRound size={13} /> Account no.</button>
-                            )}
+                            {allow("accounts.edit_number") && acct && (<>
+                              <button type="button" className="ghost-btn sm" onClick={() => openAccountNumber(u)}><KeyRound size={13} /> Account details</button>
+                              <button type="button" className="ghost-btn sm" onClick={() => setFundingUser(u)}><Landmark size={13} /> Funding</button>
+                            </>)}
                             {allow("kyc.request") && (
                               <button type="button" className="ghost-btn sm" onClick={() => { setTargetUser(u); setKycReqs(["identity", "address"]); setKycModal(true); }}><UserCheck size={13} /> Request KYC</button>
                             )}
@@ -1791,31 +1752,8 @@ export function SuperAdminPage() {
         </div>
       )}
 
-      {/* Account number correction */}
-      {acctModal && targetUser && (
-        <div className="modal-scrim" onClick={() => setAcctModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h3>Account number: {targetUser.name}</h3></div>
-            <form onSubmit={handleSaveAccountNumber} className="dash-form">
-              <label htmlFor="adm-acct-number">12-digit account number</label>
-              <input
-                id="adm-acct-number"
-                inputMode="numeric"
-                value={acctNumber}
-                onChange={e => setAcctNumber(e.target.value)}
-                placeholder="000000000000"
-              />
-              <p className="admin-before-after">
-                Current: <strong>{accountBy(targetUser.id)?.accountNumber || "not set"}</strong>
-              </p>
-              <div className="modal-actions">
-                <button type="button" className="ghost-btn" onClick={() => setAcctModal(false)}>Cancel</button>
-                <button type="submit" className="solid-btn" disabled={acctSaving}>{acctSaving ? "Saving…" : "Save account number"}</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {acctModal && targetUser && <AccountEditor userId={targetUser.id} name={targetUser.name} close={() => setAcctModal(false)} saved={refresh} />}
+      {fundingUser && <FundingManager userId={fundingUser.id} name={fundingUser.name} canEdit={allow("accounts.edit_number")} canReview={allow("customers.adjust_balance")} close={() => { setFundingUser(null); refresh(); }} />}
 
       {/* KYC request */}
       {kycModal && targetUser && (

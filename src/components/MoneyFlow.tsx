@@ -1,3 +1,4 @@
+import { FundingDialog } from "./BankingControls";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -291,7 +292,7 @@ function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; 
       : [
           { label: "Method", value: flow.draft.method },
           { label: "Arrives", value: ETA[flow.draft.method] },
-          { label: "Category", value: flow.draft.category },
+          { label: "Category", value: flow.draft.category || "Not selected" },
           ...(flow.draft.note ? [{ label: "Memo", value: flow.draft.note }] : []),
           { label: "Fee", value: "$0.00 · Free", tone: "free" as const },
           { label: "Est. rewards", value: `+${money(amount * rewardRate(flow.draft.category))}`, tone: "reward" as const },
@@ -466,15 +467,12 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
   const { account, deposit, sendPayment } = useAcct();
   const toast = useToast();
   const [flow, setFlow] = useState<FlowState | null>(null);
+  const [fundingOpen, setFundingOpen] = useState(false);
   const [result, setResult] = useState<MoveResult | null>(null);
   const onComplete = useRef<((r: MoveResult) => void) | undefined>(undefined);
   const committed = useRef(false);
 
-  const openDeposit = useCallback((amount = 5000) => {
-    committed.current = false;
-    setResult(null);
-    setFlow({ kind: "deposit", stage: "form", sourceId: SOURCES[0].id, amount });
-  }, []);
+  const openDeposit = useCallback((_amount = 5000) => { setFundingOpen(true); }, []);
 
   const startSend = useCallback((draft: SendDraft, options?: { onComplete?: (r: MoveResult) => void }) => {
     committed.current = false;
@@ -486,20 +484,15 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
   const close = useCallback(() => setFlow(f => (f && f.stage === "processing" ? f : null)), []);
   const goTo = useCallback((stage: Stage) => setFlow(f => (f ? { ...f, stage } : f)), []);
 
-  const finish = useCallback(() => {
+  const finish = useCallback(async () => {
     if (!flow || committed.current) return;
     committed.current = true;
     let r: MoveResult;
     try {
       if (flow.kind === "deposit") {
-        r = deposit(flow.amount, sourceById(flow.sourceId).label);
+        r = await deposit(flow.amount, sourceById(flow.sourceId).label);
       } else {
-        r = sendPayment(
-          { counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note },
-          // Swap in the server's booked receipt (real reference, rewards and
-          // any Scout savings) as soon as it arrives.
-          booked => setResult(current => (current && current.date === booked.date ? booked : current)),
-        );
+        r = await sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
         onComplete.current?.(r);
       }
       setResult(r);
@@ -572,6 +565,7 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
   return (
     <FlowCtx.Provider value={api}>
       {children}
+      {fundingOpen && createPortal(<FundingDialog close={() => setFundingOpen(false)} />, document.body)}
       {createPortal(
         <AnimatePresence>
           {flow && (

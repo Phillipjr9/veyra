@@ -17,6 +17,10 @@ export type Holding = {
   decimals: number;
   /** Integer base units as a decimal string. Not safe as a number. */
   units: string;
+  reservedUnits?: string;
+  reservedQuantity?: string;
+  totalQuantity?: string;
+  withdrawalNetwork?: string | null;
   /** Human quantity, trailing zeros trimmed — "0.25", not "0.250000000000000000". */
   quantity: string;
   /** USD price of one whole unit, or null when no quote is available. */
@@ -28,6 +32,7 @@ export type Holding = {
 };
 
 export type HoldingsResponse = {
+  quoteStatus?: "current" | "stale" | "unavailable";
   holdings: Holding[];
   totalUsd: string;
   /** True when a held asset could not be priced, so totalUsd understates reality. */
@@ -51,8 +56,8 @@ export const fetchHoldings = () => apiGet<HoldingsResponse>("/api/me/holdings");
  * Buys are priced in dollars, sells in units of the asset — the same asymmetry
  * the server enforces, so a member can sell a position to exactly zero.
  */
-export const tradeHolding = (asset: string, side: "buy" | "sell", amount: string) =>
-  apiPost<TradeResult>("/api/me/holdings/trade", { asset, side, amount });
+export const tradeHolding = (asset: string, side: "buy" | "sell", amount: string, expectedPriceUsd?: string | null) =>
+  apiPost<TradeResult>("/api/me/holdings/trade", { asset, side, amount, ...(expectedPriceUsd ? { expectedPriceUsd } : {}) });
 
 /** Formats a quote timestamp as "as of 14:32", or null when there is nothing to date. */
 export function quoteAge(quotedAt: number | null): string | null {
@@ -181,6 +186,7 @@ export type MarketRow = {
 };
 
 export type MarketsResponse = {
+  quoteStatus?: "current" | "stale" | "unavailable";
   markets: MarketRow[];
   quotedAt: number | null;
   tradingEnabled: boolean;

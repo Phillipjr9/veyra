@@ -69,7 +69,14 @@ if (isProduction && !recaptchaConfig().enabled) {
   console.warn("  Set RECAPTCHA_SITE_KEY + RECAPTCHA_SECRET_KEY (classic v3), or + RECAPTCHA_PROJECT_ID/RECAPTCHA_API_KEY (Enterprise).");
 }
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", (error?: Error) => {
+  // Express 5 passes bind failures to this callback. Never announce readiness
+  // or seed against another process that already owns the requested port.
+  if (error) {
+    console.error(`Veyra API could not bind port ${PORT}: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(`Veyra API listening on http://0.0.0.0:${PORT}`);
   console.log(describeRecaptcha());
   console.log(describeFederated());

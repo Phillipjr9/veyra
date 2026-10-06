@@ -1,10 +1,10 @@
 /**
  * Public auth configuration, read once per page load from `GET /api/auth/config`.
  *
- * Both anonymous-surface features — reCAPTCHA and federated (Google) sign-in —
- * are switched on server-side, so the browser asks rather than guesses. That
+ * Anonymous-surface features — reCAPTCHA, federated sign-in and address
+ * suggestions — are switched on server-side, so the browser asks rather than guesses. That
  * keeps a cached bundle from ever disagreeing with the API about what is
- * required, and means enabling either one needs no frontend rebuild.
+ * required, and means enabling them needs no frontend rebuild.
  *
  * One shared fetch, so adding a feature here does not add a round-trip.
  * Everything degrades to "off" if the call fails: the sign-in attempt itself is
@@ -14,6 +14,7 @@
 export type RecaptchaActionKey = "login" | "register" | "forgotPassword";
 
 export type AuthConfig = {
+  addresses: { enabled: boolean; countries: string[] };
   recaptcha: {
     enabled: boolean;
     provider: "v3" | "enterprise" | "off";
@@ -29,6 +30,7 @@ export type AuthConfig = {
 };
 
 export const AUTH_CONFIG_OFF: AuthConfig = {
+  addresses: { enabled: false, countries: ["us"] },
   recaptcha: {
     enabled: false,
     provider: "off",
@@ -56,6 +58,7 @@ export function authConfig(): Promise<AuthConfig> {
       const recaptcha = body?.recaptcha;
       const federated = body?.federated;
       return {
+        addresses: body?.addresses?.enabled === true ? { enabled: true, countries: ["us"] } : AUTH_CONFIG_OFF.addresses,
         recaptcha: recaptcha?.enabled && recaptcha.siteKey
           ? {
             enabled: true,

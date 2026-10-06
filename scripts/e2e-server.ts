@@ -26,6 +26,7 @@ process.env.WEBAUTHN_ORIGINS = `http://localhost:${port}`;
 process.env.CRYPTO_TRADING_ENABLED = "1";
 process.env.RECAPTCHA_SITE_KEY = "";
 process.env.FIREBASE_PROJECT_ID = "";
+process.env.GOOGLE_MAPS_API_KEY = "";
 
 const prices = createPriceFixture();
 await new Promise<void>(resolve => prices.listen(0, "0.0.0.0", resolve));

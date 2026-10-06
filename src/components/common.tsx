@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type CSSProperties } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { motion, useReducedMotion } from "motion/react";
 import { ArrowRight, Snowflake, Wifi } from "lucide-react";
 import { VeyraMark } from "./VeyraMark";
@@ -82,7 +82,11 @@ export function AnimatedMoney({ value, className = "animated-money", cents = fal
   value: number; className?: string; cents?: boolean; fromZero?: boolean; duration?: number;
 }) {
   const shown = useCountUp(value, { duration, from: fromZero ? 0 : undefined });
-  return <strong className={className}>{usd(shown, cents)}</strong>;
+  // Size prominent amounts against their container and longest animated value.
+  // Keep every digit; never abbreviate, ellipsize or split a currency amount.
+  const text = usd(shown, cents);
+  const style = { "--money-characters": Math.max(text.length, usd(value, cents).length) } as CSSProperties;
+  return <strong className={className} style={style}>{text}</strong>;
 }
 
 export function AnimatedNumber({ value, className, decimals = 0, suffix = "" }: { value: number; className?: string; decimals?: number; suffix?: string }) {
@@ -189,12 +193,14 @@ export function VirtualCard({ small = false, label = "Business", holder = "Rae K
 
 /** Scrolls to top on route change, or to the hash target when one is present. */
 export function ScrollManager({ pathname, hash }: { pathname: string; hash: string }) {
+  const { key: navigationKey } = useLocation();
+  const anchorNavigationKey = hash ? navigationKey : undefined;
   useEffect(() => {
     if (hash) {
       const el = document.querySelector(hash);
-      if (el) { el.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+      if (el) { el.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" }); return; }
     }
     window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
-  }, [pathname, hash]);
+  }, [pathname, hash, anchorNavigationKey]);
   return null;
 }

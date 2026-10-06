@@ -100,7 +100,7 @@ for (const actor of ["personal", "business"] as const) {
           await page.goto(`/#/app/${path}`);
           await expect(page).toHaveURL(new RegExp(`#/app/${path}$`));
           await expect(page.locator("h1").first()).toHaveText(heading);
-          if (path === "accounts") await expect(page.getByRole("heading", { name: "Digital assets", exact: true })).toBeVisible();
+          if (path === "accounts") await expect(page.getByRole("heading", { name: "Your digital assets", exact: true })).toBeVisible();
           if (path === "security") await expect(page.getByRole("heading", { name: "Passkeys", exact: true })).toBeVisible();
           await noOverflow(page);
         });
@@ -114,12 +114,12 @@ for (const actor of ["personal", "business"] as const) {
     await expect(page.locator("h1")).toHaveText("Markets");
     await expect(page.locator(".market-table tbody > tr")).toHaveCount(5);
     await page.getByRole("button", { name: "Tradeable on Veyra", exact: true }).click();
-    await expect(page.locator(".market-table tbody > tr")).toHaveCount(4);
+    await expect(page.locator(".market-table tbody > tr")).toHaveCount(5);
     await page.getByRole("button", { name: "Tradeable on Veyra", exact: true }).click();
     await page.getByRole("textbox", { name: "Search markets" }).fill("USDT");
     await expect(page.locator(".market-table tbody > tr")).toHaveCount(1);
     await page.getByRole("button", { name: "Chart", exact: true }).click();
-    await expect(page.getByText("USDT is quoted for reference only.", { exact: false })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Buy USDT", exact: true })).toBeVisible();
     await page.getByRole("textbox", { name: "Search markets" }).fill("");
     await page.goto("/#/app/markets?asset=BTC");
     await expect(page.getByRole("img", { name: /Bitcoin price history/ })).toBeVisible();
@@ -186,15 +186,17 @@ for (const actor of ["personal", "business"] as const) {
     const { token } = await login(page, actor);
     await page.goto("/#/app/accounts");
     const usdc = page.locator(".holding-card").filter({ has: page.locator(".holding-code", { hasText: /^USDC$/ }) });
+    await expect(usdc).toHaveCount(0);
+    await page.getByRole("link", { name: "Browse assets" }).click();
     await expect(usdc).toBeVisible();
     const before = await account(request, token);
-    await expect(page.locator(".checking-account-card .account-big-money")).toHaveText(cash(before.balance));
     await usdc.getByRole("button", { name: "Buy", exact: true }).click();
     const buy = page.getByRole("dialog", { name: "Buy USDC", exact: true });
     await buy.getByLabel("Amount to spend", { exact: true }).fill("25.50");
     await buy.getByRole("button", { name: "Buy", exact: true }).click();
     await expect(buy).toBeHidden();
-    // This assertion failed on the merged branches before the integration fix.
+    await page.goto("/#/app/accounts");
+    // Confirm the persisted checking balance after the catalog trade.
     await expect(page.locator(".checking-account-card .account-big-money")).toHaveText(cash(before.balance - 25.50));
     await expect.poll(async () => (await account(request, token)).balance).toBeCloseTo(before.balance - 25.50, 2);
     await page.reload();
@@ -206,7 +208,7 @@ for (const actor of ["personal", "business"] as const) {
     await expect(sell).toBeHidden();
     await expect(page.locator(".checking-account-card .account-big-money")).toHaveText(cash(before.balance));
     await expect.poll(async () => (await account(request, token)).balance).toBeCloseTo(before.balance, 2);
-    await expect(usdc.getByRole("button", { name: "Sell", exact: true })).toBeDisabled();
+    await expect(usdc).toHaveCount(0);
     await page.goto("/#/app/transactions");
     await expect(page.getByText(/USDC/).first()).toBeVisible();
   });
@@ -220,7 +222,7 @@ for (const actor of ["personal", "business"] as const) {
     await expect(panel.getByRole("button", { name: "Remove", exact: true })).toBeVisible();
     await page.reload();
     await expect(panel.getByRole("button", { name: "Remove", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.locator(".app-nav").getByRole("button", { name: "Sign out", exact: true }).click();
     await page.goto("/#/login");
     await page.getByRole("button", { name: /passkey/i }).click();
     await expect(page).toHaveURL(/#\/app$/);

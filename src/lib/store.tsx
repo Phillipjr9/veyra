@@ -78,7 +78,9 @@ export type Invoice = {
 export type BankAccountDetails = { accountNumber: string; routingNumber: string; bankName: string; accountType: string; holder: string };
 export type TeamMember = { id: string; name: string; email: string; role: "Owner" | "Admin" | "Member" | "Bookkeeper"; cardCount: number; monthlyLimit: number; status: "active" | "invited";
   /** Dev only: shareable accept link when no mail provider is configured. */
-  inviteUrl?: string };
+  inviteUrl?: string;
+  monthlySpent?: number; monthlyRemaining?: number | null;
+  spendResetsAt?: number; spendTrackingSince?: number };
 export type Perk = { id: string; partner: string; category: string; value: string; description: string; code: string; status: "available" | "redeemed" };
 export type NotificationItem = { id: string; title: string; detail: string; time: number; read: boolean; type: "scout" | "card" | "transfer" | "security" | "invoice" | "info" };
 export type Preferences = { twoFactor: boolean; loginAlerts: boolean; scoutAuto: boolean; weeklyDigest: boolean };
@@ -247,7 +249,7 @@ export type Account = {
 };
 
 export type Profile = { name: string; business: string; email: string; accountType: "personal" | "business" };
-export type MoveResult = { reference: string; date: number; amount: number; balanceBefore: number; balanceAfter: number; reward: number; scout: number };
+export type MoveResult = { status?: "pending" | "cleared"; reference: string; date: number; amount: number; balanceBefore: number; balanceAfter: number; reward: number; scout: number };
 
 /* ============================================================
    Formatting & utilities
@@ -491,7 +493,7 @@ function normalize(raw: unknown, p: Profile): Account {
     bankName: typeof rawBank.bankName === "string" && rawBank.bankName
       ? rawBank.bankName
       : base.bankDetails.bankName,
-    accountType: p.accountType === "personal" ? "Personal checking" : "Business checking",
+    accountType: rawBank.accountType || (p.accountType === "personal" ? "Personal checking" : "Business checking"),
     holder: typeof rawBank.holder === "string" && rawBank.holder ? rawBank.holder : base.bankDetails.holder,
   };
 
@@ -623,8 +625,6 @@ export type PlatformAccount = {
 };
 
 type SendInput = { counterparty: string; amount: number; category: string; method: string; cardId?: string; note?: string };
-/** Called once the server has booked a payment, with its authoritative receipt. */
-type SendConfirmed = (result: MoveResult) => void;
 type CardInput = { label: string; limit: number; type: Card["type"]; merchantLock?: string; cardholder: string; shippingAddress?: string };
 type InvoiceInput = { client: string; clientEmail: string; amount: number; dueDays: number; description?: string };
 type InviteInput = { name: string; email: string; role: TeamMember["role"]; monthlyLimit: number };
@@ -720,6 +720,30 @@ function useAccountState() {
     });
   }, [toast, refreshFromServer]);
 
+  /** Monetary debits never show success before the API confirms them. Queue
+   * with existing mutations, but keep a failed read-refresh distinct from a
+   * rejected debit so an already-booked payment is not accidentally retried. */
+  const confirmedMutation = useCallback(<T,>(run: () => Promise<T>): Promise<T> => {
+    const submittingToken = getToken();
+    const task = syncQueue.current.then(async () => {
+      if (!submittingToken || getToken() !== submittingToken) throw new Error("Your session changed. Sign in and review this payment again.");
+      let result: T;
+      try { result = await run(); }
+      catch (error) {
+        if (getToken() === submittingToken) {
+          try { await refreshFromServer(); } catch { /* no optimistic debit to roll back */ }
+        }
+        throw error;
+      }
+      if (getToken() !== submittingToken) return result;
+      try { await refreshFromServer(); }
+      catch { toast({ tone: "info", title: "Payment confirmed; balance refresh pending", description: "Do not send it again. Refresh your account to see the updated balance." }); }
+      return result;
+    });
+    syncQueue.current = task.then(() => undefined, () => undefined);
+    return task;
+  }, [refreshFromServer, toast]);
+
   /**
    * Records created optimistically get a client-side id; the server assigns its
    * own. `adoptId` remembers the mapping (from the create response) and
@@ -794,124 +818,31 @@ function useAccountState() {
       if (synced) return a;
       return {
         ...a,
-        bankDetails: { ...a.bankDetails, holder, accountType: accountType === "personal" ? "Personal checking" : "Business checking" },
+        bankDetails: { ...a.bankDetails, holder },
         team: a.team.map(m => (m.role === "Owner" ? { ...m, name, email } : m)),
       };
     });
   }, [userId, name, business, email, accountType, commit]);
 
-  const deposit = useCallback(
-    (amount: number, source: string): MoveResult => {
-      // Hard stop, same ceiling as the API. The form blocks this first; this is
-      // the backstop for any other caller.
-      if (!(amount > 0)) throw new Error("Enter an amount to deposit.");
-      if (amount > MAX_DEPOSIT) throw new Error(`Deposits are limited to ${money(MAX_DEPOSIT, false)} per transaction.`);
-      const before = ref.current?.balance ?? 0;
-      const value = r2(amount);
-      const result: MoveResult = { reference: makeReference(), date: Date.now(), amount: value, balanceBefore: before, balanceAfter: r2(before + value), reward: 0, scout: 0 };
-      commit(a => ({
-        ...a,
-        balance: r2(a.balance + value),
-        transactions: [
-          { id: rid("txn"), merchant: source, category: "Operations", amount: value, reward: 0, scout: 0, date: result.date, note: "Incoming ACH deposit", method: "ACH", reference: result.reference, status: "cleared" },
-          ...a.transactions,
-        ],
-        notifications: pushNote(a, { title: "Deposit received", detail: `+${money(value)} from ${source} is available now.`, type: "transfer" }),
-      }));
-      syncPost("/api/me/deposits", { amount: value, source });
-      return result;
-    },
-    [commit, syncPost],
-  );
+  const deposit = useCallback(async (amount: number, source: string): Promise<MoveResult> => {
+    if (!(amount >= 10) || amount > MAX_DEPOSIT) throw new Error("Use an amount between $10 and $100,000.");
+    const methods = await apiGet<{ methods: { id: string; label: string; kind: string }[] }>("/api/me/funding");
+    const method = methods.methods.find(m => m.id === source || m.label === source || (source === "check" && m.kind === "check"));
+    if (!method) throw new Error("This funding source is not enabled. Open Add funds for your account's instructions.");
+    const reply = await apiPost<{ request: { reference: string; created_at: number } }>("/api/me/deposits", { amount, methodId: method.id, requestKey: crypto.randomUUID() });
+    const balance = ref.current?.balance ?? 0;
+    return { reference: reply.request.reference, date: reply.request.created_at, amount, balanceBefore: balance, balanceAfter: balance, reward: 0, scout: 0, status: "pending" };
+  }, []);
 
-  const depositCheck = useCallback(
-    (checkNumber: string, issuer: string, amount: number, memo?: string): MoveResult => {
-      const before = ref.current?.balance ?? 0;
-      const value = r2(amount);
-      const result: MoveResult = { reference: makeReference(), date: Date.now(), amount: value, balanceBefore: before, balanceAfter: r2(before + value), reward: 0, scout: 0 };
-      commit(a => ({
-        ...a,
-        balance: r2(a.balance + value),
-        transactions: [
-          {
-            id: rid("txn"),
-            merchant: `Check #${checkNumber} · ${issuer}`,
-            category: "Operations",
-            amount: value,
-            reward: 0,
-            scout: 0,
-            date: result.date,
-            note: memo || `Mobile check deposit from ${issuer}`,
-            method: "Mobile Check",
-            reference: result.reference,
-            status: "cleared",
-          },
-          ...a.transactions,
-        ],
-        notifications: pushNote(a, {
-          title: `Check #${checkNumber} Cleared`,
-          detail: `+${money(value)} from ${issuer} deposited and available.`,
-          type: "transfer",
-        }),
-      }));
-      syncPost("/api/me/deposits", { amount: value, checkNumber, issuer, memo });
-      return result;
-    },
-    [commit, syncPost],
-  );
+  const depositCheck = useCallback(async (_checkNumber: string, _issuer: string, amount: number, _memo?: string): Promise<MoveResult> => deposit(amount, "check"), [deposit]);
 
-  const sendPayment = useCallback(
-    (input: SendInput, onConfirmed?: SendConfirmed): MoveResult => {
-      const current = ref.current;
-      if (current?.accountStatus === "restricted") {
-        throw new Error("Your account is restricted. Outgoing transfers are paused — contact support.");
-      }
-      const before = current?.balance ?? 0;
-      const value = r2(input.amount);
-      const reward = r2(value * rewardRate(input.category));
-      const scoutOn = current?.preferences.scoutAuto ?? true;
-      // Scout savings are decided by the server. Showing a locally guessed
-      // figure here made the receipt disagree with what was actually booked,
-      // so the optimistic view assumes none; the confirmed receipt (below) and
-      // the refreshed snapshot carry the real amount.
-      void scoutOn;
-      const scout = 0;
-      const result: MoveResult = { reference: makeReference(), date: Date.now(), amount: value, balanceBefore: before, balanceAfter: r2(before - value + scout), reward, scout };
-      // The ledger row's id is the server's; remember it so an immediate
-      // follow-up (dispute this payment) targets the stored row either way.
-      const txnId = rid("txn");
-      commit(a => ({
-        ...a,
-        balance: r2(a.balance - value + scout),
-        rewards: r2(a.rewards + reward),
-        lifetimeRewards: r2(a.lifetimeRewards + reward),
-        scoutSaved: r2(a.scoutSaved + scout),
-        cards: input.cardId ? a.cards.map(c => (c.id === input.cardId ? { ...c, spent: r2(c.spent + value) } : c)) : a.cards,
-        transactions: [
-          { id: txnId, merchant: input.counterparty, category: input.category, amount: -value, reward, scout, date: result.date, cardId: input.cardId, note: input.note || `${input.method} payment`, method: input.method, reference: result.reference, status: "cleared" },
-          ...a.transactions,
-        ],
-        notifications: [
-          ...(scout > 0
-            ? [{ id: rid("n"), title: `Scout saved ${money(scout)}`, detail: `Found a better rate on your ${input.counterparty} payment.`, time: Date.now(), read: false, type: "scout" as const }]
-            : []),
-          { id: rid("n"), title: `Sent ${money(value)} to ${input.counterparty}`, detail: `${input.method} · +${money(reward)} rewards earned.`, time: Date.now(), read: false, type: "transfer" as const },
-          ...a.notifications,
-        ].slice(0, 40),
-      }));
-      syncPost(
-        "/api/me/transfers",
-        { counterparty: input.counterparty, amount: value, category: input.category, method: input.method, cardId: input.cardId, note: input.note },
-        (response) => {
-          const booked = response as { transaction?: { id?: string }; result?: Partial<MoveResult> } | null;
-          adoptId(txnId, booked?.transaction?.id);
-          if (onConfirmed && booked?.result) onConfirmed({ ...result, ...booked.result, date: result.date });
-        },
-      );
-      return result;
-    },
-    [adoptId, commit, syncPost],
-  );
+  const sendPayment = useCallback(async (input: SendInput): Promise<MoveResult> => {
+    const booked = await confirmedMutation(() => apiPost<{ result: MoveResult }>("/api/me/transfers", {
+      counterparty: input.counterparty, amount: input.amount, category: input.category,
+      method: input.method, cardId: input.cardId ? resolveId(input.cardId) : undefined, note: input.note,
+    }));
+    return booked.result;
+  }, [confirmedMutation, resolveId]);
 
   const redeemRewards = useCallback(() => {
     const amount = r2(ref.current?.rewards ?? 0);
@@ -930,41 +861,6 @@ function useAccountState() {
     return amount;
   }, [commit, syncPost]);
 
-  /** Records a Scout rebate as a credited adjustment and prevents applying it twice. */
-  const applyScoutSavings = useCallback(
-    (opportunityId: string, merchant: string, amount: number, note: string): boolean => {
-      const current = ref.current;
-      const value = r2(amount);
-      if (!current || !opportunityId || value <= 0 || current.scoutApplied.includes(opportunityId)) return false;
-      commit(a => ({
-        ...a,
-        balance: r2(a.balance + value),
-        scoutSaved: r2(a.scoutSaved + value),
-        scoutApplied: [...a.scoutApplied, opportunityId],
-        transactions: [{
-          id: rid("txn"),
-          merchant: `Scout savings · ${merchant}`,
-          category: "Operations",
-          amount: value,
-          reward: 0,
-          scout: value,
-          date: Date.now(),
-          note,
-          method: "Scout credit",
-          reference: makeReference(),
-          status: "cleared",
-        }, ...a.transactions],
-        notifications: pushNote(a, {
-          title: `Scout credited ${money(value)}`,
-          detail: `Savings from ${merchant} were credited to checking.`,
-          type: "scout",
-        }),
-      }));
-      syncPost("/api/me/scout/apply", { opportunityId, merchant, amount: value, note });
-      return true;
-    },
-    [commit, syncPost],
-  );
 
   const createCard = useCallback(
     (input: CardInput): Card => {
@@ -1212,7 +1108,7 @@ function useAccountState() {
       commit(a => ({
         ...a,
         team: [...a.team, member],
-        notifications: pushNote(a, { title: `Invite sent to ${input.name}`, detail: `${input.role} · ${input.monthlyLimit ? `${money(input.monthlyLimit, false)} monthly limit` : "view-only access"}.`, type: "security" }),
+        notifications: pushNote(a, { title: `Invite sent to ${input.name}`, detail: `${input.role} · ${input.monthlyLimit ? `${money(input.monthlyLimit, false)} monthly limit (UTC)` : input.role === "Bookkeeper" ? "view-only access" : "no outgoing spending allowance"}.`, type: "security" }),
       }));
       syncPost(
         "/api/me/team",
@@ -1340,30 +1236,10 @@ function useAccountState() {
     syncDelete(() => `/api/me/scheduled/${resolveId(id)}`);
   }, [commit, resolveId, syncDelete]);
 
-  const payScheduledNow = useCallback(
-    (id: string) => {
-      const payment = ref.current?.scheduledPayments.find(p => p.id === id);
-      const current = ref.current;
-      if (!payment || !current || payment.amount > current.balance || payment.status === "completed") return false;
-      const nextDate = payment.frequency === "weekly" ? payment.nextDate + 7 * DAY : payment.frequency === "monthly" ? new Date(payment.nextDate).setMonth(new Date(payment.nextDate).getMonth() + 1) : payment.nextDate;
-      const txnId = rid("txn");
-      commit(a => ({
-        ...a,
-        balance: r2(a.balance - payment.amount),
-        scheduledPayments: a.scheduledPayments.map(p => p.id === id ? { ...p, nextDate, status: p.frequency === "once" ? "completed" : p.status } : p),
-        transactions: [{ id: txnId, merchant: payment.payeeName, category: payment.category, amount: -payment.amount, reward: 0, scout: 0, date: Date.now(), note: payment.memo || "Scheduled payment", method: "ACH", reference: makeReference(), status: "cleared" }, ...a.transactions],
-        notifications: pushNote(a, { title: `${money(payment.amount)} paid to ${payment.payeeName}`, detail: payment.frequency === "once" ? "One-time payment completed." : `Next payment ${shortDate(nextDate)}.`, type: "transfer" }),
-      }));
-      // The server debits the account, advances next_date and writes the ledger row.
-      syncPost(
-        () => `/api/me/scheduled/${resolveId(id)}/pay`,
-        undefined,
-        (result) => adoptId(txnId, (result as { transaction?: { id?: string } } | null)?.transaction?.id),
-      );
-      return true;
-    },
-    [adoptId, commit, resolveId, syncPost],
-  );
+  const payScheduledNow = useCallback(async (id: string): Promise<boolean> => {
+    await confirmedMutation(() => apiPost(`/api/me/scheduled/${resolveId(id)}/pay`));
+    return true;
+  }, [confirmedMutation, resolveId]);
 
   const createBudget = useCallback(
     (input: BudgetInput): Budget | null => {
@@ -1483,7 +1359,6 @@ function useAccountState() {
       depositCheck,
       sendPayment,
       redeemRewards,
-      applyScoutSavings,
       createCard,
       toggleFreeze,
       removeCard,
@@ -1524,7 +1399,7 @@ function useAccountState() {
       setPreference,
       exportCSV,
     }),
-    [account, accountError, user, refreshFromServer, deposit, depositCheck, sendPayment, redeemRewards, applyScoutSavings, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createBudget, removeBudget, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
+    [account, accountError, user, refreshFromServer, deposit, depositCheck, sendPayment, redeemRewards, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createBudget, removeBudget, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
   );
 }
 

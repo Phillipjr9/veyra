@@ -232,7 +232,7 @@ export function describeAuthError(err: unknown, action = "sign in"): { message: 
  * for the one call that *checks* a leftover session on load, where a rejection
  * is the normal start of a visit rather than a session dying under the member.
  */
-type ApiOptions = { handleUnauthorized?: boolean };
+type ApiOptions = { handleUnauthorized?: boolean; signal?: AbortSignal };
 
 /**
  * Auth headers for a request carrying `token`.
@@ -253,7 +253,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   const token = getToken();
   const send = (only?: "custom") => {
     const headers: Record<string, string> = { "Content-Type": "application/json", "X-Veyra-Device": getDeviceId(), ...(token ? authHeaders(token, only) : {}) };
-    return fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    return fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: opts.signal });
   };
   let res = await send();
   let text = await res.text();
@@ -304,7 +304,7 @@ export async function apiGetText(path: string): Promise<string> {
 
 /** Convenience wrappers */
 export const apiGet = <T = unknown,>(path: string, opts?: ApiOptions) => api<T>("GET", path, undefined, opts);
-export const apiPost = <T = unknown,>(path: string, body?: unknown) => api<T>("POST", path, body);
+export const apiPost = <T = unknown,>(path: string, body?: unknown, opts?: ApiOptions) => api<T>("POST", path, body, opts);
 export const apiPatch = <T = unknown,>(path: string, body?: unknown) => api<T>("PATCH", path, body);
 export const apiPut = <T = unknown,>(path: string, body?: unknown) => api<T>("PUT", path, body);
 export const apiDelete = <T = unknown,>(path: string) => api<T>("DELETE", path);

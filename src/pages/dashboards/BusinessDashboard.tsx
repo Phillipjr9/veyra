@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { AnimatedMoney, Logo, ease } from "../../components/common";
 import { money } from "../../lib/store";
+import { lockScroll } from "../../lib/scrollLock";
 import type { NavGroup } from "./parts";
 
 type BusinessUser = {
@@ -84,11 +85,21 @@ export function BusinessChrome({
   onOpenPalette, onOpenScout, onOpenDeposit, onOpenCheckDeposit, onSignOut, children,
 }: ChromeProps) {
   const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    if (!navOpen) return;
+    const unlock = lockScroll();
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setNavOpen(false); document.querySelector<HTMLButtonElement>(".app-burger")?.focus(); } };
+    const desktop = window.matchMedia("(min-width: 1101px)");
+    const resized = () => { if (desktop.matches) setNavOpen(false); };
+    desktop.addEventListener("change", resized);
+    window.addEventListener("keydown", escape);
+    return () => { unlock(); desktop.removeEventListener("change", resized); window.removeEventListener("keydown", escape); };
+  }, [navOpen]);
   const isAdmin = Boolean(user.role && user.role !== "user");
 
   return (
-    <div className="app-shell business-shell">
-      <aside className={`app-nav ${navOpen ? "open" : ""}`} aria-label="Business navigation">
+    <div className="app-shell business-shell dx-member-shell dx-business-shell">
+      <aside className={`app-nav ${navOpen ? "open" : ""}`} aria-label="Business navigation" id="dx-business-navigation">
         <div className="app-nav-top">
           <Logo to="/app" />
           <button type="button" className="app-nav-close" onClick={() => setNavOpen(false)} aria-label="Close menu"><X size={18} /></button>
@@ -156,7 +167,7 @@ export function BusinessChrome({
       <div className="app-main">
         <header className="app-topbar">
           <div className="topbar-left">
-            <button type="button" className="app-burger icon-btn" onClick={() => setNavOpen(true)} aria-label="Open menu"><Menu size={18} /></button>
+            <button type="button" className="app-burger icon-btn" onClick={() => setNavOpen(true)} aria-expanded={navOpen} aria-controls="dx-business-navigation" aria-label="Open menu"><Menu size={18} /></button>
             <div className="topbar-balance">
               <span>Available business cash</span>
               <div className="topbar-balance-value">
