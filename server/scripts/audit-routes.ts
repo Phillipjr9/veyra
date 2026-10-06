@@ -52,12 +52,13 @@ const rawRoutes = [...source.matchAll(ROUTE_RE)];
  */
 type Policy = { method: string; path: string; auth: boolean; /** One permission, or any of several. */ perm: string | string[] | null };
 const BASELINE: Policy[] = [
+  { method: "GET", path: "/api/me/demo-payments", auth: true, perm: null },
+  { method: "POST", path: "/api/me/demo-payments/action", auth: true, perm: null },
   // Public surface: reachable without a session.
   { method: "GET", path: "/api/health", auth: false, perm: null },
   // Advertises the demo credentials the login page offers with one click. Public
   // by design (a signed-out visitor is who it's for) and empty in production —
   // see demoLoginsEnabled() in server/src/demo.ts.
-  { method: "GET", path: "/api/demo/accounts", auth: false, perm: null },
   // Tells a signed-out browser whether reCAPTCHA is enforced and which public
   // site key to mint tokens with. Public by necessity — it is read before
   // anyone can sign in — and carries no secret: the site key is designed to
@@ -96,6 +97,8 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/auth/change-password", auth: true, perm: null },
   { method: "GET", path: "/api/me/account", auth: true, perm: null },
   { method: "GET", path: "/api/me/transactions", auth: true, perm: null },
+  { method: "POST", path: "/api/admin/accounts/bulk-preview", auth: true, perm: "accounts.edit_number" },
+  { method: "POST", path: "/api/admin/accounts/bulk-apply", auth: true, perm: "accounts.edit_number" },
   { method: "GET", path: "/api/admin/members/:id/account-details", auth: true, perm: "accounts.view" },
   { method: "PATCH", path: "/api/admin/members/:id/account-details", auth: true, perm: "accounts.edit_number" },
   { method: "GET", path: "/api/admin/members/:id/funding", auth: true, perm: "accounts.view" },

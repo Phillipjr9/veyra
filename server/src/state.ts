@@ -1,3 +1,4 @@
+import { readLedgerAnalytics } from "./ledgerAnalytics.js";
 import { teamSpendByActor, teamSpendWindow } from "./teamSpending.js";
 /**
  * Member state engine — server-side source of truth for the Account model
@@ -250,6 +251,7 @@ export function buildMemberState(db: DatabaseSync, userId: string, currentTokenI
     scoutSaved: dollars((account?.scout_saved_cents as number) ?? 0),
     cards,
     transactions,
+    analytics: readLedgerAnalytics(db, userId),
     invoices,
     bankDetails: {
       accountNumber: String(account?.account_number ?? ""),

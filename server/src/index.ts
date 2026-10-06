@@ -41,11 +41,14 @@ const isProduction = process.env.NODE_ENV === "production";
  * Development defaults, applied only when nothing else is set (a real .env
  * always wins, and production never takes these paths):
  *
- *   - ADMIN_EMAIL/PASSWORD: the pair the login page's one-click Super Admin
- *     button uses, so a fresh dev database still has a console to sign into.
- *   - Demo members are seeded after listen (see below).
+ *   - ADMIN_EMAIL/PASSWORD: a local administrator account for development.
+ *   - Account-ledger operations work before external provider integration.
+ *   - Development members are seeded after listen (see below).
  */
 if (!isProduction) {
+  // Honor explicit configuration, including the older switch. Tests that call
+  // createApp directly opt in separately; this is only the normal dev entrypoint.
+  if (!process.env.ACCOUNT_LEDGER_ENABLED && !process.env.DEMO_PAYMENTS_ENABLED) process.env.ACCOUNT_LEDGER_ENABLED = "1";
   process.env.ADMIN_EMAIL ??= DEMO_ADMIN_EMAIL;
   process.env.ADMIN_PASSWORD ??= DEMO_ADMIN_PASSWORD;
   process.env.ADMIN_NAME ??= "System Admin";

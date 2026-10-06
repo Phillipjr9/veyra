@@ -1,3 +1,6 @@
+import { buildCashFlow } from "../lib/dashboardAnalytics";
+import { useDemoPayments } from "../lib/demoPayments";
+import { DemoModeNotice } from "../components/DemoPayments";
 import { downloadTransactionReceipt } from "../lib/receipts";
 import { PLANS, PLAN_NOTICE } from "../../shared/catalog";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
@@ -60,7 +63,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   const { user, ready } = useAuth();
   const location = useLocation();
   if (!ready) return <div className="route-loading"><span className="spinner" /></div>;
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   if (user.role && user.role !== "user" && !location.pathname.startsWith("/app/superadmin")) {
     return <Navigate to="/app/superadmin" replace />;
   }
@@ -354,7 +357,7 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
             </motion.div>
             <strong className={`drawer-amount ${incoming ? "in" : ""}`}>{incoming ? "+" : "−"}{money(Math.abs(txn.amount))}</strong>
             <span className="drawer-merchant">{txn.merchant}</span>
-            <span className="status-pill cleared"><Check size={11} /> {txn.status === "pending" ? "Pending" : "Cleared"}</span>
+            <span className={`status-pill ${txn.status === "cleared" ? "cleared" : txn.status === "failed" ? "overdue" : "open"}`}>{txn.status === "cleared" && <Check size={11} />} {txn.status === "cleared" ? "Cleared" : txn.status === "failed" ? "Failed" : "Pending"}</span>
           </div>
           <div className="timeline">
             {steps.map((s, i) => (
@@ -691,9 +694,9 @@ function BusinessOverview() {
   const scheduledBills = account.scheduledPayments
     .filter(payment => payment.status === "active")
     .sort((a, b) => a.nextDate - b.nextDate);
-  const recentActivity = account.transactions.filter(transaction => transaction.date >= Date.now() - 30 * DAY && transaction.date <= Date.now() && transaction.status !== "pending");
-  const monthlyIn = recentActivity.filter(transaction => transaction.amount > 0).reduce((sum, transaction) => sum + transaction.amount, 0);
-  const monthlyOut = recentActivity.filter(transaction => transaction.amount < 0).reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
+  const monthFlow = account.analytics?.ranges[30] ?? buildCashFlow(account.transactions, 30);
+  const monthlyIn = monthFlow.inflow;
+  const monthlyOut = monthFlow.outflow;
   const expectedReceivables = openInvoices.reduce((sum, invoice) => sum + invoice.amount, 0);
   const plannedPayables = scheduledBills.reduce((sum, payment) => sum + payment.amount, 0);
   const activeTeam = account.team.filter(member => member.status === "active").length;
@@ -766,7 +769,7 @@ function BusinessOverview() {
 
       <div className="business-workspace-grid">
         <motion.section className="panel business-flow-panel" {...rise(5)}>
-          <CashFlowExplorer transactions={account.transactions} title="Operating cash flow" business />
+          <CashFlowExplorer analytics={account.analytics} transactions={account.transactions} title="Operating cash flow" business />
           <div className="business-flow-footer"><span><TrendingUp size={14} /> {monthlyIn >= monthlyOut ? "Cash-positive over the past 30 days" : "Outflows are higher than inflows over the past 30 days"}</span><Link to="/app/transactions">Open ledger <ArrowRight size={13} /></Link></div>
         </motion.section>
 
@@ -1230,9 +1233,10 @@ export function TransactionsPage() {
   }, [account, q, cat, dir]);
   if (!account) return null;
 
-  const inflow = filtered.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const outflow = filtered.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-  const rewards = filtered.reduce((s, t) => s + t.reward, 0);
+  const cleared = filtered.filter(t => t.status === "cleared" && t.date <= Date.now());
+  const inflow = cleared.filter(t => t.amount > 0).reduce((s, t) => s + Math.round(t.amount * 100), 0) / 100;
+  const outflow = cleared.filter(t => t.amount < 0).reduce((s, t) => s + Math.round(Math.abs(t.amount) * 100), 0) / 100;
+  const rewards = cleared.reduce((s, t) => s + Math.round(t.reward * 100), 0) / 100;
 
   const onExport = () => {
     const count = exportCSV(filtered);
@@ -1241,7 +1245,7 @@ export function TransactionsPage() {
 
   return (
     <div className="app-page">
-      <PageHeader eyebrow={`${filtered.length} of ${account.transactions.length} transactions · Synced live`} title="Transactions">
+      <PageHeader eyebrow={`${filtered.length} of ${account.transactions.length} recent transactions · Latest 400 shown`} title="Transactions">
         <button type="button" className="ghost-btn" onClick={onExport}><Download size={15} /> Export CSV</button>
       </PageHeader>
 
@@ -1252,14 +1256,14 @@ export function TransactionsPage() {
           {q && <button type="button" onClick={() => setQ("")} aria-label="Clear search"><X size={13} /></button>}
         </div>
         <select className="toolbar-select" value={cat} onChange={e => setCat(e.target.value)} aria-label="Filter by category">
-          {["All", ...categories].map(c => <option key={c} value={c}>{c === "All" ? "All categories" : c}</option>)}
+          {["All", ...new Set([...categories, ...account.transactions.map(t => t.category)])].map(c => <option key={c} value={c}>{c === "All" ? "All categories" : c}</option>)}
         </select>
         <Segmented id="direction" value={dir} onChange={setDir} options={[{ value: "all", label: "All" }, { value: "in", label: "Money in" }, { value: "out", label: "Money out" }]} />
       </div>
 
       <div className="summary-strip">
-        <div><span>Money in</span><AnimatedMoney value={inflow} className="strip-value in" cents /></div>
-        <div><span>Money out</span><AnimatedMoney value={outflow} className="strip-value" cents /></div>
+        <div><span>Cleared money in</span><AnimatedMoney value={inflow} className="strip-value in" cents /></div>
+        <div><span>Cleared money out</span><AnimatedMoney value={outflow} className="strip-value" cents /></div>
         <div><span>Rewards earned</span><AnimatedMoney value={rewards} className="strip-value violet-text" cents /></div>
       </div>
 
@@ -1281,7 +1285,7 @@ export function TransactionsPage() {
                 </span>
                 <span className="tcol-cat"><span className="cat-pill">{t.category}</span></span>
                 <span className="tcol-date">{shortDate(t.date)}</span>
-                <span className="tcol-status"><span className="status-pill cleared"><span className="dot" /> Cleared</span></span>
+                <span className="tcol-status"><span className={`status-pill ${t.status === "cleared" ? "cleared" : t.status === "failed" ? "overdue" : "open"}`}><span className="dot" /> {t.status === "cleared" ? "Cleared" : t.status === "failed" ? "Failed" : "Pending"}</span></span>
                 <span className="tcol-reward">{t.reward > 0 ? `+${money(t.reward)}` : "—"}</span>
                 <strong className={`tcol-amt ${t.amount > 0 ? "in" : ""}`}>{t.amount > 0 ? "+" : "−"}{money(Math.abs(t.amount))}</strong>
               </motion.button>
@@ -1299,12 +1303,19 @@ export function TransactionsPage() {
    Transfers
    ============================================================ */
 export function PaymentsPage() {
+  const demo = useDemoPayments();
+  if (!demo.data || demo.error) return <div className="app-page"><DemoModeNotice /></div>;
+  return <LegacyPaymentsPage />;
+}
+function LegacyPaymentsPage() {
+  const isDemo = useDemoPayments().data?.demoMode;
   const { user } = useAuth();
   const { account, addPayee, removePayee } = useAcct();
   const { startSend, openDeposit } = useMoneyFlow();
   const toast = useToast();
-  const [method, setMethod] = useState<SendMethod>("ACH");
-  const [payee, setPayee] = useState("");
+  const [query] = useSearchParams();
+  const [method, setMethod] = useState<SendMethod>(query.get("to") ? "Zelle" : "ACH");
+  const [payee, setPayee] = useState(query.get("to") ?? "");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState(user?.accountType === "personal" ? "" : categories[0]);
   const [note, setNote] = useState("");
@@ -1372,7 +1383,7 @@ export function PaymentsPage() {
 
   return (
     <div className="app-page">
-      <PageHeader eyebrow="Free domestic ACH, wires & Zelle® instant transfers" title="Transfers">
+      <PageHeader eyebrow={isDemo ? "Move money from your account" : "Free domestic ACH, wires & Zelle® instant transfers"} title="Transfers">
         <button type="button" className="ghost-btn" onClick={() => setZelleReceiveOpen(true)}>
           <ZelleLogo size={14} /> Receive Zelle® QR
         </button>
@@ -1408,11 +1419,11 @@ export function PaymentsPage() {
             <motion.p key={method} className="method-note" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
               {method === "Zelle" ? (
                 <>
-                  <ZelleLogo size={14} /> <strong>Zelle® Instant Pay</strong> · Send to US mobile # or email · Typically arrives in minutes · $0 fee
+                  <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Uses signup email or phone · account ledger only · $0 fee" : "Send to US mobile # or email · Typically arrives in minutes · $0 fee"}
                 </>
               ) : (
                 <>
-                  <Clock size={13} /> Arrives {ETA[method].toLowerCase()} · $0 fee
+                  <Clock size={13} /> {isDemo ? "Account transfer" : `Arrives ${ETA[method].toLowerCase()}`} · $0 fee
                 </>
               )}
             </motion.p>
@@ -1434,12 +1445,12 @@ export function PaymentsPage() {
           {!account.payees.length && <button type="button" className="add-recipient" onClick={() => setPayeeOpen(true)}><Plus size={14} /> Add a saved recipient</button>}
 
           <label htmlFor="pay-to">
-            {method === "Zelle" ? "Pay to (Name, US Mobile # or Email)" : "Pay to"}
+            {method === "Zelle" ? (isDemo ? "Pay to (Signup email or phone)" : "Pay to (Name, US Mobile # or Email)") : "Pay to"}
           </label>
           <input
             id="pay-to"
             autoComplete="off"
-            placeholder={method === "Zelle" ? "e.g. Jamie Chen, (555) 234-5678, jamie@email.com" : "Business or person"}
+            placeholder={method === "Zelle" ? (isDemo ? "Registered email or +country code phone" : "e.g. Jamie Chen, (555) 234-5678, jamie@email.com") : "Business or person"}
             value={payee}
             onChange={e => setPayee(e.target.value)}
           />

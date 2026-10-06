@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { buildCashFlow } from "../../src/lib/dashboardAnalytics";
+import { buildCashFlow, buildLedgerAnalytics } from "../../src/lib/dashboardAnalytics";
 import type { Txn } from "../../src/lib/store";
 
 type Actor = "personal" | "business" | "admin";
@@ -170,6 +170,7 @@ test("empty and pending-only ledgers never show manufactured activity", async ({
     const body = await response.json();
     const template = body.account.transactions[0];
     body.account.transactions = pendingOnly ? [{ ...template, date: Date.now(), amount: 500, status: "pending" }] : [];
+    body.account.analytics = buildLedgerAnalytics(body.account.transactions);
     await route.fulfill({ response, json: body });
   });
   await signIn(page, "personal");
@@ -200,6 +201,7 @@ test("larger personal balances and cash totals stay readable on narrow phones", 
     body.account.balance = 1_250_000.25;
     body.account.rewards = 123_456.78;
     body.account.transactions = [{ ...body.account.transactions[0], amount: 1_250_000.25, date: Date.now(), status: "cleared" }];
+    body.account.analytics = buildLedgerAnalytics(body.account.transactions);
     await route.fulfill({ response, json: body });
   });
   await signIn(page, "personal");

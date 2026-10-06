@@ -1,3 +1,4 @@
+import type { LedgerAnalytics } from "./dashboardAnalytics";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { apiGet, apiPost, apiPatch, apiPut, apiDelete, apiReachability, probeApi, getToken, ApiError, endSession } from "./api";
 
@@ -19,7 +20,7 @@ export type Txn = {
   note?: string;
   method?: string;
   reference?: string;
-  status?: "cleared" | "pending";
+  status?: "cleared" | "pending" | "failed";
 };
 
 export type Card = {
@@ -221,6 +222,8 @@ export type Account = {
   scoutSaved: number;
   cards: Card[];
   transactions: Txn[];
+  /** Complete, cleared-ledger aggregates; independent of the activity-feed cap. */
+  analytics?: LedgerAnalytics;
   invoices: Invoice[];
   bankDetails: BankAccountDetails;
   team: TeamMember[];
@@ -426,7 +429,7 @@ function normalize(raw: unknown, p: Profile): Account {
     const amount = num(t.amount, 0);
     const merchantRaw = String(t.merchant ?? "Transaction").replace(/^Client payment — /, "");
     const rawCategory = String(t.category ?? "");
-    const category = rawCategory === "Legal & Prof." ? "Professional" : categories.includes(rawCategory) ? rawCategory : "Operations";
+    const category = rawCategory || "Other";
     return {
       id: t.id ?? rid("txn"),
       merchant: RENAMED[merchantRaw] ?? merchantRaw,
@@ -439,7 +442,7 @@ function normalize(raw: unknown, p: Profile): Account {
       note: t.note,
       method: t.method ?? (amount > 0 ? "ACH" : "Card"),
       reference: t.reference ?? makeReference(),
-      status: t.status === "pending" ? "pending" : "cleared",
+      status: t.status === "cleared" ? "cleared" : t.status === "failed" ? "failed" : "pending",
     };
   });
 
@@ -508,6 +511,7 @@ function normalize(raw: unknown, p: Profile): Account {
     scoutSaved: num(r.scoutSaved, base.scoutSaved),
     cards,
     transactions,
+    analytics: r.analytics,
     invoices,
     team: current ? list<TeamMember>(r.team) ?? base.team : base.team,
     perks: current ? list<Perk>(r.perks) ?? base.perks : base.perks,
@@ -645,6 +649,7 @@ function useAccountState() {
   const [account, setAccount] = useState<Account | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   const ref = useRef<Account | null>(null);
+  const refreshSequence = useRef(0);
 
   useEffect(() => {
     if (!userId) {
@@ -655,15 +660,17 @@ function useAccountState() {
     }
     let cancelled = false;
     (async () => {
+      const token = getToken();
+      const sequence = ++refreshSequence.current;
       // The backend is the system of record — load the server snapshot.
       try {
         const { account: raw } = await apiGet<{ account: unknown }>("/api/me/state");
-        if (cancelled) return;
+        if (cancelled || token !== getToken() || sequence !== refreshSequence.current) return;
         ref.current = normalize(raw, { name, business, email, accountType });
         setAccount(ref.current);
         setAccountError(null);
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled || token !== getToken() || sequence !== refreshSequence.current) return;
         // A rejected session is not an account problem: end it so the login
         // form asks for credentials instead of parking the member on an error
         // card they cannot act on. (This also covers the case where the request
@@ -676,6 +683,7 @@ function useAccountState() {
       }
     })();
     // Profile edits sync below.
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
@@ -684,6 +692,7 @@ function useAccountState() {
       const current = ref.current;
       if (!current) return;
       const next = fn(current);
+      ++refreshSequence.current;
       ref.current = next;
       setAccount(next); // optimistic — the sync layer reconciles with the server
     },
@@ -701,12 +710,41 @@ function useAccountState() {
      ------------------------------------------------------------------ */
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
   const refreshFromServer = useCallback(async () => {
+    const token = getToken();
+    const sequence = ++refreshSequence.current;
     const { account: raw } = await apiGet<{ account: unknown }>("/api/me/state");
+    // Do not install an old response after a newer refresh or a session change.
+    if (getToken() !== token || sequence !== refreshSequence.current) return;
     const next = normalize(raw, { name, business, email, accountType });
     ref.current = next;
     setAccount(next);
     setAccountError(null);
   }, [name, business, email, accountType]);
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    let scheduled = false;
+    const refresh = () => {
+      if (cancelled || scheduled || document.visibilityState === "hidden") return;
+      scheduled = true;
+      // Serialize background reads with writes to avoid rolling back a pending
+      // optimistic action. Failed reads keep the last good snapshot on screen.
+      syncQueue.current = syncQueue.current.then(async () => {
+        if (!cancelled) await refreshFromServer();
+      }).catch(() => {}).finally(() => { scheduled = false; });
+    };
+    const interval = window.setInterval(refresh, 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      cancelled = true;
+      ++refreshSequence.current;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [userId, refreshFromServer]);
+
   const enqueue = useCallback((run: () => Promise<unknown>, onResult?: (result: unknown) => void) => {
     syncQueue.current = syncQueue.current.then(async () => {
       try {

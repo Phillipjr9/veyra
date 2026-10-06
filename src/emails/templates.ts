@@ -1,3 +1,4 @@
+import { buildZelleEmail, type ZelleEvent } from "./zelle";
 /**
  * Veyra transactional email templates.
  *
@@ -194,35 +195,14 @@ const depositReceived: EmailTemplate = {
   }),
 };
 
-const transferSent: EmailTemplate = {
-  id: "transfer-sent",
-  name: "Transfer sent (Zelle®)",
-  category: "transfers",
-  subject: "You sent $1,200.00 to Harbor Studio",
-  preheader: "Sent with Zelle® in seconds from business checking •••• 9014.",
-  html: emailShell({
-    subject: "You sent $1,200.00 to Harbor Studio",
-    preheader: "Sent with Zelle® in seconds from business checking •••• 9014.",
-    content: `
-      ${eyebrow("Money out")}
-      ${h1("Transfer complete")}
-      ${p("Your Zelle® payment was delivered. The money left your account immediately.")}
-      ${amount("−$1,200.00", "out")}
-      ${pill("Delivered", "green")}
-      ${details([
-        ["Sent to", "Harbor Studio"],
-        ["Delivery", "Zelle® · within seconds"],
-        ["From", "Business checking •••• 9014"],
-        ["Memo", "Brand workshop deposit"],
-        ["Date & time", "Oct 2, 2026 · 10:26 AM PT"],
-        ["Reference", "VYR-Z9R3XW7D"],
-        ["New balance", "$83,090.42"],
-      ])}
-      ${btn("View transaction", `${APP}/transactions`)}
-      ${note("Zelle® payments are instant and can't be reversed once delivered. Only send to people and businesses you trust.")}
-    `,
-  }),
+const zellePreview = (id: string, name: string, event: ZelleEvent): EmailTemplate => {
+  const mail = buildZelleEmail({event,amountCents:120000,reference:'VYR-ZELLE-0001',occurredAt:Date.UTC(2026,9,6,14,30),accountLast4:'9014',counterparty:'Harbor Studio'},APP);
+  return {id,name,category:'transfers',subject:mail.subject,preheader:mail.preheader,html:mail.html};
 };
+const transferSent = zellePreview('transfer-sent','Zelle outgoing · ledger recorded','outgoing_recorded');
+const zellePending = zellePreview('zelle-incoming-pending','Zelle incoming · pending review','incoming_pending');
+const zelleConfirmed = zellePreview('zelle-incoming-confirmed','Zelle incoming · funds credited','incoming_confirmed');
+const zelleRejected = zellePreview('zelle-incoming-rejected','Zelle incoming · request declined','incoming_rejected');
 
 const billPaid: EmailTemplate = {
   id: "bill-paid",
@@ -746,6 +726,9 @@ export const emailTemplates: EmailTemplate[] = [
   // Transfers
   depositReceived,
   transferSent,
+  zellePending,
+  zelleConfirmed,
+  zelleRejected,
   billPaid,
   rewardsRedeemed,
   // Cards

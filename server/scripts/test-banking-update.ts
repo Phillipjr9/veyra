@@ -5,9 +5,12 @@ import { createApp } from "../src/app.js";
 import { applicationFor } from "./fixtures.js";
 import { createPriceFixture } from "./price-fixture.js";
 import { validWallet } from "../src/banking.js";
+import { FUNDING_OPTIONS } from "../../shared/funding.js";
+import { testFundingMigration } from "./test-funding-migration.js";
 import { ASSETS } from "../../shared/catalog.js";
 
 process.env.NODE_ENV="development";
+process.env.MAIL_PROVIDER="off";
 process.env.ADMIN_EMAIL="banking-admin@veyra.test";process.env.ADMIN_PASSWORD="banking-test-password";
 process.env.RECAPTCHA_SITE_KEY=""; process.env.FIREBASE_PROJECT_ID=""; process.env.CRYPTO_TRADING_ENABLED="1";
 const prices=createPriceFixture(); await new Promise<void>(r=>prices.listen(0,"127.0.0.1",r));
@@ -62,6 +65,35 @@ try {
  check("rejection makes no financial entry",(await state()).balance===1000&&(await state()).transactions.length===1);
  await api("PUT",`/api/admin/members/${alice.id}/funding`,admin,{methods:[{...method,id:methodId,enabled:false}]});
  check("disabled sources disappear and cannot be used",(await api("GET","/api/me/funding",alice.token)).json.methods.length===0&&(await api("POST","/api/me/deposits",alice.token,{...payload,requestKey:randomUUID()})).status===400);
+ // Upgrade an actual pre-change schema, including prior confirmed/rejected records.
+ testFundingMigration(db, check);
+ const availableKinds=FUNDING_OPTIONS.map(o=>({label:o.label,kind:o.kind,instructions:"Synthetic-only setup. Do not send real funds.",recipient:"Alice",recipientContact:o.kind==='zelle'?'alice@example.test':'',enabled:true}));
+ const fundPath=`/api/admin/members/${alice.id}/funding`;
+ const newSetup=await api("PUT",fundPath,admin,{methods:availableKinds});
+ check("all eight funding kinds can be configured per member",newSetup.status===200&&availableKinds.every(m=>newSetup.json.methods.some((r:any)=>r.kind===m.kind&&r.enabled)));
+ check("unknown funding kinds are rejected",(await api("PUT",fundPath,admin,{methods:[{...method,kind:"invented"}]})).status===400);
+ check("Zelle requires an enrolled email or US phone",(await api("PUT",fundPath,admin,{methods:[{...availableKinds[2],recipientContact:"not-a-contact"}]})).status===400);
+ check("enabled Zelle requires a recipient name",(await api("PUT",fundPath,admin,{methods:[{...availableKinds[2],recipient:""}]})).status===400);
+ check("bank details cannot be mistaken for Zelle contact details",(await api("PUT",fundPath,admin,{methods:[{...availableKinds[2],accountNumber:"1234567890"}]})).status===400);
+ check("full card numbers cannot be stored in card fields",(await api("PUT",fundPath,admin,{methods:[{...availableKinds[1],accountNumber:"4242424242424242"}]})).status===400);
+ check("unconnected ACH setup does not collect external bank details",(await api("PUT",fundPath,admin,{methods:[{...availableKinds[0],routingNumber:"021000021",accountNumber:"1234567890"}]})).status===400);
+ const configured=(await api("GET","/api/me/funding",alice.token)).json.methods;
+ const beforeFunding=(await state()).balance;
+ for(const kind of ['ach','card']) {
+   const pendingBefore=db.prepare("SELECT COUNT(*) AS n FROM funding_requests").get() as {n:number};
+   const attempted=await api("POST","/api/me/deposits",alice.token,{amount:25,methodId:configured.find((m:any)=>m.kind===kind).id,requestKey:randomUUID()});
+   check(`${kind} cannot initiate deposits through a forged request`,attempted.status===400&&attempted.json.error.includes("provider activation"));
+   check(`${kind} creates no request or credit`,(db.prepare("SELECT COUNT(*) AS n FROM funding_requests").get() as {n:number}).n===pendingBefore.n&&(await state()).balance===beforeFunding);
+ }
+ for(const kind of ['zelle','direct_deposit']) {
+   const submitted=await api("POST","/api/me/deposits",alice.token,{amount:25,methodId:configured.find((m:any)=>m.kind===kind).id,requestKey:randomUUID()});
+   check(`${kind} creates only a pending manual request`,submitted.status===201&&submitted.json.request.status==='pending'&&(await state()).balance===beforeFunding);
+   if(kind==='zelle') check("Zelle recipient contact is snapshotted",JSON.parse(submitted.json.request.method_snapshot).recipient_contact==='alice@example.test');
+ }
+ const zelle=configured.find((m:any)=>m.kind==='zelle');
+ check("other members never see the Zelle recipient",!(await api("GET","/api/me/funding",bob.token)).json.methods.some((m:any)=>m.recipient_contact));
+ check("other members cannot submit against Zelle instructions",(await api("POST","/api/me/deposits",bob.token,{amount:25,methodId:zelle.id,requestKey:randomUUID()})).status===400);
+ check("US phone contacts are accepted for Zelle instructions",(await api("PUT",fundPath,admin,{methods:[{...availableKinds[2],id:zelle.id,recipientContact:'+1 (212) 555-0123'}]})).status===200);
  check("personal transfer category is optional",(await api("POST","/api/me/transfers",alice.token,{amount:1,counterparty:"Fixture"})).status===201&&(await state()).transactions[0].category==='Uncategorized');
  check("business transfer category is required",(await api("POST","/api/me/transfers",bob.token,{amount:1,counterparty:"Fixture"})).status===400);
  let holdings=(await api("GET","/api/me/holdings",alice.token)).json;

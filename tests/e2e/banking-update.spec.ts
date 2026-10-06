@@ -46,7 +46,7 @@ test('admin edits account details and per-member funding; member request waits f
  try {
   await signIn(member,u.email);await member.goto('/#/app/accounts');await expect(member.locator('.checking-account-card')).toContainText('Personal savings');
   await member.goto('/#/app');await member.getByRole('button',{name:'Add funds',exact:true}).filter({visible:true}).first().click();
-  const funds=member.getByRole('dialog',{name:'Add funds',exact:true});await expect(funds).toContainText('Browser verified wire');await expect(funds).toContainText('23456789012345');await funds.getByLabel('Amount (USD)',{exact:true}).fill('75');await funds.getByRole('button',{name:'Submit funding request'}).click();await expect(funds.getByRole('status')).toContainText('pending');await fits(member);
+  const funds=member.getByRole('dialog',{name:'Add funds',exact:true});await funds.getByRole('button',{name:'Bank transfer',exact:true}).click();await expect(funds).toContainText('Browser verified wire');await expect(funds).toContainText('23456789012345');await funds.getByLabel('Amount (USD)',{exact:true}).fill('75');await funds.getByRole('button',{name:'Submit funding request'}).click();await expect(funds.getByRole('status')).toContainText('pending');await fits(member);
   let state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(0);
   await row.getByRole('button',{name:'Funding',exact:true}).click();await manager.getByRole('button',{name:'Confirm received funds',exact:true}).click();await manager.getByLabel('Evidence / reason').fill('Synthetic independent bank receipt check');await manager.getByRole('button',{name:'Commit review'}).click();await expect(manager.getByText('$75.00 · confirmed',{exact:true})).toBeVisible();
   state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(75);await expect(manager.getByRole('button',{name:'Confirm received funds'})).toHaveCount(0);
@@ -76,4 +76,80 @@ test('catalog is separate from holdings; animated crypto request remains pending
  await send.getByRole('button',{name:'Confirm pending withdrawal'}).click();await expect(send.getByText('Submitting withdrawal request…',{exact:true})).toBeVisible();await expect(send.locator('.flow-track')).toBeVisible();release();
  await expect(send.getByText('Pending · not broadcast',{exact:true})).toBeVisible();await expect(send.getByText(/No transaction hash or blockchain confirmation exists/)).toBeVisible();await send.getByRole('button',{name:'Close',exact:true}).click();
  await expect(usdc).toContainText('10.123456 reserved (pending)');await page.reload();await expect(page.locator('.crypto-request-history')).toContainText('pending');await page.getByRole('button',{name:'Cancel and release units'}).click();await expect(usdc).toContainText('Available: 25 USDC');await expect(page.locator('.crypto-request-history')).toContainText('cancelled');
+});
+
+test('funding catalog restores choices without collecting unconnected bank or card credentials',async({page,request})=>{
+ const u=await fixture(request);await signIn(page,u.email);
+ await page.getByRole('button',{name:'Add funds',exact:true}).filter({visible:true}).first().click();
+ const dialog=page.getByRole('dialog',{name:'Add funds',exact:true});
+ for(const label of ['Link a bank (ACH)','Debit card','Zelle','Bank transfer','Wire transfer','Direct deposit','Check deposit']) await expect(dialog.getByRole('button',{name:label,exact:true})).toBeVisible();
+ await expect(dialog.getByText('Activation needed',{exact:true})).toHaveCount(2);
+ for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:900});await fits(page);expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);}
+ await dialog.getByRole('button',{name:'Link a bank (ACH)',exact:true}).click();
+ await expect(dialog.getByText('Awaiting provider activation',{exact:true})).toBeVisible();
+ await expect(dialog.getByLabel('ACH routing number',{exact:true})).toBeDisabled();
+ await expect(dialog.getByLabel('External account number',{exact:true})).toBeDisabled();
+ await expect(dialog.getByRole('button',{name:'Link bank · not activated',exact:true})).toBeDisabled();
+ await expect(dialog.getByText('Wait for trial deposits',{exact:true})).toBeVisible();
+ await expect(dialog.getByRole('button',{name:'Submit funding request'})).toHaveCount(0);
+ for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:900});await fits(page);expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);}
+ await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();
+ await expect(dialog.getByRole('button',{name:'Link a bank (ACH)',exact:true})).toBeFocused();
+ await dialog.getByRole('button',{name:'Debit card',exact:true}).click();
+ await expect(dialog.getByRole('button',{name:'Add debit card · not activated',exact:true})).toBeDisabled();
+ await expect(dialog.locator('input')).toHaveCount(0);
+ await expect(dialog.getByRole('button',{name:'Submit funding request'})).toHaveCount(0);
+ await page.setViewportSize({width:320,height:844});await fits(page);expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
+ await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();
+ await dialog.getByRole('button',{name:'Zelle',exact:true}).click();
+ await expect(dialog.getByText('Instructions not configured',{exact:true})).toBeVisible();await expect(dialog.getByLabel('Amount (USD)',{exact:true})).toHaveCount(0);
+ const state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(0);
+ const funding=await (await request.get('/api/me/funding',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(funding.requests).toHaveLength(0);
+ await page.keyboard.press('Escape');await expect(dialog).toBeHidden();
+});
+
+test('admin configures Zelle and direct deposit while ACH and debit stay inactive; disabled instructions disappear',async({page,browser,request})=>{
+ const u=await fixture(request);await signIn(page,adminCredentials.email,adminCredentials.password);
+ await page.setViewportSize({width:390,height:844});await page.getByRole('combobox',{name:'Open admin module'}).selectOption('customers');
+ await page.locator('tr').filter({hasText:u.email}).getByRole('button',{name:'Funding',exact:true}).click();
+ const manager=page.getByRole('dialog',{name:`Funding: ${u.name}`});
+ const configs=[
+  {kind:'zelle',label:'Zelle receiving details'},
+  {kind:'direct_deposit',label:'Payroll receiving details'},
+  {kind:'ach',label:'Future ACH setup'},
+  {kind:'card',label:'Future debit setup'},
+ ];
+ for(let i=0;i<configs.length;i++){
+  const c=configs[i];await manager.getByRole('button',{name:'Add funding method'}).click();
+  const form=manager.locator('.funding-method-editor').nth(i);
+  await form.getByLabel('Method type',{exact:true}).selectOption(c.kind);await form.getByLabel('Source / method label').fill(c.label);
+  await form.getByLabel('Instructions',{exact:true}).fill('Synthetic instructions only. Do not send real money. Confirm the recipient independently before initiating any transfer.');
+  await form.getByLabel('Recipient / account holder').fill(u.name);
+  if(c.kind==='zelle')await form.getByLabel('Enrolled Zelle email or US phone').fill('synthetic.recipient@example.test');
+  if(c.kind==='direct_deposit'){
+   await form.getByLabel('Bank name',{exact:true}).fill('Synthetic Payroll Bank');await form.getByLabel('Routing number',{exact:true}).fill('021000021');await form.getByLabel('Receiving account number (not a card number)').fill('123456789012');
+  }
+ }
+ await manager.getByRole('button',{name:'Save funding methods'}).click();await expect(manager.getByRole('status')).toContainText('Funding methods saved');await fits(page);
+ const ctx=await browser.newContext({viewport:{width:320,height:844},reducedMotion:'reduce'});const member=await ctx.newPage();
+ try{
+  await signIn(member,u.email);await member.getByRole('button',{name:'Add funds',exact:true}).filter({visible:true}).first().click();
+  const dialog=member.getByRole('dialog',{name:'Add funds',exact:true});
+  await expect(dialog.getByRole('button',{name:'Zelle',exact:true})).toContainText('Instructions available');
+  for(const name of ['Link a bank (ACH)','Debit card']){
+   await expect(dialog.getByRole('button',{name,exact:true})).toContainText('Activation needed');
+   await dialog.getByRole('button',{name,exact:true}).click();await expect(dialog.getByRole('button',{name:'Submit funding request'})).toHaveCount(0);
+   await expect(dialog.getByText('Awaiting provider activation',{exact:true})).toBeVisible();await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();
+  }
+  await dialog.getByRole('button',{name:'Zelle',exact:true}).click();await expect(dialog.getByText('synthetic.recipient@example.test',{exact:true})).toBeVisible();await expect(dialog).toContainText('Use your participating bank’s app');await fits(member);
+  expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
+  await dialog.getByLabel('Amount (USD)',{exact:true}).fill('25');await dialog.getByRole('button',{name:'Submit funding request',exact:true}).click();await expect(dialog.getByRole('status')).toContainText('pending');
+  await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();await dialog.getByRole('button',{name:'Direct deposit',exact:true}).click();
+  await expect(dialog).toContainText('123456789012');await expect(dialog).toContainText('021000021');
+  await dialog.getByLabel('Amount (USD)',{exact:true}).fill('50');await dialog.getByRole('button',{name:'Submit funding request',exact:true}).click();await expect(dialog.getByRole('status')).toContainText('pending');
+  const state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(0);
+  await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();await dialog.getByRole('button',{name:'Zelle',exact:true}).click();
+  await manager.locator('.funding-method-editor').filter({has:page.locator('option[value="zelle"]:checked')}).getByLabel('Enabled for this member').uncheck();await manager.getByRole('button',{name:'Save funding methods'}).click();await expect(manager.getByRole('status')).toContainText('Funding methods saved');
+  await dialog.getByRole('button',{name:'Refresh funding status',exact:true}).click();await expect(dialog.getByText('Instructions not configured',{exact:true})).toBeVisible();await expect(dialog.getByText('synthetic.recipient@example.test',{exact:true})).toHaveCount(0);await expect(dialog.getByLabel('Amount (USD)',{exact:true})).toHaveCount(0);
+ }finally{await ctx.close();}
 });

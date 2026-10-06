@@ -1,15 +1,18 @@
+import { demoPaymentsEnabled } from "./demoPayments.js";
+import { sendZelleNotification } from "./zelleNotifications.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Request, Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { base58, bech32, bech32m } from "@scure/base";
 import { keccak_256 } from "@noble/hashes/sha3";
+import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider } from "../../shared/funding.js";
 import { ASSETS } from "../../shared/catalog.js";
 import { BadInputError, dollarsToCents, getSetting, inTransaction, now, rid } from "./db.js";
 import { assetByCode, tradingEnabled } from "./assets.js";
 import { formatUnitsTrimmed, parseUnits } from "./money.js";
 
 type Audit = (req: Request, action: string, category: "Financial", target: string, summary: string, before?: string, after?: string) => void;
-type Method = { id: string; user_id: string; label: string; kind: string; instructions: string; bank_name: string; routing_number: string; account_number: string; recipient: string; enabled: number };
+type Method = { id: string; user_id: string; label: string; kind: string; instructions: string; bank_name: string; routing_number: string; account_number: string; recipient: string; recipient_contact: string; enabled: number };
 const text = (value: unknown, max: number, required = false) => {
   if (typeof value !== "string" || value.length > max || (required && !value.trim())) throw new BadInputError("Check the required text fields and length limits.");
   return value.trim();
@@ -56,6 +59,11 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
     return row;
   };
   const methods = (id: string) => db.prepare("SELECT * FROM funding_methods WHERE user_id = ? ORDER BY updated_at DESC").all(id);
+  const mockMethods = (id: string) => FUNDING_OPTIONS.map(option => ({
+    id: `demo_${id}_${option.kind}`, user_id: id, label: option.label, kind: option.kind,
+    instructions: "Add funds directly to your account balance. External bank and card processing is not connected.",
+    bank_name: "", routing_number: "", account_number: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0, demo: true, ledgerOnly: true,
+  }));
   const fundingRequests = (id: string) => db.prepare("SELECT * FROM funding_requests WHERE user_id = ? ORDER BY (status='pending') DESC, created_at DESC LIMIT 100").all(id);
   const withdrawOut = (row: any) => ({ ...row, quantity: formatUnitsTrimmed(BigInt(row.units), assetByCode(db, row.asset)!.decimals) });
   return {
@@ -88,7 +96,7 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       res.json({ ok: true });
     },
     fundingGet(req: Request, res: Response) {
-      res.json({ methods: methods(req.user!.id).filter((r: any) => r.enabled), requests: fundingRequests(req.user!.id) });
+      res.json({ immediateFunding: demoPaymentsEnabled(), demoMode: demoPaymentsEnabled(), methods: demoPaymentsEnabled() ? mockMethods(req.user!.id) : methods(req.user!.id).filter((r: any) => r.enabled), requests: fundingRequests(req.user!.id) });
     },
     adminFundingGet(req: Request, res: Response) {
       const id = String(req.params.id); member(id);
@@ -99,11 +107,19 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       const list = req.body?.methods;
       if (!Array.isArray(list) || list.length > 12) throw new BadInputError("Provide up to 12 funding methods.");
       const cleaned = list.map((m: any) => {
-        if (!m || !["bank", "wire", "card", "check", "other"].includes(m.kind) || typeof m.enabled !== "boolean") throw new BadInputError("Invalid funding method.");
-        const row = { id: m.id ? text(m.id, 80, true) : rid("fund"), label: text(m.label, 100, true), kind: m.kind, instructions: text(m.instructions, 2000, true), bankName: text(m.bankName ?? "", 120), routingNumber: text(m.routingNumber ?? "", 9), accountNumber: text(m.accountNumber ?? "", 34), recipient: text(m.recipient ?? "", 160), enabled: m.enabled };
+        if (!m || !fundingOption(m.kind) || typeof m.enabled !== "boolean") throw new BadInputError("Invalid funding method.");
+        const row = { id: m.id ? text(m.id, 80, true) : rid("fund"), label: text(m.label, 100, true), kind: m.kind, instructions: text(m.instructions, 2000, true), bankName: text(m.bankName ?? "", 120), routingNumber: text(m.routingNumber ?? "", 9), accountNumber: text(m.accountNumber ?? "", 34), recipient: text(m.recipient ?? "", 160), recipientContact: text(m.recipientContact ?? "", 160), enabled: m.enabled };
         if (row.routingNumber && !/^\d{9}$/.test(row.routingNumber)) throw new BadInputError("Funding routing numbers must be nine digits.");
         if (row.accountNumber && !/^\d{4,34}$/.test(row.accountNumber)) throw new BadInputError("Funding account numbers must be 4–34 digits. Never enter a card PAN.");
-        if (row.kind === "card" && row.accountNumber) throw new BadInputError("Do not store full card numbers here. Use a masked label and provider instructions.");
+        if (fundingRequiresProvider(row.kind) && (row.accountNumber || row.routingNumber)) throw new BadInputError("External bank and debit-card details must be collected by a connected provider, not stored in funding instructions.");
+        if (row.kind !== "zelle" && row.recipientContact) throw new BadInputError("Recipient email or phone is only used for Zelle instructions.");
+        if (row.kind === "zelle") {
+          if (row.accountNumber || row.routingNumber) throw new BadInputError("Use a recipient email or US phone number for Zelle, not bank account details.");
+          const phone = row.recipientContact.replace(/[ ()-]/g, "");
+          const validContact = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.recipientContact) || /^(?:\+?1)?[2-9]\d{9}$/.test(phone);
+          if ((row.enabled || row.recipientContact) && !validContact) throw new BadInputError("Enter the recipient’s enrolled Zelle email or US phone number.");
+          if (row.enabled && !row.recipient) throw new BadInputError("Provide the recipient name so the member can check it in their bank app.");
+        }
         return row;
       });
       if (new Set(cleaned.map(m => m.id)).size !== cleaned.length) throw new BadInputError("Duplicate funding method.");
@@ -114,26 +130,59 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
           if (existing && existing.user_id !== id) throw new BadInputError("Invalid funding method identifier.");
         }
         db.prepare("UPDATE funding_methods SET enabled=0 WHERE user_id=?").run(id);
-        for (const m of cleaned) db.prepare(`INSERT INTO funding_methods(id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET label=excluded.label,kind=excluded.kind,instructions=excluded.instructions,bank_name=excluded.bank_name,routing_number=excluded.routing_number,account_number=excluded.account_number,recipient=excluded.recipient,enabled=excluded.enabled,updated_at=excluded.updated_at`).run(m.id,id,m.label,m.kind,m.instructions,m.bankName,m.routingNumber,m.accountNumber,m.recipient,m.enabled ? 1 : 0,now());
+        for (const m of cleaned) db.prepare(`INSERT INTO funding_methods(id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at,recipient_contact) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET label=excluded.label,kind=excluded.kind,instructions=excluded.instructions,bank_name=excluded.bank_name,routing_number=excluded.routing_number,account_number=excluded.account_number,recipient=excluded.recipient,recipient_contact=excluded.recipient_contact,enabled=excluded.enabled,updated_at=excluded.updated_at`).run(m.id,id,m.label,m.kind,m.instructions,m.bankName,m.routingNumber,m.accountNumber,m.recipient,m.enabled ? 1 : 0,now(),m.recipientContact);
         audit(req, "funding.methods", "Financial", `user:${id}`, "Updated per-member funding instructions; no external account was linked or charged.", JSON.stringify(before), JSON.stringify(cleaned));
       });
       res.json({ methods: methods(id) });
     },
     deposit(req: Request, res: Response) {
+      if (demoPaymentsEnabled()) {
+        if (req.user!.role !== "user" || req.user!.loginId || req.user!.status !== "active") return void res.status(403).json({ error: "Only an active account owner can add funds." });
+        if (req.body?.accountEntry !== true && req.body?.demo !== true) throw new BadInputError("Reload Add funds before confirming an account credit.");
+        if (Object.keys(req.body).some(key => !["amount", "methodId", "note", "requestKey", "demo", "accountEntry"].includes(key))) throw new BadInputError("Bank or card credentials are not accepted here.");
+        if (!["string", "number"].includes(typeof req.body.amount) || !/^\d+(\.\d{1,2})?$/.test(String(req.body.amount))) throw new BadInputError("Enter a dollar amount with at most two decimals.");
+        const amount = dollarsToCents(req.body.amount), id = req.user!.id, key = requestKey(req.body), note = text(req.body.note ?? "", 500);
+        if (amount < 1000 || amount > 10000000) throw new BadInputError("Add between $10 and $100,000.");
+        const m = mockMethods(id).find(method => method.id === req.body.methodId);
+        if (!m) throw new BadInputError("Choose one of your funding methods.");
+        const request = inTransaction(db, () => {
+          const prior = db.prepare("SELECT * FROM funding_requests WHERE user_id=? AND request_key=?").get(id, key) as any;
+          if (prior) {
+            if (prior.amount_cents !== amount || prior.method_id !== m.id || prior.note !== note || !JSON.parse(prior.method_snapshot).demo) throw new BadInputError("This request identifier was already used for different details.");
+            return prior;
+          }
+          const a = db.prepare("SELECT * FROM accounts WHERE user_id=?").get(id) as any;
+          if (!a || !Number.isSafeInteger(a.balance_cents + amount) || a.balance_cents + amount > 1000000000) throw new BadInputError("Account cannot accept this credit (maximum balance $10,000,000).");
+          // Disabled internal fixture: turning demo mode off never exposes it as a live method.
+          db.prepare("INSERT INTO funding_methods(id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at,recipient_contact) VALUES(?,?,?,?,?,'','','',?,0,?,'') ON CONFLICT(id) DO NOTHING").run(m.id,id,m.label,m.kind,m.instructions,m.recipient,now());
+          const requestId = rid("deposit"), reference = `VYR-${randomUUID().slice(0,12).toUpperCase()}`, at = now();
+          db.prepare("INSERT INTO funding_requests(id,user_id,method_id,amount_cents,status,reference,method_snapshot,note,evidence,request_key,created_at,reviewed_at) VALUES(?,?,?,?,'confirmed',?,?,?,?,?,?,?)").run(requestId,id,m.id,amount,reference,JSON.stringify(m),note,"Account credit; external processing not connected.",key,at,at);
+          db.prepare("UPDATE accounts SET balance_cents=balance_cents+?,updated_at=? WHERE id=?").run(amount,at,a.id);
+          db.prepare("INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,status,reference,note,created_at,performed_by) VALUES(?,?,?,?,'Funding',?,?,'cleared',?,?,?,?)").run(rid("txn"),a.id,id,m.label,m.kind,amount,reference,"Account credit — external processing not connected.",at,id);
+          return db.prepare("SELECT * FROM funding_requests WHERE id=?").get(requestId);
+        });
+        res.status(201).json({ request, status: "confirmed", message: "Funds added to your account immediately." });
+        return;
+      }
+      if (req.body?.accountEntry || req.body?.demo) throw new BadInputError("Immediate account funding is unavailable. Reload your funding methods.");
       const amount = dollarsToCents(req.body?.amount ?? 0);
       if (amount < 1000 || amount > 10000000) throw new BadInputError("Funding requests must be between $10 and $100,000.");
       const key = requestKey(req.body), id = req.user!.id;
       const note = text(req.body?.note ?? "", 500);
+      let created = false;
       const request = inTransaction(db, () => {
         const prior = db.prepare("SELECT * FROM funding_requests WHERE user_id=? AND request_key=?").get(id,key) as any;
         if (prior) { if (prior.amount_cents !== amount || prior.method_id !== req.body?.methodId || prior.note !== note) throw new BadInputError("This request identifier was already used for different details."); return prior; }
         if ((db.prepare("SELECT COUNT(*) AS n FROM funding_requests WHERE user_id=? AND status='pending'").get(id) as {n:number}).n >= 20) throw new BadInputError("You have 20 pending funding requests. Resolve existing requests before adding more.");
         const m = db.prepare("SELECT * FROM funding_methods WHERE id=? AND user_id=? AND enabled=1").get(String(req.body?.methodId ?? ""),id) as Method | undefined;
         if (!m) throw new BadInputError("Choose an enabled funding method configured for your account.");
+        if (fundingRequiresProvider(m.kind)) throw new BadInputError("This funding method is awaiting provider activation. No bank linking, trial deposits or card charges are available yet.");
         const requestId = rid("deposit"), reference = ref();
         db.prepare("INSERT INTO funding_requests(id,user_id,method_id,amount_cents,reference,method_snapshot,note,request_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(requestId,id,m.id,amount,reference,JSON.stringify(m),note,key,now());
+        created = true;
         return db.prepare("SELECT * FROM funding_requests WHERE id=?").get(requestId);
       });
+      if (created && JSON.parse(request.method_snapshot).kind === "zelle") sendZelleNotification(db,id,{event:"incoming_pending",amountCents:request.amount_cents,reference:request.reference,occurredAt:request.created_at});
       res.status(201).json({ request, status: request.status, message: "Request recorded. No funds have been collected or credited." });
     },
     reviewDeposit(req: Request, res: Response) {
@@ -141,7 +190,7 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       const decision = req.body?.decision;
       if (!["confirmed", "rejected"].includes(decision)) throw new BadInputError("Choose confirmed or rejected.");
       const evidence = text(req.body?.evidence, 500, true);
-      inTransaction(db, () => {
+      const reviewed = inTransaction(db, () => {
         const request = db.prepare("SELECT * FROM funding_requests WHERE id=? AND user_id=?").get(String(req.params.requestId),id) as any;
         if (!request) throw new BadInputError("Funding request not found.");
         if (request.status !== "pending") { if (request.status === decision && request.evidence === evidence) return; throw new BadInputError("This request has already been reviewed."); }
@@ -154,7 +203,9 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
         }
         db.prepare("UPDATE funding_requests SET status=?,evidence=?,reviewed_by=?,reviewed_at=? WHERE id=?").run(decision,evidence,req.user!.id,now(),request.id);
         audit(req,"funding.review","Financial",`user:${id}`,`${request.reference}: ${decision}. ${evidence}`,"pending",decision);
+        return request;
       });
+      if (reviewed && JSON.parse(reviewed.method_snapshot).kind === "zelle") sendZelleNotification(db,id,{event:decision === "confirmed" ? "incoming_confirmed" : "incoming_rejected",amountCents:reviewed.amount_cents,reference:reviewed.reference,occurredAt:now()});
       res.json({ ok: true });
     },
     withdrawalsGet(req: Request, res: Response) {

@@ -1,3 +1,6 @@
+import { apiPost } from "../lib/api";
+import type { DemoResult } from "../../shared/demoPayments";
+import { useDemoPayments } from "../lib/demoPayments";
 import { FundingDialog } from "./BankingControls";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -13,7 +16,7 @@ import { lockScroll } from "../lib/scrollLock";
    Types & constants
    ============================================================ */
 export type SendMethod = "ACH" | "Wire" | "Zelle" | "Vendor Bill";
-export type SendDraft = { counterparty: string; amount: number; method: SendMethod; category: string; note?: string };
+export type SendDraft = { counterparty: string; amount: number; method: SendMethod; category: string; note?: string; demo?: boolean };
 
 type Stage = "form" | "review" | "processing" | "success";
 type DepositFlow = { kind: "deposit"; stage: Stage; sourceId: string; amount: number };
@@ -73,7 +76,7 @@ function trackFor(flow: FlowState, acct: string): Track {
   const icon = flow.draft.method === "Zelle"
     ? <ZelleLogo size={22} />
     : <span className="flow-initial">{initial}</span>;
-  return { from: veyra, to: { label: flow.draft.counterparty, sub: `${flow.draft.method === "Zelle" ? "Zelle® Instant" : flow.draft.method} transfer`, icon } };
+  return { from: veyra, to: { label: flow.draft.counterparty, sub: `${flow.draft.demo ? "Veyra account" : flow.draft.method === "Zelle" ? "Zelle® Instant" : flow.draft.method} transfer`, icon } };
 }
 
 function stepsFor(flow: FlowState): string[] {
@@ -81,6 +84,7 @@ function stepsFor(flow: FlowState): string[] {
     const s = sourceById(flow.sourceId);
     return [`Connecting to ${s.short.toLowerCase()}`, "Authorizing the ACH pull", "Clearing funds with Northfield Bank", "Updating your balance"];
   }
+  if (flow.draft.demo) return ["Checking your account balance", "Confirming the recipient", "Recording the payment", "Updating account balances"];
   const network = flow.draft.method === "Zelle"
     ? "Connecting to Zelle® instant network"
     : flow.draft.method === "Wire"
@@ -291,11 +295,11 @@ function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; 
         ]
       : [
           { label: "Method", value: flow.draft.method },
-          { label: "Arrives", value: ETA[flow.draft.method] },
+          { label: "Arrives", value: flow.draft.demo ? "Account ledger only" : ETA[flow.draft.method] },
           { label: "Category", value: flow.draft.category || "Not selected" },
           ...(flow.draft.note ? [{ label: "Memo", value: flow.draft.note }] : []),
           { label: "Fee", value: "$0.00 · Free", tone: "free" as const },
-          { label: "Est. rewards", value: `+${money(amount * rewardRate(flow.draft.category))}`, tone: "reward" as const },
+          { label: "Est. rewards", value: `+${money(flow.draft.demo ? 0 : amount * rewardRate(flow.draft.category))}`, tone: "reward" as const },
           { label: "Balance after", value: money(balance - amount) },
         ];
   return (
@@ -404,7 +408,7 @@ function Success({ flow, result, acct, onClose, onAgain }: { flow: FlowState; re
     { label: "Date", value: longDate(result.date) },
     { label: isDeposit ? "From" : "To", value: counterparty },
     { label: "Method", value: flow.kind === "deposit" ? "ACH deposit" : flow.draft.method },
-    { label: isDeposit ? "Available" : "Arrives", value: flow.kind === "deposit" ? "Now" : ETA[flow.draft.method] },
+    { label: isDeposit ? "Available" : "Arrives", value: flow.kind === "deposit" ? "Now" : flow.draft.demo ? "Account ledger only" : ETA[flow.draft.method] },
     { label: "Fee", value: "$0.00", tone: "free" },
     ...(flow.kind === "send" ? [{ label: "Rewards earned", value: `+${money(result.reward)}`, tone: "reward" as const }] : []),
     ...(flow.kind === "send" && result.scout > 0 ? [{ label: "Scout savings", value: `+${money(result.scout)}`, tone: "scout" as const }] : []),
@@ -422,7 +426,7 @@ function Success({ flow, result, acct, onClose, onAgain }: { flow: FlowState; re
         {isDeposit ? "+" : "−"}{money(amount)}
       </motion.strong>
       <motion.p className="flow-sub" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}>
-        {isDeposit ? `Now available in Checking •••• ${acct}` : `On its way to ${counterparty} · ${flow.kind === "send" ? ETA[flow.draft.method].toLowerCase() : ""}`}
+        {isDeposit ? `Now available in Checking •••• ${acct}` : flow.kind === "send" && flow.draft.demo ? `Payment recorded for ${counterparty}` : `On its way to ${counterparty} · ${flow.kind === "send" ? ETA[flow.draft.method].toLowerCase() : ""}`}
       </motion.p>
       {flow.kind === "send" && result.scout > 0 && (
         <motion.div className="scout-found" initial={{ opacity: 0, y: 8, scale: 0.94 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ delay: 0.95, type: "spring", stiffness: 300, damping: 22 }}>
@@ -464,7 +468,10 @@ export function useMoneyFlow() {
 }
 
 export function MoneyFlowProvider({ children }: { children: ReactNode }) {
-  const { account, deposit, sendPayment } = useAcct();
+  const demo = useDemoPayments();
+  const demoPreview = useRef<string | null>(null);
+  const resolving = useRef(false);
+  const { account, deposit, sendPayment, refreshAccount } = useAcct();
   const toast = useToast();
   const [flow, setFlow] = useState<FlowState | null>(null);
   const [fundingOpen, setFundingOpen] = useState(false);
@@ -474,12 +481,31 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
 
   const openDeposit = useCallback((_amount = 5000) => { setFundingOpen(true); }, []);
 
-  const startSend = useCallback((draft: SendDraft, options?: { onComplete?: (r: MoveResult) => void }) => {
+  const startSend = useCallback(async (draft: SendDraft, options?: { onComplete?: (r: MoveResult) => void }) => {
+    if (!demo.data || demo.error) {
+      toast({ title: "Checking payment mode", description: "Please refresh and try again before starting a payment.", tone: "info" });
+      void demo.refresh().catch(() => {});
+      return;
+    }
+    if (resolving.current) return;
+    demoPreview.current = null;
+    if (demo.data.demoMode) {
+      resolving.current = true;
+      try {
+        const response = await apiPost<DemoResult>("/api/me/demo-payments/action", { action: "preview_transfer", method: draft.method, identifier: draft.counterparty, amount: String(draft.amount), category: draft.category, note: draft.note ?? "" });
+        if (!response.preview) throw new Error("Recipient review unavailable.");
+        demoPreview.current = response.preview.id;
+        draft = { ...draft, demo: true, counterparty: draft.method === "Zelle" ? `${response.preview.name} (${response.preview.identifier})` : response.preview.name };
+      } catch (error) {
+        toast({ title: "Payment not started", description: error instanceof Error ? error.message : "Review unavailable.", tone: "error" });
+        return;
+      } finally { resolving.current = false; }
+    }
     committed.current = false;
     onComplete.current = options?.onComplete;
     setResult(null);
     setFlow({ kind: "send", stage: "review", draft });
-  }, []);
+  }, [demo, toast]);
 
   const close = useCallback(() => setFlow(f => (f && f.stage === "processing" ? f : null)), []);
   const goTo = useCallback((stage: Stage) => setFlow(f => (f ? { ...f, stage } : f)), []);
@@ -492,7 +518,12 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
       if (flow.kind === "deposit") {
         r = await deposit(flow.amount, sourceById(flow.sourceId).label);
       } else {
-        r = await sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
+        if (demoPreview.current) {
+          const reply = await apiPost<DemoResult>("/api/me/demo-payments/action", { action: "confirm_transfer", id: demoPreview.current, decision: "completed" });
+          if (!reply.result) throw new Error("Payment result unavailable. Refresh your account before retrying.");
+          r = reply.result;
+          await refreshAccount().catch(() => { toast({ title: "Payment recorded", description: "Refresh your account to update its balance.", tone: "info" }); });
+        } else r = await sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
         onComplete.current?.(r);
       }
       setResult(r);
@@ -500,9 +531,9 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       committed.current = false;
       toast({ tone: "error", title: "Transfer blocked", description: err instanceof Error ? err.message : "Something went wrong." });
-      setFlow(null);
+      setFlow(demoPreview.current ? { ...flow, stage: "review" } : null);
     }
-  }, [flow, deposit, sendPayment, toast]);
+  }, [flow, deposit, sendPayment, refreshAccount, toast]);
 
   const open = flow !== null;
   const stage = flow?.stage;
@@ -574,6 +605,7 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
               <motion.div className={`flow-modal kind-${flow.kind}`} role="dialog" aria-modal="true" aria-labelledby="flow-title"
                 initial={{ opacity: 0, y: 48, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 32, scale: 0.97 }}
                 transition={{ type: "spring", stiffness: 320, damping: 32 }}>
+                {demoPreview.current && <p className="funding-activation-note">Updates account balances. External bank and Zelle processing is not connected.</p>}
                 <div className="flow-head">
                   <StageDots kind={flow.kind} stage={flow.stage} />
                   <button type="button" className="flow-close" onClick={close} aria-label="Close" disabled={flow.stage === "processing"}><X size={16} /></button>

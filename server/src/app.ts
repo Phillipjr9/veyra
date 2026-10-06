@@ -1,3 +1,7 @@
+import { readLedgerAnalytics } from "./ledgerAnalytics.js";
+import { createDemoPayments, demoPaymentsEnabled } from "./demoPayments.js";
+import { createBulkAccounts } from "./bulkAccounts.js";
+import { sendZelleNotification } from "./zelleNotifications.js";
 import { ASSETS } from "../../shared/catalog.js";
 import { createBanking } from "./banking.js";
 /**
@@ -25,7 +29,6 @@ import {
   webauthnConfig, issueChallenge, verifyRegistration, verifyAuthentication,
   registrationOptions, authenticationOptions,
 } from "./webauthn.js";
-import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
   PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS, type Permission, type StaffRole,
@@ -983,23 +986,6 @@ export function createApp(dbPath?: string) {
     res.json({ ok: true });
   }));
 
-  /**
-   * The accounts the login page may offer with one click.
-   *
-   * Public and unauthenticated on purpose (it is what a signed-out visitor
-   * needs), but it only ever answers on a server that holds demo accounts —
-   * a production build returns an empty list, so no credentials are advertised
-   * where members sign up for real. See server/src/demo.ts.
-   */
-  app.get("/api/demo/accounts", wrap((_req, res) => {
-    if (!demoLoginsEnabled()) return void res.json({ accounts: [] });
-    const known = new Set(
-      (db.prepare("SELECT email FROM users").all() as Array<{ email: string }>).map(r => r.email.toLowerCase()),
-    );
-    const accounts = demoLoginOptions().filter(a => known.has(a.email.toLowerCase()));
-    res.json({ accounts });
-  }));
-
   /* ============================== member routes ============================== */
 
   app.get("/api/me/account", requireAuth, wrap((req, res) => {
@@ -1026,19 +1012,33 @@ export function createApp(dbPath?: string) {
     res.json({ transactions: rows.map(txnOut) });
   }));
 
+  const bulkAccounts = createBulkAccounts(db, audit);
+  app.post("/api/admin/accounts/bulk-preview", requireAuth, requirePerm("accounts.edit_number"), wrap(bulkAccounts.preview));
+  app.post("/api/admin/accounts/bulk-apply", requireAuth, requirePerm("accounts.edit_number"), wrap(bulkAccounts.apply));
   const banking = createBanking(db, audit);
   app.get("/api/admin/members/:id/account-details", requireAuth, requirePerm("accounts.view"), wrap(banking.accountGet));
   app.patch("/api/admin/members/:id/account-details", requireAuth, requirePerm("accounts.edit_number"), wrap(banking.accountSave));
   app.get("/api/admin/members/:id/funding", requireAuth, requirePerm("accounts.view"), wrap(banking.adminFundingGet));
   app.put("/api/admin/members/:id/funding", requireAuth, requirePerm("accounts.edit_number"), wrap(banking.fundingSave));
   app.post("/api/admin/members/:id/funding/:requestId/review", requireAuth, requirePerm("customers.adjust_balance"), wrap(banking.reviewDeposit));
+  const demoPayments = createDemoPayments(db);
+  app.get("/api/me/demo-payments", requireAuth, wrap((req, res) => {
+    res.json(demoPayments.snapshot(req.user!.loginId ?? req.user!.id));
+  }));
+  app.post("/api/me/demo-payments/action", requireAuth, requireApproved, wrap((req, res) => {
+    res.json(demoPayments.action(req.user!.loginId ?? req.user!.id, req.body));
+  }));
+  const guardDemoLedger: RequestHandler = (_req, res, next) => {
+    if (demoPaymentsEnabled()) return void res.status(400).json({ error: "Review the payment before confirming it." });
+    next();
+  };
   app.get("/api/me/funding", requireAuth, wrap(banking.fundingGet));
   app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
   app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
   app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, wrap(banking.withdraw));
   app.post("/api/me/crypto-withdrawals/:id/cancel", requireAuth, wrap(banking.cancelWithdrawal));
 
-  app.post("/api/me/transfers", requireAuth, requireApproved, wrap((req, res) => {
+  app.post("/api/me/transfers", requireAuth, requireApproved, guardDemoLedger, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_TRANSFER_CENTS) return void res.status(400).json({ error: "Transfers are limited to $250,000 per transaction." });
@@ -1112,6 +1112,7 @@ export function createApp(dbPath?: string) {
         notify(req.user!.id, "transfer", `Sent ${(cents / 100).toFixed(2)} to ${counterparty}`, `${method} · +${(reward / 100).toFixed(2)} rewards earned.`);
         return { id: txn.id, reference: txn.reference, before, after };
       });
+      if (method.trim().toLowerCase() === "zelle") sendZelleNotification(db,req.user!.id,{event:"outgoing_recorded",amountCents:cents,reference:result.reference,occurredAt:now(),counterparty});
       res.status(201).json({
         result: { reference: result.reference, date: now(), amount: cents / 100, balanceBefore: result.before / 100, balanceAfter: result.after / 100, reward: reward / 100, scout: scout / 100 },
         transaction: { id: result.id, merchant: counterparty, amount: money(-cents), reference: result.reference, status: "cleared" },
@@ -2228,20 +2229,26 @@ export function createApp(dbPath?: string) {
     const txns = db.prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").all(String(req.params.id));
     const kyc = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(String(req.params.id));
     const identityRow = db.prepare("SELECT * FROM identity_profiles WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const viewAccounts = can(db, req.user!.role, "accounts.view");
     res.json({
       member: {
         id: user.id, name: user.name, email: user.email, phone: user.phone, business: user.business,
         accountType: user.account_type, plan: user.plan, status: user.status, createdAt: user.created_at,
-        balance: money((account?.balance_cents as number) ?? 0),
-        accountNumber: account?.account_number, routingNumber: account?.routing_number,
+        balance: viewAccounts ? money((account?.balance_cents as number) ?? 0) : undefined,
+        accountNumber: viewAccounts ? account?.account_number : undefined, routingNumber: viewAccounts ? account?.routing_number : undefined,
+        bankName: viewAccounts ? account?.bank_name : undefined, bankAccountType: viewAccounts ? account?.bank_account_type : undefined,
+        statusReason: user.status_reason ?? "", teamOwnerId: user.team_owner_id ?? null,
+        pending: viewAccounts ? money((account?.pending_cents as number) ?? 0) : undefined,
       },
-      // The full application, unmasked: staff reviewing an account see the
-      // Social Security and EIN numbers exactly as the member entered them.
-      identity: identityRow
+      // Full identity data on this endpoint is restricted to KYC reviewers;
+      // ordinary customer-directory readers do not receive SSNs or EINs.
+      identity: identityRow && can(db, req.user!.role, "kyc.review")
         ? { ...rowToApplication(identityRow), submittedAt: identityRow.submitted_at ?? null }
         : null,
-      transactions: txns.map(txnOut),
+      transactions: can(db, req.user!.role, "transactions.view") ? txns.map(txnOut) : [],
       kyc,
+      permissions: rolePermissions(db, req.user!.role as StaffRole),
+      emailDeliveryConfigured: mailDelivers(),
     });
   }));
 
@@ -3279,7 +3286,7 @@ export function createApp(dbPath?: string) {
     const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
     const operationCases = loadOperationCases();
 
-    res.json({ users, accounts, transactions, disputes, kycQueue, operationCases, audit: auditEntries, roles, settings });
+    res.json({ users, accounts, transactions, analytics: readLedgerAnalytics(db, undefined), disputes, kycQueue, operationCases, audit: auditEntries, roles, settings });
   }));
 
   /* ============================== errors ============================== */

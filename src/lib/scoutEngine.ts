@@ -280,7 +280,7 @@ export function answerScoutQuery(query: string, account: Account, userName: stri
   }
 
   if (/scout|saving|discount|negotiate|recovered|reward|cash.?back/.test(q)) {
-    return fresh(`Scout has recorded **${money(account.scoutSaved)}** in historical ledger credits, which may include demo entries. New Scout credits are disabled until a funded savings provider is connected. You have **${money(account.rewards)}** in rewards ready to redeem. ${account.preferences.scoutAuto ? "Automatic monitoring is on." : "Automatic monitoring is paused."}`, {
+    return fresh(`Scout has recorded **${money(account.scoutSaved)}** in historical ledger credits, which may include historical account adjustments. New Scout credits are disabled until a funded savings provider is connected. You have **${money(account.rewards)}** in rewards ready to redeem. ${account.preferences.scoutAuto ? "Automatic monitoring is on." : "Automatic monitoring is paused."}`, {
       type: "metrics", title: "Value captured", items: [{ label: "Scout savings", value: money(account.scoutSaved) }, { label: "Ready to redeem", value: money(account.rewards) }, { label: "Lifetime cash back", value: money(account.lifetimeRewards) }, { label: "Auto-monitoring", value: account.preferences.scoutAuto ? "On" : "Paused" }],
     });
   }

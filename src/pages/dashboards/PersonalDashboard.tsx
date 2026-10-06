@@ -1,3 +1,4 @@
+import { buildCashFlow } from "../../lib/dashboardAnalytics";
 /**
  * Personal banking dashboard — "everyday money" design.
  *
@@ -15,7 +16,7 @@ import {
   ChevronDown, Gift, Landmark, Menu, PiggyBank, Plus, Search, Send, Sparkles, Target, TrendingUp, X,
 } from "lucide-react";
 import { AnimatedMoney, Logo, VirtualCard, ease } from "../../components/common";
-import { money, useAcct, type Txn } from "../../lib/store";
+import { money, useAcct } from "../../lib/store";
 import { Ring, Sparkline, type NavGroup } from "./parts";
 
 const rise = (i = 0) => ({ initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0 }, transition: { delay: i * 0.05, duration: 0.5, ease } });
@@ -130,45 +131,17 @@ export function PersonalChrome({ user, nav, unread, notifications, onOpenPalette
    Personal overview
    ============================================================ */
 
-function personalFlow(txns: Txn[]) {
-  const days = 30;
-  const now = Date.now();
-  const cutoff = now - days * 86_400_000;
-  const recent = txns.filter(t => t.date >= cutoff);
-  const inflow = recent.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const outflow = Math.abs(recent.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0));
-  const weeks: Array<{ label: string; inflow: number; outflow: number }> = [];
-  for (let w = 5; w >= 0; w--) {
-    const end = now - w * 7 * 86_400_000;
-    const start = end - 7 * 86_400_000;
-    const slice = txns.filter(t => t.date >= start && t.date < end);
-    weeks.push({
-      label: new Date(end).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      inflow: slice.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0),
-      outflow: Math.abs(slice.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0)),
-    });
-  }
-  const topCats = Object.entries(
-    recent.filter(t => t.amount < 0).reduce<Record<string, number>>((acc, t) => {
-      acc[t.category] = (acc[t.category] ?? 0) + Math.abs(t.amount);
-      return acc;
-    }, {}),
-  ).sort((a, b) => b[1] - a[1]).slice(0, 4);
-  return { inflow, outflow, weeks, topCats };
-}
-
 export function PersonalOverview() {
   const { account, user, redeemRewards } = useAcct();
   const [reveal, setReveal] = useState(false);
   const [copied, setCopied] = useState(false);
-  const flow = useMemo(() => personalFlow(account?.transactions ?? []), [account]);
+  const flow = useMemo(() => account?.analytics?.ranges[30] ?? buildCashFlow(account?.transactions ?? [], 30), [account]);
   if (!account || !user) return null;
 
   const pockets = account.savingsPockets.slice(0, 4);
   const card = account.cards[0];
   const perks = account.perks.filter(p => p.status === "available").slice(0, 3);
   const feed = account.transactions.slice(0, 7);
-  const savedThisMonth = Math.max(0, flow.inflow - flow.outflow);
   const netUp = flow.inflow >= flow.outflow;
 
   const copy = async () => {
@@ -190,11 +163,11 @@ export function PersonalOverview() {
           <AnimatedMoney value={account.balance} className="p-hero-balance" cents fromZero />
           <div className="p-hero-sub">
             <span className={`p-hero-delta ${netUp ? "up" : "down"}`}>
-              <TrendingUp size={13} /> {money(Math.abs(savedThisMonth), false)} {netUp ? "kept" : "over"} this month
+              <TrendingUp size={13} /> {money(Math.abs(flow.net), false)} net {netUp ? "in" : "out"} · last 30 days
             </span>
             {account.pendingBalance > 0 && <span className="p-hero-pending">{money(account.pendingBalance)} pending</span>}
           </div>
-          <Sparkline className="p-hero-spark" data={flow.weeks.map(w => w.inflow - w.outflow)} stroke="rgba(255,255,255,.75)" />
+          <Sparkline className="p-hero-spark" data={flow.buckets.map(w => w.inflow - w.outflow)} stroke="rgba(255,255,255,.75)" />
         </div>
         <div className="p-quick">
           <Link className="p-quick-tile" to="/app/transfers"><span className="p-quick-icon send"><Send size={18} /></span>Send</Link>
@@ -289,9 +262,9 @@ export function PersonalOverview() {
           {/* ---- where money went ---- */}
           <motion.section className="p-card" {...rise(3)}>
             <div className="p-card-head"><div><h2>Where money went</h2><span>Last 30 days</span></div></div>
-            {flow.topCats.length ? (
+            {flow.categories.length ? (
               <div className="p-cats">
-                {flow.topCats.map(([name, total], i) => (
+                {flow.categories.slice(0, 4).map(({name, total}, i) => (
                   <div className="p-cat" key={name}>
                     <span className="p-cat-name"><b>{name}</b><small>{money(total, false)}</small></span>
                     <span className="p-cat-bar"><i style={{ width: `${flow.outflow ? Math.min(100, (total / flow.outflow) * 100) : 0}%`, animationDelay: `${i * 60}ms` }} /></span>
@@ -334,7 +307,7 @@ export function PersonalOverview() {
 
           <motion.section className="p-scout" {...rise(6)}>
             <Sparkles size={18} />
-            <div><strong>{money(account.scoutSaved, false)} historical Scout entries</strong><small>Estimates are informational. Legacy entries may include demo credits; no new savings credits are issued.</small></div>
+            <div><strong>{money(account.scoutSaved, false)} historical Scout entries</strong><small>Estimates are informational. Legacy entries are retained; no new savings credits are issued.</small></div>
             <Link to="/app/scout">Review Scout estimates <ArrowRight size={13} /></Link>
           </motion.section>
         </div>

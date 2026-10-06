@@ -1,0 +1,15 @@
+/* Shared loading/unavailable message. The separate wallet UI has been retired. */
+.demo-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border: 1px solid #e6dff1;
+  border-radius: 10px;
+  background: #f5f1fa;
+  color: #63546f;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.demo-notice .ghost-btn { flex-shrink: 0; }

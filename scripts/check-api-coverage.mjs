@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 
 const SERVER_FILE = "server/src/app.ts";
 const CLIENT_FILES = [
+  "src/lib/demoPayments.tsx",
   "src/lib/api.ts",
   "src/lib/auth.tsx",
   "src/lib/recaptcha.ts",
@@ -26,6 +27,9 @@ const CLIENT_FILES = [
   "src/lib/store.tsx",
   "src/pages/Dashboard.tsx",
   "src/pages/SuperAdmin.tsx",
+  "src/pages/AdminMember.tsx",
+  "src/components/BulkAccountEditor.tsx",
+  "src/components/FundingDialog.tsx",
   "src/pages/Auth.tsx",
   "src/pages/SupportCenter.tsx",
   "src/pages/Marketing.tsx",

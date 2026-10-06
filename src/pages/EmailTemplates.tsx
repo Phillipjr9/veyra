@@ -65,8 +65,8 @@ export function EmailTemplatesPage() {
           <span className="eyebrow">Design system</span>
           <h1>Email notifications</h1>
           <p>
-            Every transactional email Veyra sends — {emailTemplates.length} templates across security, transfers,
-            cards, invoicing, Scout and account lifecycle — built on the same tokens as the app.
+            Preview {emailTemplates.length} Veyra email designs across security, transfers, cards, invoicing,
+            Scout and account lifecycle. Some are design examples; live delivery requires a configured provider.
           </p>
         </div>
       </header>

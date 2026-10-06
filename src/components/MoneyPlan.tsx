@@ -1,3 +1,4 @@
+import { buildLedgerAnalytics } from "../lib/dashboardAnalytics";
 import { useMemo, useState, type FormEvent } from "react";
 import { AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, CircleDollarSign, Plus, ReceiptText, Sparkles, Trash2, TrendingDown, TrendingUp, WalletCards } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -6,15 +7,10 @@ import { useAuth } from "../lib/auth";
 import { useToast } from "./Toast";
 
 const DAY = 86_400_000;
-const startOfMonth = () => {
-  const date = new Date();
-  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
-};
-
 const recurringSpend = (transactions: Txn[]) => {
   const cutoff = Date.now() - 120 * DAY;
   const merchantTotals = new Map<string, { amount: number; count: number; latest: number }>();
-  transactions.filter(txn => txn.amount < 0 && txn.date >= cutoff).forEach(txn => {
+  transactions.filter(txn => txn.status === "cleared" && txn.amount < 0 && txn.date >= cutoff && txn.date <= Date.now()).forEach(txn => {
     const current = merchantTotals.get(txn.merchant) ?? { amount: 0, count: 0, latest: 0 };
     merchantTotals.set(txn.merchant, { amount: current.amount + Math.abs(txn.amount), count: current.count + 1, latest: Math.max(current.latest, txn.date) });
   });
@@ -39,17 +35,16 @@ export function MoneyPlanPage() {
 
   const analysis = useMemo(() => {
     if (!account) return null;
-    const monthStart = startOfMonth();
-    const monthTransactions = account.transactions.filter(txn => txn.date >= monthStart);
-    const spent = monthTransactions.filter(txn => txn.amount < 0).reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
-    const income = monthTransactions.filter(txn => txn.amount > 0).reduce((sum, txn) => sum + txn.amount, 0);
+    const ledger = account.analytics ?? buildLedgerAnalytics(account.transactions);
+    const month = ledger.months[ledger.months.length - 1];
+    const spent = month.outflow;
+    const income = month.inflow;
     const dueSoon = account.scheduledPayments
       .filter(payment => payment.status === "active" && payment.nextDate <= Date.now() + 30 * DAY)
       .sort((a, b) => a.nextDate - b.nextDate);
     const plannedOutflow = dueSoon.reduce((sum, payment) => sum + payment.amount, 0);
     const receivables = account.invoices.filter(invoice => invoice.status !== "paid").reduce((sum, invoice) => sum + invoice.amount, 0);
-    const categorySpend = new Map<string, number>();
-    monthTransactions.filter(txn => txn.amount < 0).forEach(txn => categorySpend.set(txn.category, (categorySpend.get(txn.category) ?? 0) + Math.abs(txn.amount)));
+    const categorySpend = new Map(month.categories.map(category => [category.name, category.total]));
     const recurring = recurringSpend(account.transactions);
     return {
       spent, income, dueSoon, plannedOutflow, receivables, categorySpend, recurring,
@@ -94,7 +89,7 @@ export function MoneyPlanPage() {
       </header>
 
       <section className="money-plan-kpis" aria-label="Cash plan summary">
-        <div className="money-plan-kpi"><span><TrendingDown size={16} /> Month-to-date outflow</span><strong>{money(analysis.spent)}</strong><small>{analysis.income ? `${money(analysis.income)} received this month` : "No income posted this month"}</small></div>
+        <div className="money-plan-kpi"><span><TrendingDown size={16} /> Month-to-date outflow (UTC)</span><strong>{money(analysis.spent)}</strong><small>{analysis.income ? `${money(analysis.income)} received this month` : "No income posted this month"}</small></div>
         <div className="money-plan-kpi"><span><CalendarClock size={16} /> Planned next 30 days</span><strong>{money(analysis.plannedOutflow)}</strong><small>{analysis.dueSoon.length ? `Next: ${analysis.dueSoon[0].payeeName} on ${shortDate(analysis.dueSoon[0].nextDate)}` : "No scheduled payments"}</small></div>
         {business ? <div className="money-plan-kpi"><span><ReceiptText size={16} /> Open receivables</span><strong>{money(analysis.receivables)}</strong><small>{account.invoices.filter(invoice => invoice.status !== "paid").length} invoice{account.invoices.filter(invoice => invoice.status !== "paid").length === 1 ? "" : "s"} awaiting payment</small></div>
           : <div className="money-plan-kpi"><span><WalletCards size={16} /> Next 30-day position</span><strong className={analysis.nextThirtyDayPosition < 0 ? "is-risk" : ""}>{money(analysis.nextThirtyDayPosition)}</strong><small>{analysis.nextThirtyDayPosition < 0 ? "Review scheduled payments" : "On track with current commitments"}</small></div>}
@@ -132,7 +127,7 @@ export function MoneyPlanPage() {
       </div>
 
       <section className="panel money-plan-signals">
-        <div className="panel-head"><div><span className="money-plan-kicker">Activity signals</span><h2>{business ? "Recurring operating spend" : "Recurring spending signals"}</h2><span className="panel-sub">Detected from repeated ledger activity over the last four months.</span></div>{business && <Link to="/app/invoices" className="text-link">Review receivables <ArrowRight size={13} /></Link>}</div>
+        <div className="panel-head"><div><span className="money-plan-kicker">Activity signals</span><h2>{business ? "Recurring operating spend" : "Recurring spending signals"}</h2><span className="panel-sub">Signals from the latest 400 transactions within the last four months; not a complete subscription inventory.</span></div>{business && <Link to="/app/invoices" className="text-link">Review receivables <ArrowRight size={13} /></Link>}</div>
         {analysis.recurring.length ? <div className="money-plan-signal-grid">{analysis.recurring.map(item => <div className="money-plan-signal" key={item.merchant}><span><TrendingUp size={16} /></span><div><strong>{item.merchant}</strong><small>{item.count} similar transactions · latest {shortDate(item.latest)}</small></div><b>~{money(item.monthly)}/mo</b></div>)}</div> : <div className="money-plan-empty"><Sparkles size={20} /><div><strong>More activity will unlock signals</strong><span>Repeated merchant activity will appear here as your ledger builds.</span></div></div>}
       </section>
 

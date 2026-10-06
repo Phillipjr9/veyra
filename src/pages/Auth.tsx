@@ -1,8 +1,8 @@
 import { PLANS } from "../../shared/catalog";
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion, useReducedMotion } from "motion/react";
-import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { BadgeCheck, Building2, Check, Eye, EyeOff, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
@@ -131,101 +131,15 @@ function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "", pa
   </section>;
 }
 
-/**
- * One-click demo sign-in.
- *
- * These are the accounts the local database holds: two members seeded by
- * `npm run seed:demo` (personal and business) and the Super Admin the server
- * bootstraps from ADMIN_EMAIL / ADMIN_PASSWORD in .env. Clicking a row fills
- * the form and signs in, so switching between the three dashboards is one
- * click instead of typing a password.
- *
- * Only rendered in demo mode — any `npm run dev` session, or a built bundle
- * opened with `?demo=1` — so production traffic never sees credentials in the
- * page. Before a real launch, change ADMIN_PASSWORD and delete this block
- * (the seed script warns if the admin password drifts from this list).
- */
-const DEMO_ICONS: Record<string, typeof UserRound> = { personal: UserRound, business: Building2, admin: ShieldCheck };
-
-const DEMO_ACCOUNTS: Array<{ id: string; label: string; detail: string; email: string; password: string }> = [
-  { id: "personal", label: "Personal", detail: "Everyday money · goals, cash back, cards", email: "demo.personal@veyra.dev", password: "veyra-demo-2026" },
-  { id: "business", label: "Business", detail: "Lagos Logistics Ltd · treasury, invoices, team", email: "demo.business@veyra.dev", password: "veyra-demo-2026" },
-  { id: "admin", label: "Super Admin", detail: "Platform oversight console", email: "admin@veyra.dev", password: "veyra-admin-2026" },
-];
-
-type DemoAccount = { id: string; label: string; detail: string; email: string; password: string };
-
-/**
- * Which accounts to offer is the server's answer, not the bundle's: it returns
- * them from `/api/demo/accounts` when it actually holds them (dev servers and
- * the static preview), and an empty list in production. The hard-coded list
- * below is only a fallback for a dev build whose API call failed.
- */
-function useDemoAccounts(): DemoAccount[] {
-  const [accounts, setAccounts] = useState<DemoAccount[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<{ accounts: DemoAccount[] }>("/api/demo/accounts", { handleUnauthorized: false })
-      .then(res => { if (!cancelled) setAccounts(res.accounts ?? []); })
-      .catch(() => { if (!cancelled && import.meta.env.DEV) setAccounts(DEMO_ACCOUNTS); });
-    return () => { cancelled = true; };
-  }, []);
-  return accounts;
-}
-
-/** The demo-credential panel: one click per account, filled and submitted. */
-function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]; onPick: (email: string, password: string) => void; busyEmail: string }) {
-  return (
-    <section className="demo-logins" aria-label="Demo accounts">
-      <header className="demo-logins-head">
-        <strong><Sparkles size={14} /> Demo accounts</strong>
-        <span>One click signs you in — dev only</span>
-      </header>
-      <div className="demo-logins-list">
-        {accounts.map((account, i) => {
-          const Icon = DEMO_ICONS[account.id] ?? UserRound;
-          const busyNow = busyEmail === account.email;
-          return (
-            <motion.button
-              key={account.id}
-              type="button"
-              className="demo-login"
-              disabled={Boolean(busyEmail)}
-              onClick={() => onPick(account.email, account.password)}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.05 + i * 0.05, duration: 0.35 }}
-            >
-              <span className="demo-login-icon"><Icon size={16} /></span>
-              <span className="demo-login-copy">
-                <strong>{account.label}</strong>
-                <small>{account.detail}</small>
-                <code>{account.email} · {account.password}</code>
-              </span>
-              <span className="demo-login-go">
-                {busyNow ? <Loader2 className="spin" size={15} /> : <>Sign in <ArrowRight size={14} /></>}
-              </span>
-            </motion.button>
-          );
-        })}
-
-      </div>
-    </section>
-  );
-}
-
 export function LoginPage() {
   const { login, verifyLoginCode, loginWithProvider, loginWithPasskey, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
 
   const toast = useToast();
-  const navigate = useNavigate();
-  const location = useLocation() as { state?: { from?: string } };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [errorHint, setErrorHint] = useState("");
   const [busy, setBusy] = useState(false);
-  const [demoBusy, setDemoBusy] = useState("");
   const [busyProvider, setBusyProvider] = useState("");
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [providers, setProviders] = useState<Array<{ id: string; label: string }>>([]);
@@ -237,8 +151,7 @@ export function LoginPage() {
   const [challengeEmail, setChallengeEmail] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
   const [codeMode, setCodeMode] = useState<"authenticator" | "recovery">("authenticator");
-  const authBusy = busy || Boolean(demoBusy) || Boolean(busyProvider) || passkeyBusy;
-  const demos = useDemoAccounts();
+  const authBusy = busy || Boolean(busyProvider) || passkeyBusy;
 
   // Only server-advertised methods can initiate OAuth; unsupported methods stay disabled.
   useEffect(() => {
@@ -247,11 +160,9 @@ export function LoginPage() {
     return () => { active = false; };
   }, []);
 
-  /** Where a successful sign-in lands, whatever proved the identity. */
-  function afterSignIn(me: { role?: string }) {
-    const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
-    navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
-  }
+  // RedirectIfAuthed owns successful navigation for password, MFA, OAuth and
+  // passkey sign-in. A second imperative redirect here races navigation from
+  // the newly mounted dashboard and can discard a QR payment's recipient.
 
   async function signIn(asEmail: string, asPassword: string) {
     setError(""); setErrorHint("");
@@ -265,7 +176,6 @@ export function LoginPage() {
         setPassword("");
         return;
       }
-      afterSignIn(result);
     } catch (err) {
       // Say what happened AND what to do about it: the server's own wording, a
       // hint for the cause, and the status code. "Can't log in" with no reason
@@ -288,7 +198,7 @@ export function LoginPage() {
 
     setError(""); setErrorHint("");
     try {
-      afterSignIn(await verifyLoginCode(challengeId, verificationCode.trim()));
+      await verifyLoginCode(challengeId, verificationCode.trim());
     } catch (err) {
       const described = describeAuthError(err, "verify your authenticator code");
       setError(described.message);
@@ -298,21 +208,11 @@ export function LoginPage() {
     }
   }
 
-  /** One click: show the credentials in the form, then sign in with them. */
-  async function useDemo(asEmail: string, asPassword: string) {
-    if (authBusy) return;
-    setEmail(asEmail);
-    setPassword(asPassword);
-    setDemoBusy(asEmail);
-    await signIn(asEmail, asPassword);
-    setDemoBusy("");
-  }
-
   const handleProvider = async (id: ProviderId) => {
     if (authBusy) return;
     setError(""); setErrorHint(""); setBusyProvider(id);
     try {
-      afterSignIn(await loginWithProvider(id));
+      await loginWithProvider(id);
     } catch (err) {
       // Closing the provider window is a decision, not a failure.
       if (!(err instanceof FederatedCancelled)) {
@@ -335,7 +235,7 @@ export function LoginPage() {
     setPasskeyBusy(true);
     setError("");
     try {
-      afterSignIn(await loginWithPasskey());
+      await loginWithPasskey();
     } catch (err) {
       // Backing out of the OS prompt is a decision, not a failure.
       if (isPasskeyCancellation(err)) return;
@@ -444,7 +344,6 @@ export function LoginPage() {
       {!challengeId && <>
         <div className="auth-divider"><span>Other ways to sign in</span></div>
         <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey} busyProvider={busyProvider} passkeyBusy={passkeyBusy} disabled={authBusy} loading={providersLoading} />
-        {demos.length > 0 && <details className="auth-demo"><summary>Explore with a demo account</summary><DemoAccounts accounts={demos} onPick={useDemo} busyEmail={authBusy ? demoBusy || "busy" : ""} /></details>}
       </>}
     </AuthShell>
   );
@@ -872,7 +771,7 @@ export function ForgotPasswordPage() {
         <form className="auth-form" onSubmit={complete}>
           {demoCode && (
             <p className="auth-note" data-testid="demo-reset-code">
-              This demo has no mail service, so the code is shown here rather than emailed. It is already filled in
+              Email delivery is not connected in this environment, so the code is shown here rather than emailed. It is already filled in
               for you.
             </p>
           )}

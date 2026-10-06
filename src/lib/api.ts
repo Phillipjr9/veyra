@@ -208,7 +208,7 @@ export function describeAuthError(err: unknown, action = "sign in"): { message: 
       case 403:
         return { message: err.message, hint: "This account is not allowed to sign in. Contact support if that is unexpected.", status: err.status };
       case 404:
-        return { message: err.message, hint: `No account matches that email. Create one, or use a demo account below.`, status: err.status };
+        return { message: err.message, hint: `No account matches that email. Create an account, or check the email you used to sign up.`, status: err.status };
       case 429:
         return { message: err.message, hint: "Too many attempts in the last minute. Wait about a minute, then try again.", status: err.status };
       default:

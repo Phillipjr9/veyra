@@ -1,3 +1,5 @@
+import { DemoPaymentsProvider } from "./lib/demoPayments";
+import { AdminMemberPage } from "./pages/AdminMember";
 import { HashRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { MotionConfig } from "motion/react";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -36,9 +38,12 @@ function SiteLayout({ children }: { children: React.ReactNode }) {
 
 function RedirectIfAuthed({ children }: { children: React.ReactNode }) {
   const { user, ready } = useAuth();
+  const location = useLocation();
   if (!ready) return <div className="route-loading"><span className="spinner" /></div>;
   if (!user) return <>{children}</>;
-  return <Navigate to={user.role && user.role !== "user" ? "/app/superadmin" : "/app"} replace />;
+  const from: unknown = location.state?.from;
+  const memberTarget = typeof from === "string" && /^\/app(?:[/?]|$)/.test(from) && !from.startsWith("/app/superadmin") ? from : "/app";
+  return <Navigate to={user.role && user.role !== "user" ? "/app/superadmin" : memberTarget} replace />;
 }
 
 function BusinessOnly({ children }: { children: React.ReactNode }) {
@@ -121,11 +126,11 @@ function Shell() {
           element={
             <RequireAuth>
               <AccountProvider>
-                <MoneyFlowProvider>
+                <DemoPaymentsProvider><MoneyFlowProvider>
                   <RequireApproved>
                     <MemberSurface />
                   </RequireApproved>
-                </MoneyFlowProvider>
+                </MoneyFlowProvider></DemoPaymentsProvider>
               </AccountProvider>
             </RequireAuth>
           }
@@ -167,6 +172,7 @@ function Shell() {
         />
 
         {/* Staff console: its own shell (dark control room), not the member dashboard chrome. */}
+        <Route path="/app/superadmin/customers/:memberId" element={<RequireAuth><AdminMemberPage /></RequireAuth>} />
         <Route path="/app/superadmin" element={<RequireAuth><SuperAdminPage /></RequireAuth>} />
 
         <Route path="*" element={<SiteLayout><NotFoundPage /></SiteLayout>} />

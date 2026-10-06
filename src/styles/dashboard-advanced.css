@@ -399,3 +399,9 @@
   .dx-member-shell .topbar-right { flex: none; }
   .dx-member-shell .topbar-balance { flex: 1; width: auto; }
 }
+
+/* The existing cash-flow chart remains the sole Ledger Intelligence visual. */
+.dx-flow-asof, .dx-breakdown-empty { font-size: 11px; color: #766581; line-height: 1.6; }
+.dx-flow .recharts-tooltip-wrapper { max-width: calc(100% - 50px); white-space: normal; }
+.dx-flow .recharts-tooltip-label { white-space: normal; }
+.admin-chart-empty { text-align: center; margin: auto; padding: 28px 10px; font-size: 12px; color: #766581; }

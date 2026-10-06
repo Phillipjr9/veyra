@@ -54,7 +54,7 @@ export function LegalPage({ doc }: { doc: LegalDocumentId }) {
             <span className="legal-status">Review draft · Current preview</span>
             <h2 id="review-status">Important before you rely on these documents</h2>
             <p>These expanded documents describe the current product. They are not confirmation of regulatory approval, live banking partnerships or readiness to handle real funds. The contracting entity, launch jurisdiction, privacy contact and retention rules still require confirmation and qualified legal review before adoption as binding public policies.</p>
-            <p>The revision date records this update; it does not establish renewed user consent. Use synthetic information in demonstration environments.</p>
+            <p>The revision date records this update; it does not establish renewed user consent. Use synthetic information in environments without connected providers.</p>
           </section>
           <div className="legal-update-summary">
             <h2>What this revision covers</h2>

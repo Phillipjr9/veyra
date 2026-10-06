@@ -875,6 +875,86 @@ CREATE INDEX idx_crypto_withdrawals_user ON crypto_withdrawals(user_id, status);
 ${ASSETS.map((a, i) => `INSERT OR IGNORE INTO crypto_assets(code,name,decimals,kind,sort_order) VALUES ('${a.code}','${a.name}',${a.decimals},'${'stable' in a ? 'stablecoin' : 'crypto'}',${i+1});`).join("\n")}
 `,
   },
+
+  {
+    version: 18,
+    sql: `
+-- Rebuild both sides of the FK to extend the method kinds without disabling
+-- foreign-key enforcement. Preserve all identifiers, requests and snapshots.
+CREATE TABLE funding_methods_v18 (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), label TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('bank','wire','card','check','other','ach','zelle','direct_deposit')), instructions TEXT NOT NULL,
+ bank_name TEXT NOT NULL DEFAULT '', routing_number TEXT NOT NULL DEFAULT '', account_number TEXT NOT NULL DEFAULT '',
+ recipient TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL,
+ recipient_contact TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO funding_methods_v18 (id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at)
+ SELECT id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at FROM funding_methods;
+CREATE TABLE funding_requests_v18 (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), method_id TEXT NOT NULL REFERENCES funding_methods_v18(id),
+ amount_cents INTEGER NOT NULL CHECK(amount_cents > 0), status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','rejected')),
+ reference TEXT NOT NULL, method_snapshot TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '',
+ request_key TEXT NOT NULL, created_at INTEGER NOT NULL, reviewed_at INTEGER, reviewed_by TEXT REFERENCES users(id),
+ UNIQUE(user_id, request_key)
+);
+INSERT INTO funding_requests_v18 SELECT * FROM funding_requests;
+DROP TABLE funding_requests;
+DROP TABLE funding_methods;
+ALTER TABLE funding_methods_v18 RENAME TO funding_methods;
+ALTER TABLE funding_requests_v18 RENAME TO funding_requests;
+CREATE INDEX idx_funding_methods_user ON funding_methods(user_id);
+CREATE INDEX idx_funding_requests_user ON funding_requests(user_id, created_at);
+`,
+  },
+  {
+    version: 19,
+    sql: `
+CREATE TABLE account_bulk_previews (
+ id TEXT PRIMARY KEY, admin_id TEXT NOT NULL REFERENCES users(id), snapshot_json TEXT NOT NULL,
+ expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, applied_at INTEGER, changed_count INTEGER
+);
+CREATE INDEX idx_account_bulk_admin ON account_bulk_previews(admin_id,expires_at);
+`,
+  },
+
+  {
+    version: 20,
+    sql: `
+CREATE TABLE demo_wallets (
+ user_id TEXT PRIMARY KEY REFERENCES users(id), balance_cents INTEGER NOT NULL CHECK(balance_cents >= 0 AND balance_cents <= 100000000),
+ bank_status TEXT NOT NULL DEFAULT 'unlinked', card_linked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE demo_payment_events (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), method TEXT NOT NULL, amount_cents INTEGER NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','completed','declined')), reference TEXT NOT NULL,
+ description TEXT NOT NULL, request_key TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+ UNIQUE(user_id,request_key)
+);
+CREATE INDEX idx_demo_events_owner ON demo_payment_events(user_id,created_at);
+CREATE TABLE demo_payment_previews (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), recipient_id TEXT REFERENCES users(id),
+ identifier TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, method TEXT NOT NULL,
+ category TEXT NOT NULL, expires_at INTEGER NOT NULL, result_event_id TEXT REFERENCES demo_payment_events(id)
+);
+CREATE TABLE demo_payment_inbox (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), recipient TEXT NOT NULL,
+ subject TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_demo_inbox_owner ON demo_payment_inbox(user_id,created_at);
+`,
+  },
+  {
+    version: 21,
+    sql: `
+-- Separate namespace prevents an old playground review from debiting an account.
+CREATE TABLE demo_account_payment_previews (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), recipient_id TEXT REFERENCES users(id),
+ identifier TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, method TEXT NOT NULL,
+ category TEXT NOT NULL, note TEXT NOT NULL, expires_at INTEGER NOT NULL, result_json TEXT
+);
+CREATE INDEX idx_demo_account_review_owner ON demo_account_payment_previews(user_id,expires_at);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

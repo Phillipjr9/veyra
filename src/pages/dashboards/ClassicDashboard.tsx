@@ -1,3 +1,6 @@
+import { buildLedgerAnalytics, type FlowRange } from "../../lib/dashboardAnalytics";
+import { useDemoPayments } from "../../lib/demoPayments";
+import { DemoModeNotice } from "../../components/DemoPayments";
 import { CryptoSendDialog, CryptoWithdrawalHistory } from "../../components/CryptoSend";
 import { downloadTransactionReceipt } from "../../lib/receipts";
 import { PLANS, PLAN_NOTICE } from "../../../shared/catalog";
@@ -62,12 +65,6 @@ function timeAgo(ts: number) {
   return d < 7 ? `${d}d ago` : shortDate(ts);
 }
 
-function topCategories(txns: Txn[], limit = 5) {
-  const totals = new Map<string, number>();
-  txns.forEach(t => { if (t.amount < 0) totals.set(t.category, (totals.get(t.category) ?? 0) + Math.abs(t.amount)); });
-  return [...totals.entries()].map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total).slice(0, limit);
-}
-
 function recentPayees(txns: Txn[], limit = 6) {
   const seen = new Map<string, string>();
   for (const t of txns) {
@@ -99,7 +96,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   const { user, ready } = useAuth();
   const location = useLocation();
   if (!ready) return <div className="route-loading"><span className="spinner" /></div>;
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   if (user.role && user.role !== "user" && !location.pathname.startsWith("/app/superadmin")) {
     return <Navigate to="/app/superadmin" replace />;
   }
@@ -331,7 +328,7 @@ function BalanceDelta({ value }: { value: number }) {
  * invented, and hovering a bar names the merchant and amount behind it.
  */
 function BalanceBars({ txns }: { txns: Txn[] }) {
-  const recent = [...txns].sort((a, b) => a.date - b.date).slice(-14);
+  const recent = txns.filter(t => t.status === "cleared" && t.date <= Date.now() && Number.isFinite(t.date) && Number.isFinite(t.amount) && t.amount !== 0).sort((a, b) => a.date - b.date).slice(-14);
   const max = Math.max(...recent.map(t => Math.abs(t.amount)), 1);
   const slot = 100 / Math.max(recent.length, 1);
   const bar = Math.min(slot * 0.5, 5.2);
@@ -357,17 +354,6 @@ function BalanceBars({ txns }: { txns: Txn[] }) {
       })}
     </svg>
   );
-}
-
-/** Real month-over-month movement of the member's own transactions. */
-function monthOverMonth(txns: Txn[]) {
-  const DAY = 86_400_000;
-  const at = Date.now();
-  const between = (from: number, to: number) => txns.filter(t => t.date > from && t.date <= to).reduce((sum, t) => sum + t.amount, 0);
-  const last = between(at - 30 * DAY, at);
-  const prev = between(at - 60 * DAY, at - 30 * DAY);
-  if (prev === 0) return null;
-  return ((last - prev) / Math.abs(prev)) * 100;
 }
 
 function UsageBar({ spent, limit }: { spent: number; limit: number }) {
@@ -472,7 +458,7 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
             </motion.div>
             <strong className={`drawer-amount ${incoming ? "in" : ""}`}>{incoming ? "+" : "−"}{money(Math.abs(txn.amount))}</strong>
             <span className="drawer-merchant">{txn.merchant}</span>
-            <span className="status-pill cleared"><Check size={11} /> {txn.status === "pending" ? "Pending" : "Cleared"}</span>
+            <span className={`status-pill ${txn.status === "cleared" ? "cleared" : txn.status === "failed" ? "overdue" : "open"}`}>{txn.status === "cleared" && <Check size={11} />} {txn.status === "cleared" ? "Cleared" : txn.status === "failed" ? "Failed" : "Pending"}</span>
           </div>
           <div className="timeline">
             {steps.map((s, i) => (
@@ -905,10 +891,12 @@ export function Overview() {
   const [burst, setBurst] = useState(0);
   const [revealAcct, setRevealAcct] = useState(false);
   const [copied, setCopied] = useState(false);
-  const cats = useMemo(() => (account ? topCategories(account.transactions, 5) : []), [account]);
+  const [flowDays, setFlowDays] = useState<FlowRange>(30);
+  const analytics = useMemo(() => account?.analytics ?? buildLedgerAnalytics(account?.transactions ?? []), [account]);
+  const cats = analytics.ranges[flowDays].categories.slice(0, 5);
   const balanceFlash = useValueFlash(account?.balance ?? 0);
   const rewardsFlash = useValueFlash(account?.rewards ?? 0);
-  const movement = useMemo(() => account ? monthOverMonth(account.transactions) : null, [account]);
+  const movement = analytics.movement;
   if (!account) return null;
 
   const first = user?.name.split(" ")[0] ?? "there";
@@ -947,11 +935,11 @@ export function Overview() {
           <AnimatedMoney value={account.balance} className="stat-value" cents fromZero />
           <div className="stat-meta">
             {movement === null ? (
-              <span>First month of activity</span>
+              <span>No prior-period net comparison</span>
             ) : (
               <span className={movement >= 0 ? "up" : "down"}>
                 {movement >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-                {movement >= 0 ? "+" : "−"}{Math.abs(movement).toFixed(1)}% vs last month
+                {movement >= 0 ? "+" : "−"}{Math.abs(movement).toFixed(1)}% net flow vs prior 30 days
               </span>
             )}
             <span>Pending {money(account.pendingBalance)}</span>
@@ -960,9 +948,7 @@ export function Overview() {
             <BalanceBars txns={account.transactions} />
             <div className="stat-bars-head">
               <span>
-                {account.transactions.length > 14
-                  ? `Last 14 of ${account.transactions.length}`
-                  : `${account.transactions.length} transaction${account.transactions.length === 1 ? "" : "s"}`}
+                Recent cleared activity · up to 14
               </span>
               <span className="stat-bars-legend"><i className="in" /> In <i className="out" /> Out</span>
             </div>
@@ -1010,7 +996,7 @@ export function Overview() {
       <div className="overview-grid">
         <div className="overview-main">
         <motion.section className="panel dx-flow-panel" {...rise(5)}>
-          <CashFlowExplorer transactions={account.transactions} title="Your money in motion" />
+          <CashFlowExplorer analytics={analytics} days={flowDays} onDaysChange={setFlowDays} transactions={account.transactions} title="Your money in motion" />
         </motion.section>
           <motion.section className="panel" {...rise(6)}>
             <div className="panel-head">
@@ -1038,8 +1024,8 @@ export function Overview() {
             )}
           </motion.section>
           <motion.section className="panel" {...rise(6)}>
-            <div className="panel-head"><div><h2>Top categories</h2><span className="panel-sub">Where your money went</span></div></div>
-            <CategoryBars items={cats} />
+            <div className="panel-head"><div><h2>Top categories</h2><span className="panel-sub">Cleared money out · last {flowDays} days · top 5</span></div></div>
+            {cats.length ? <CategoryBars items={cats} /> : <p className="dx-breakdown-empty">No cleared money out in these {flowDays} days.</p>}
           </motion.section>
           <motion.section className="panel" {...rise(7)}>
             {personal ? (
@@ -1490,9 +1476,10 @@ export function TransactionsPage() {
   }, [account, q, cat, dir]);
   if (!account) return null;
 
-  const inflow = filtered.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const outflow = filtered.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-  const rewards = filtered.reduce((s, t) => s + t.reward, 0);
+  const cleared = filtered.filter(t => t.status === "cleared" && t.date <= Date.now());
+  const inflow = cleared.filter(t => t.amount > 0).reduce((s, t) => s + Math.round(t.amount * 100), 0) / 100;
+  const outflow = cleared.filter(t => t.amount < 0).reduce((s, t) => s + Math.round(Math.abs(t.amount) * 100), 0) / 100;
+  const rewards = cleared.reduce((s, t) => s + Math.round(t.reward * 100), 0) / 100;
 
   const onExport = () => {
     const count = exportCSV(filtered);
@@ -1501,7 +1488,7 @@ export function TransactionsPage() {
 
   return (
     <div className="app-page">
-      <PageHeader eyebrow={`${filtered.length} of ${account.transactions.length} transactions · Synced live`} title="Transactions">
+      <PageHeader eyebrow={`${filtered.length} of ${account.transactions.length} recent transactions · Latest 400 shown`} title="Transactions">
         <button type="button" className="ghost-btn" onClick={onExport}><Download size={15} /> Export CSV</button>
       </PageHeader>
 
@@ -1512,14 +1499,14 @@ export function TransactionsPage() {
           {q && <button type="button" onClick={() => setQ("")} aria-label="Clear search"><X size={13} /></button>}
         </div>
         <select className="toolbar-select" value={cat} onChange={e => setCat(e.target.value)} aria-label="Filter by category">
-          {["All", ...categories].map(c => <option key={c} value={c}>{c === "All" ? "All categories" : c}</option>)}
+          {["All", ...new Set([...categories, ...account.transactions.map(t => t.category)])].map(c => <option key={c} value={c}>{c === "All" ? "All categories" : c}</option>)}
         </select>
         <Segmented id="direction" value={dir} onChange={setDir} options={[{ value: "all", label: "All" }, { value: "in", label: "Money in" }, { value: "out", label: "Money out" }]} />
       </div>
 
       <div className="summary-strip">
-        <div><span>Money in</span><AnimatedMoney value={inflow} className="strip-value in" cents /></div>
-        <div><span>Money out</span><AnimatedMoney value={outflow} className="strip-value" cents /></div>
+        <div><span>Cleared money in</span><AnimatedMoney value={inflow} className="strip-value in" cents /></div>
+        <div><span>Cleared money out</span><AnimatedMoney value={outflow} className="strip-value" cents /></div>
         <div><span>Rewards earned</span><AnimatedMoney value={rewards} className="strip-value violet-text" cents /></div>
       </div>
 
@@ -1541,7 +1528,7 @@ export function TransactionsPage() {
                 </span>
                 <span className="tcol-cat"><span className="cat-pill">{t.category}</span></span>
                 <span className="tcol-date">{shortDate(t.date)}</span>
-                <span className="tcol-status"><span className="status-pill cleared"><span className="dot" /> Cleared</span></span>
+                <span className="tcol-status"><span className={`status-pill ${t.status === "cleared" ? "cleared" : t.status === "failed" ? "overdue" : "open"}`}><span className="dot" /> {t.status === "cleared" ? "Cleared" : t.status === "failed" ? "Failed" : "Pending"}</span></span>
                 <span className="tcol-reward">{t.reward > 0 ? `+${money(t.reward)}` : "—"}</span>
                 <strong className={`tcol-amt ${t.amount > 0 ? "in" : ""}`}>{t.amount > 0 ? "+" : "−"}{money(Math.abs(t.amount))}</strong>
               </motion.button>
@@ -1559,12 +1546,19 @@ export function TransactionsPage() {
    Transfers
    ============================================================ */
 export function PaymentsPage() {
+  const demo = useDemoPayments();
+  if (!demo.data || demo.error) return <div className="app-page"><DemoModeNotice /></div>;
+  return <LegacyPaymentsPage />;
+}
+function LegacyPaymentsPage() {
+  const isDemo = useDemoPayments().data?.demoMode;
   const { user } = useAuth();
   const { account, addPayee, removePayee } = useAcct();
   const { startSend, openDeposit } = useMoneyFlow();
   const toast = useToast();
-  const [method, setMethod] = useState<SendMethod>("ACH");
-  const [payee, setPayee] = useState("");
+  const [query] = useSearchParams();
+  const [method, setMethod] = useState<SendMethod>(query.get("to") ? "Zelle" : "ACH");
+  const [payee, setPayee] = useState(query.get("to") ?? "");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState(user?.accountType === "personal" ? "" : categories[0]);
   const [note, setNote] = useState("");
@@ -1632,7 +1626,7 @@ export function PaymentsPage() {
 
   return (
     <div className="app-page">
-      <PageHeader eyebrow="Free domestic ACH, wires & Zelle® instant transfers" title="Transfers">
+      <PageHeader eyebrow={isDemo ? "Move money from your account" : "Free domestic ACH, wires & Zelle® instant transfers"} title="Transfers">
         <button type="button" className="ghost-btn" onClick={() => setZelleReceiveOpen(true)}>
           <ZelleLogo size={14} /> Receive Zelle® QR
         </button>
@@ -1668,11 +1662,11 @@ export function PaymentsPage() {
             <motion.p key={method} className="method-note" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
               {method === "Zelle" ? (
                 <>
-                  <ZelleLogo size={14} /> <strong>Zelle® Instant Pay</strong> · Send to US mobile # or email · Typically arrives in minutes · $0 fee
+                  <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Uses signup email or phone · account ledger only · $0 fee" : "Send to US mobile # or email · Typically arrives in minutes · $0 fee"}
                 </>
               ) : (
                 <>
-                  <Clock size={13} /> Arrives {ETA[method].toLowerCase()} · $0 fee
+                  <Clock size={13} /> {isDemo ? "Account transfer" : `Arrives ${ETA[method].toLowerCase()}`} · $0 fee
                 </>
               )}
             </motion.p>
@@ -1694,12 +1688,12 @@ export function PaymentsPage() {
           {!account.payees.length && <button type="button" className="add-recipient" onClick={() => setPayeeOpen(true)}><Plus size={14} /> Add a saved recipient</button>}
 
           <label htmlFor="pay-to">
-            {method === "Zelle" ? "Pay to (Name, US Mobile # or Email)" : "Pay to"}
+            {method === "Zelle" ? (isDemo ? "Pay to (Signup email or phone)" : "Pay to (Name, US Mobile # or Email)") : "Pay to"}
           </label>
           <input
             id="pay-to"
             autoComplete="off"
-            placeholder={method === "Zelle" ? "e.g. Jamie Chen, (555) 234-5678, jamie@email.com" : "Business or person"}
+            placeholder={method === "Zelle" ? (isDemo ? "Registered email or +country code phone" : "e.g. Jamie Chen, (555) 234-5678, jamie@email.com") : "Business or person"}
             value={payee}
             onChange={e => setPayee(e.target.value)}
           />

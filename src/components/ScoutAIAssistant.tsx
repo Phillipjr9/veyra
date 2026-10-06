@@ -1,8 +1,8 @@
+import { Area, CartesianGrid, ComposedChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { motion } from "motion/react";
-import { Area, CartesianGrid, ComposedChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ArrowDownLeft, ArrowRight, ArrowUpRight, Bot, Check, CircleHelp, CreditCard, LoaderCircle, MessageCircle, Pause, Play, RefreshCw, Send, ShieldCheck, Sparkles, TrendingUp, Wallet, X, Zap } from "lucide-react";
 import { longDate, money, shortDate, useAcct, type Account } from "../lib/store";
 import { analyzeAccountWithScout, answerScoutQuery, type ScoutChatMessage, type ScoutInsight } from "../lib/scoutEngine";
@@ -25,7 +25,7 @@ function FinancialCharts({ account }: { account: Account }) {
   const week = 7 * DAY;
   const now = Date.now();
   const start = now - 8 * week;
-  const recentTransactions = account.transactions.filter(t => t.date >= start && t.date <= now);
+  const recentTransactions = account.transactions.filter(t => t.status === "cleared" && t.date >= start && t.date <= now);
   let balance = account.balance - recentTransactions.reduce((sum, txn) => sum + txn.amount, 0);
   const history = Array.from({ length: 8 }, (_, index) => {
     const from = start + index * week;
@@ -109,7 +109,7 @@ export function ScoutAIPage() {
       <section className="scout-audit-explain"><div><span><CircleHelp size={17} /></span><div><strong>How Scout works</strong><p>Pattern checks use saved data. Estimates are read-only planning aids. Savings credits are disabled until a funded provider is connected; Scout does not contact merchants, banks or credit bureaus.</p></div></div><Link to="/help-center">Learn about Scout <ArrowRight size={14} /></Link></section>
     </motion.div>}
     {tab === "chat" && <motion.div className="scout-tab-content" key="chat" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><ScoutChat account={account} userName={user.name} storageId={`veyra.scout.chat.${user.id}`} /></motion.div>}
-    {tab === "history" && <motion.div className="scout-tab-content" key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><section className="panel scout-history-panel"><div className="panel-head"><div><h2>Recorded savings</h2><span className="panel-sub">Credits already reflected in account transactions.</span></div><strong className="scout-history-total">{money(account.scoutSaved)}</strong></div>{recoveries.length ? <div className="scout-recoveries-ledger">{recoveries.map(t => <div key={t.id} className="scout-recovery-row"><div className="recovery-left"><span className="scout-star-icon"><Sparkles size={15} /></span><div><strong>{t.merchant}</strong><small>{t.category} · Purchase {money(Math.abs(t.amount))} · {longDate(t.date)}</small></div></div><div className="recovery-right"><strong className="in">+{money(t.scout ?? 0)}</strong><span className="chip chip-green">Credited</span></div></div>)}</div> : <div className="scout-no-insights"><span><Sparkles size={17} /></span><div><strong>No savings recorded yet.</strong><p>Any future transaction credits will appear here.</p></div></div>}</section><div className="scout-history-note"><ShieldCheck size={15} /><span>Historical entries are retained and may include demo credits. They do not verify external savings. New estimate credits are disabled.</span></div></motion.div>}
+    {tab === "history" && <motion.div className="scout-tab-content" key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><section className="panel scout-history-panel"><div className="panel-head"><div><h2>Recorded savings</h2><span className="panel-sub">Credits already reflected in account transactions.</span></div><strong className="scout-history-total">{money(account.scoutSaved)}</strong></div>{recoveries.length ? <div className="scout-recoveries-ledger">{recoveries.map(t => <div key={t.id} className="scout-recovery-row"><div className="recovery-left"><span className="scout-star-icon"><Sparkles size={15} /></span><div><strong>{t.merchant}</strong><small>{t.category} · Purchase {money(Math.abs(t.amount))} · {longDate(t.date)}</small></div></div><div className="recovery-right"><strong className="in">+{money(t.scout ?? 0)}</strong><span className="chip chip-green">Credited</span></div></div>)}</div> : <div className="scout-no-insights"><span><Sparkles size={17} /></span><div><strong>No savings recorded yet.</strong><p>Any future transaction credits will appear here.</p></div></div>}</section><div className="scout-history-note"><ShieldCheck size={15} /><span>Historical account entries are retained. They do not verify external savings. New estimate credits are disabled.</span></div></motion.div>}
   </div>;
 }
 
