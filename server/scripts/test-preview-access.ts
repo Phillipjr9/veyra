@@ -1,0 +1,55 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { createApp } from "../src/app.js";
+import { hashPassword } from "../src/security.js";
+import { DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD, DEMO_PASSWORD } from "../src/demo.js";
+
+process.env.NODE_ENV = "development";
+process.env.PREVIEW_LOGIN_SHORTCUTS = "1";
+process.env.ADMIN_EMAIL = DEMO_ADMIN_EMAIL;
+process.env.ADMIN_PASSWORD = DEMO_ADMIN_PASSWORD;
+process.env.MAIL_PROVIDER = "off";
+process.env.RECAPTCHA_SITE_KEY = "";
+process.env.FIREBASE_PROJECT_ID = "";
+const { app, db } = createApp(":memory:");
+const server = createServer(app);
+await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+let checks = 0;
+const check = (name: string, value: unknown) => { assert.ok(value, name); checks++; console.log(`✓ ${name}`); };
+const config = async () => { const response = await fetch(`${base}/api/auth/config`); assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store"); return await response.json() as { previewLogins: { label: string; email: string; password: string }[] }; };
+try {
+  check("missing member fixtures are not advertised", (await config()).previewLogins.length === 1);
+  for (const type of ["personal", "business"]) db.prepare("INSERT INTO users(id,name,email,account_type,password_hash,created_at) VALUES(?,?,?,?,?,?)")
+    .run(`preview-${type}`, `Preview ${type}`, `demo.${type}@veyra.dev`, type, hashPassword(DEMO_PASSWORD), Date.now());
+  const all = (await config()).previewLogins;
+  check("all three verified fixture accounts are available", all.map(entry => entry.label).join(",") === "Personal,Business,Super Admin");
+  check("only fixed fixture passwords are returned", all.every(entry => entry.password === (entry.label === "Super Admin" ? DEMO_ADMIN_PASSWORD : DEMO_PASSWORD)));
+  const admin = all.find(entry => entry.label === "Super Admin")!;
+  check("shortcuts still use the ordinary login endpoint", (await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: admin.email, password: admin.password }) })).status === 200);
+  check("the retired credential endpoint stays retired", (await fetch(`${base}/api/demo/accounts`)).status === 404);
+  delete process.env.PREVIEW_LOGIN_SHORTCUTS;
+  check("service requires explicit enablement", (await config()).previewLogins.length === 0);
+  process.env.PREVIEW_LOGIN_SHORTCUTS = "0";
+  check("explicit disable hides all shortcuts", (await config()).previewLogins.length === 0);
+  process.env.PREVIEW_LOGIN_SHORTCUTS = "1";
+  process.env.NODE_ENV = "production";
+  check("production overrides the enabled flag and never returns fixture credentials", (await config()).previewLogins.length === 0);
+  process.env.NODE_ENV = "development";
+  db.prepare("UPDATE users SET password_hash=? WHERE email=?").run(hashPassword("private-operator-password"), DEMO_ADMIN_EMAIL);
+  const changed = (await config()).previewLogins;
+  check("changed admin password invalidates the cached shortcut", changed.length === 2 && !changed.some(entry => entry.label === "Super Admin"));
+  process.env.ADMIN_PASSWORD = "private-configured-password";
+  check("configured operator secrets are never exposed", !JSON.stringify(await config()).includes("private-"));
+  db.prepare("UPDATE users SET status='restricted' WHERE id='preview-personal'").run();
+  check("restricted fixture is not advertised", !(await config()).previewLogins.some(entry => entry.label === "Personal"));
+  db.prepare("UPDATE users SET status='active',role='support' WHERE id='preview-personal'").run();
+  check("changed role does not reuse a public fixture shortcut", !(await config()).previewLogins.some(entry => entry.label === "Personal"));
+  db.prepare("UPDATE users SET role='user',account_type='business' WHERE id='preview-personal'").run();
+  check("account type must match the advertised label", !(await config()).previewLogins.some(entry => entry.label === "Personal"));
+  db.prepare("UPDATE users SET account_type='personal',team_owner_id='preview-business' WHERE id='preview-personal'").run();
+  check("team logins are not mistaken for account-owner fixtures", !(await config()).previewLogins.some(entry => entry.label === "Personal"));
+  db.prepare("UPDATE users SET password_hash='invalid' WHERE id='preview-business'").run();
+  check("invalid password hashes fail closed without breaking auth configuration", (await config()).previewLogins.length === 0);
+  console.log(`\n${checks} preview access checks passed.`);
+} finally { await new Promise<void>(resolve => server.close(() => resolve())); db.close(); }

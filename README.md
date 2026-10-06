@@ -510,61 +510,52 @@ builds each member's Account snapshot straight from these tables.
 
 ## Digital assets (crypto)
 
-Members can hold BTC, ETH, SOL and USDC alongside their deposit account, and
-buy or sell with their checking balance. `Accounts & savings` carries the
-holdings panel; **Markets** (`/app/markets`) is the full market table.
-`GET /api/me/holdings`, `POST /api/me/holdings/trade` and
-`GET /api/me/markets` are the API.
+The **Crypto** workspace (`/app/assets`) separates Veyra's built-in account
+holdings from a connected external wallet. Approved account owners can review
+and confirm internal **buy, sell and swap** orders. **Send** reserves holdings
+as a cancellable pending request; it does not broadcast a blockchain transaction.
+The existing asset catalog and **Markets** (`/app/markets`) remain available.
 
-> ### ⚠ This is licensable activity in New York
->
-> Veyra holds the assets, so this is custody. Under **23 NYCRR 200.2(q)** both
-> *storing, holding, or maintaining custody or control of virtual currency on
-> behalf of others* and *buying and selling virtual currency as a customer
-> business* are Virtual Currency Business Activity, and require a **BitLicense**
-> or a **limited-purpose trust charter** to serve a single New York resident.
->
-> Veyra is a financial technology product, **not a bank**, so the NY Banking Law
-> charter exemption does not apply. The §200.2(q) software carve-out — *"the
-> development and dissemination of software in and of itself does not constitute
-> Virtual Currency Business Activity"* — covers a self-custody wallet, **not a
-> hosted one holding other people's assets**. This is the hosted kind.
->
-> Ballpark: $5,000 application fee, **12–30+ months**, **$500K–$2M+** in the
-> first year, a **$500,000** minimum surety bond, capital set case-by-case by
-> the Superintendent, a CISO under Part 500, 7-year retention and biennial
-> examination. Fewer than 50 entities hold one. NYDFS issued cease-and-desist
-> orders with **$100K–$500K** penalties to unlicensed platforms serving New
-> Yorkers in early 2026.
->
-> Federal rules have moved the other way — OCC Interpretive Letters 1170, 1184,
-> 1186 and 1188 permit national banks to custody crypto, execute customer
-> trades as riskless principal and outsource the work — but those are *bank*
-> powers, and state licensing still binds a fintech.
->
-> **`CRYPTO_TRADING_ENABLED` is unset by default, which means ON in development
-> and OFF in production.** That is an interlock, not an opinion: the feature is
-> built and demonstrable, and switching it on for real customers should be a
-> deliberate act taken with counsel. Viewing holdings is never gated — reading a
-> balance is not a licensable activity.
+Ethereum browser wallets (EIP-6963/EIP-1193), Phantom Solana and UniSat Bitcoin
+can share public addresses. Wallet balances and receiving QR codes belong to
+those external wallets, not the Veyra account ledger. Connections do not sign
+transactions or prove ownership for Veyra authentication. No private keys or
+recovery phrases are requested. Unsupported/unavailable balances stay unknown.
 
-**Nothing here is FDIC insured**, and the UI says so on the panel and in the
-trade dialog.
+**Custody, external execution, bridging and cash on/off-ramps are not connected.**
+An internal order receipt is not proof that coins exist in custody or that an
+external market executed a trade. Existing account balances and reservations
+must not be treated as backed assets or automatically submitted to a future
+custody provider. Digital assets are not FDIC insured and can lose value.
+
+`CRYPTO_TRADING_ENABLED` remains on by default in development and off by default
+in production. Enabling it only enables the internal ledger functionality.
+Any future live offering needs identified providers, independently verified
+asset backing, reconciliation, security and operational controls, and qualified
+legal review for the operator, services and jurisdictions involved. No license,
+bank status, insurance arrangement or exemption is established by this code.
+
+See [the hybrid crypto implementation and integration guide](docs/crypto-workspace-2026-10-06.md)
+for API contracts, owner/team boundaries, exact arithmetic, lost-response
+recovery, wallet coverage, optional `SOLANA_RPC_URL`, migration 22 and required
+provider work. The legacy `/api/me/holdings/trade` API remains for compatibility;
+the UI uses `/api/me/crypto/quote` and `/api/me/crypto/confirm` instead.
 
 ### Why holdings are a parallel structure
 
-A deposit balance is authoritative: the number *is* what the bank owes you. A
-crypto balance is a quantity whose worth is a market quote that changes every
-second. Merging them yields one confident number that is wrong between every
-two ticks, so they stay separate objects in the schema, the API and the UI —
-holdings never roll into "Total across Veyra".
+An internal USD account record, a crypto quantity and a balance read from an
+external wallet measure different things. A quantity's estimated value changes
+with its market quote; none of these displays alone establishes a backed bank
+deposit or custody inventory. They remain separate in the schema, API and UI.
+Holdings never roll into "Total across Veyra", and connected-wallet balances
+never roll into the Veyra account holdings total.
 
 ### Base units are TEXT, not INTEGER
 
 `holdings.units` stores an integer count of the asset's smallest unit as a
 **string**, and arithmetic happens in JS with `bigint`. This is forced, not
 stylistic: SQLite INTEGER is 64-bit and 1 ETH is 10¹⁸ wei, so an INTEGER column
-**overflows at 9 ETH**. The consequence is that SQL cannot `SUM()` these
+**overflows above approximately 9.22 ETH**. The consequence is that SQL cannot `SUM()` these
 columns — aggregate in the application. Non-negativity is enforced with
 `CHECK (units NOT LIKE '-%')` plus app-layer checks.
 
@@ -574,7 +565,7 @@ exactly zero instead of leaving rounding dust behind.
 
 ### The price feed fails soft
 
-`server/src/prices.ts` polls CoinGecko (free, keyless) with a 60s cache and a
+`server/src/prices.ts` fetches CoinGecko on demand with a 300s cache and a
 4s timeout. Three rules, because a price feed is the least trustworthy part of
 the system:
 
@@ -582,12 +573,40 @@ the system:
    gets multiplied by a balance to produce a confident, wrong valuation. The UI
    renders "Price unavailable" and flags the total as incomplete.
 2. **A stale price is labelled**, with the time it was fetched.
-3. **Trading refuses to execute on a stale or missing quote** (503). Showing an
-   old number is cosmetic; filling an order at one moves real money at the
-   wrong rate.
+3. **Trading refuses stale or missing quotes.** Reviewed account quotes also
+   expire within 60 seconds, bounded by the source price freshness window.
+   A displayed historical value does not authorize a new order.
 
 A feed that answers but carries nothing usable counts as a failure: the last
 good quotes survive rather than being replaced by nothing.
+
+#### Authenticated CoinGecko market data
+
+Provision `COINGECKO_API_KEY` in the **API server's environment secrets**, not
+in the browser or a `VITE_` variable. For local development, the API loads the
+Git-ignored root `.env`; never commit real keys or paste them into chat. Rotate
+any key already shared in a message or URL.
+
+- Set `COINGECKO_API_PLAN=demo` for the free API key, or `pro` for a paid key.
+- Leave `CRYPTO_PRICES_URL` and `CRYPTO_OHLC_URL` blank for CoinGecko. The server
+  chooses the matching HTTPS origin for **both** markets and candlestick history,
+  and sends the key in `x-cg-demo-api-key` or `x-cg-pro-api-key` headers.
+- Keep `PREVIEW_CRYPTO_DATA=0` when using actual market data; restart the API
+  after configuring the secrets. Merely configuring a key is not evidence of a
+  successful feed connection. Open Markets and check its fetched timestamp.
+- The key never goes into a request URL or client bundle. Custom URL overrides
+  receive no CoinGecko credentials; authenticated redirects are not followed.
+  Startup diagnostics show the host and authentication mode, never the key.
+- No key preserves unauthenticated requests, subject to provider availability.
+  Authentication, quota and network failures preserve last-known timestamps;
+  missing/stale prices cannot authorize new trades. Provider response bodies and
+  raw transport errors are not logged.
+
+This is periodically refreshed market data, **not a streaming exchange feed**.
+The existing 5-minute market cache is unchanged; chart calls also consume quota.
+Check the provider's current plan allowance before reducing the cache interval.
+Data access does not connect bank rails, custody, or external trade execution.
+Run `npm run test:market-feed` for isolated authentication and failure-path tests.
 
 Tests never touch the network — they point `CRYPTO_PRICES_URL` and
 `CRYPTO_OHLC_URL` at a local stub, so the real fetch, cache, timeout and
@@ -748,3 +767,94 @@ node scripts/dev-prices.mjs  # offline crypto price feed (see Digital assets)
 > [Transactional email & support](#transactional-email--support). Card issuing
 > and payment rails are internal-ledger operations until a sponsor bank /
 > processor is integrated.
+
+### Development login shortcuts
+
+The development login page displays verified built-in Personal, Business and
+Super Admin fixture credentials under **Quick access**. **Use account** fills
+the normal form; **Sign in** still performs ordinary password authentication,
+including any enrolled MFA. No authentication or role checks are bypassed.
+
+`npm run server` defaults `PREVIEW_LOGIN_SHORTCUTS=1` outside production. Set it
+to `0` to hide the panel. The API always returns no shortcuts in production,
+even if the flag is set. Only existing, active fixture accounts whose stored
+password hashes still match the fixed development passwords are advertised.
+Changed passwords, roles or account types hide that entry; configured operator
+passwords and other users' credentials are never exposed. Configuration is
+served with `Cache-Control: no-store`, and failed config loads hide the panel.
+
+Checks: `npm run test:preview-access` and `npm run test:e2e:preview-access`.
+
+### Crypto testing preview
+
+Run `npm run dev:preview` for the website and API with **sample—not live—crypto
+prices**. To restart only its API, use `PORT=8787 npm run server:preview`.
+The ordinary `npm run server` command does **not** enable sample prices.
+
+This mode uses the isolated, gitignored `server/preview-crypto.db`. Both Personal
+and Business quick-access accounts start with 0.01 BTC, 0.25 ETH, 5 SOL, 500 USDC
+and 250 USDT (a $3,000 sample valuation). There are 24 priced markets with
+synthetic statistics, sparklines and candle history in the API fixture only.
+The customer UI now suppresses generated valuations, markets and charts and
+shows unavailable prices instead. Quantities remain visible and pending
+withdrawal requests still work. Use ordinary `npm run server` with the configured
+market feed for customer-facing buy/sell/swap; browser regression suites use a
+separate offline upstream fixture. Connected wallet balances are never fabricated.
+
+Startup records one idempotent $3,000 test funding credit per fixture owner and
+uses real internal buy orders to establish the portfolio. Persisted quote IDs
+make retries/restarts safe; later trades and cancellations are not reset.
+Seeding is restricted to the known, password-verified fixture owners. Fresh
+signups do not receive this portfolio automatically. This is not external money,
+custody, a price feed for real trading, or blockchain execution.
+
+Production refuses this flag and the preview database. Do not copy preview data
+into production. Tests: `npm run test:preview-crypto` and
+`npm run test:e2e:preview-crypto` (with Playwright Chromium installed).
+
+
+### Crypto activity and funding refinement (6 October 2026)
+
+- Distinct Buy/Sell/Swap presentations share Send's processing components, with
+  real response gating, reduced-motion support and idempotent order recovery.
+- Crypto inbox/email builders cover six activities × five statuses. Current
+  trades and withdrawal reservations/failures/cancellations emit owner-scoped,
+  deduplicated notifications. Email needs `MAIL_PROVIDER`, `MAIL_API_KEY`,
+  `MAIL_FROM` and a public `APP_URL`; unsupported external events are not invented.
+- All 24 catalog assets have unique self-hosted marks and a shared icon registry.
+- Funding reads owner-scoped verified `external_accounts`. New bank linking is
+  provider-gated. At `/app/external-accounts`, owners can instead save an account
+  reference for staff review. Approval enables internal account entries only,
+  not a live bank connection or ACH authorization. No bank passwords or full
+  external account numbers are collected.
+- Direct Deposit reads admin-configured details for that owner, not startup
+  defaults. Individual and bulk bank-detail edits mark the receiving information
+  configured. Existing audited edits are backfilled by migration 23.
+- Recent deposits are shown on the Personal and Business dashboards only.
+
+Verification and integration boundaries: `docs/crypto-funding-polish-2026-10-06.md`.
+
+
+### External account-reference review
+
+The external-account page now offers a complete internal-reference workflow:
+**Accounts → External accounts → Submit account for review**. Only the bank name,
+display name, Checking/Savings type and final four digits are accepted. The
+request stays pending and cannot fund an account until reviewed. Network retries
+reuse a request identifier; matching repeats cannot create duplicate records.
+
+Authorized staff open **Members → Funding → External account references**, record
+an independent ownership-review note, and approve or decline. Approval appears
+as **Staff-approved reference**, never as a provider-verified bank link. The owner
+can refresh the page and select **Continue to Add funds**. Reference submission
+and approval do not credit/debit money.
+
+Migration 24 distinguishes `verification_kind='staff_reference'` from provider
+records. Any future live ACH adapter MUST require an actual provider connection
+and payment authorization, not merely a locally approved reference. The legacy
+`provider_reference` column contains a non-secret staff attestation identifier
+for staff-reviewed records; it is not a provider access token.
+
+43 crypto/funding checks and a browser owner-submit → staff-review → funding
+scenario cover ownership isolation, self-approval rejection, credential-field
+rejection, pending/declined gating and lost-response retries.

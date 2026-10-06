@@ -1,16 +1,21 @@
+import { PLANS } from "../../shared/catalog";
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { motion } from "motion/react";
-import { ArrowRight, BadgeCheck, Building2, Check, Eye, EyeOff, Globe, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { motion, useReducedMotion } from "motion/react";
+import { BadgeCheck, Building2, Check, Eye, EyeOff, Loader2, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
+import { authConfig, type PreviewLogin } from "../lib/authConfig";
 import { apiGet, describeAuthError, ApiError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { prewarmRecaptcha } from "../lib/recaptcha";
 import { federatedProviders, FederatedCancelled, type ProviderId } from "../lib/federated";
 import { passkeySupported, passkeyErrorMessage, isPasskeyCancellation } from "../lib/passkey";
 import { useToast } from "../components/Toast";
+import { SsnField } from "../components/SsnField";
+import { AddressField } from "../components/AddressField";
+import "../styles/auth-refresh.css";
 
 /** 3D artwork shown beside the form (desktop) and above it (phones). */
 const AUTH_ART = {
@@ -29,27 +34,28 @@ export function AuthShell({ title, sub, children, foot, art = AUTH_ART.signin, w
   // loads Google's script on an authenticated dashboard. No-op when the gate
   // is switched off server-side.
   useEffect(() => { prewarmRecaptcha(); }, []);
+  const reduceMotion = useReducedMotion();
 
   return (
     <>
-      <div className="auth-page">
+      <div className={`auth-page auth-refresh${wide ? " auth-signup" : ""}`}>
         <div className="auth-visual">
           <div className="auth-visual-inner">
             <Logo inverse />
             <img className="auth-art" src={art.src} alt={art.alt} />
-            <h2>Banking that works<br />while you do.</h2>
+            <h2>A clearer view.<br />A better way to manage.</h2>
             <ul>
-              <li><BadgeCheck /> Personal and business checking</li>
-              <li><Sparkles /> Rewards and savings on everyday spending</li>
-              <li><ShieldCheck /> Secure transfers and real card controls</li>
+              <li><BadgeCheck /> Personal and business workspaces</li>
+              <li><Sparkles /> Spending insights and savings goals</li>
+              <li><ShieldCheck /> Password, passkey and authenticator controls</li>
             </ul>
-            <div className="auth-stat"><strong>$6,000+</strong><span>average member savings each year</span></div>
+            <div className="auth-stat"><strong>One workspace.</strong><span>Your activity, your team, your controls.</span></div>
           </div>
           <div className="auth-visual-glow" />
         </div>
         <div className="auth-form-side">
           <img className="auth-art-mobile" src={art.src} alt="" aria-hidden="true" loading="lazy" />
-          <motion.div className={wide ? "auth-card is-wide" : "auth-card"} initial={{ opacity: 0, y: 22 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .6 }}>
+          <motion.div className={wide ? "auth-card is-wide" : "auth-card"} initial={reduceMotion ? false : { opacity: 0, y: 22 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: reduceMotion ? 0 : .6 }}>
             <Link to="/" className="auth-back">← Back to site</Link>
             <h1>{title}</h1>
             <p className="auth-sub">{sub}</p>
@@ -97,158 +103,69 @@ function ProviderMark({ src, label }: { src: string; label: string }) {
     width={22} height={22} loading="lazy" decoding="async" title={label} />;
 }
 
-function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "", passkeyBusy = false }: {
-  /** What the server offers. Empty renders nothing but the passkey button. */
+function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "", passkeyBusy = false, disabled = false, loading = false }: {
   providers: Array<{ id: string; label: string }>;
   onProvider: (id: ProviderId) => void;
   onPasskey: () => void;
-  /** A provider popup is a round-trip through another origin — say so while it runs. */
-  busyProvider?: string;
-  /** The OS passkey prompt is modal and can sit there a while. */
-  passkeyBusy?: boolean;
+  busyProvider?: string; passkeyBusy?: boolean; disabled?: boolean; loading?: boolean;
 }) {
-  const busyAnywhere = Boolean(busyProvider) || passkeyBusy;
-  return (
-    <>
-      <div className="auth-provider-stack">
-        {providers.map(({ id, label }) => {
-          const mark = PROVIDER_ICON[id];
-          const busy = busyProvider === id;
-          return (
-            <button key={id} type="button" className={`auth-provider-button ${id}`}
-              onClick={() => onProvider(id as ProviderId)} disabled={busyAnywhere}>
-              {busy ? <Loader2 size={18} className="spin" />
-                : mark ? <ProviderMark src={mark} label={label} />
-                : <Globe size={18} />}
-              <span>{busy ? `Waiting for ${label}…` : `Continue with ${label}`}</span>
-            </button>
-          );
-        })}
-        <button type="button" className="auth-provider-button passkey" onClick={onPasskey} disabled={busyAnywhere}>
-          {passkeyBusy ? <Loader2 size={18} className="spin" /> : <ProviderMark src={PASSKEY_ICON} label="Passkey" />}
-          <span>{passkeyBusy ? "Waiting for your device…" : "Use passkey"}</span>
-        </button>
-      </div>
-      <div className="auth-divider"><span>or continue with email</span></div>
-    </>
-  );
-}
-
-/**
- * One-click demo sign-in.
- *
- * These are the accounts the local database holds: two members seeded by
- * `npm run seed:demo` (personal and business) and the Super Admin the server
- * bootstraps from ADMIN_EMAIL / ADMIN_PASSWORD in .env. Clicking a row fills
- * the form and signs in, so switching between the three dashboards is one
- * click instead of typing a password.
- *
- * Only rendered in demo mode — any `npm run dev` session, or a built bundle
- * opened with `?demo=1` — so production traffic never sees credentials in the
- * page. Before a real launch, change ADMIN_PASSWORD and delete this block
- * (the seed script warns if the admin password drifts from this list).
- */
-const DEMO_ICONS: Record<string, typeof UserRound> = { personal: UserRound, business: Building2, admin: ShieldCheck };
-
-const DEMO_ACCOUNTS: Array<{ id: string; label: string; detail: string; email: string; password: string }> = [
-  { id: "personal", label: "Personal", detail: "Everyday money · goals, cash back, cards", email: "demo.personal@veyra.dev", password: "veyra-demo-2026" },
-  { id: "business", label: "Business", detail: "Lagos Logistics Ltd · treasury, invoices, team", email: "demo.business@veyra.dev", password: "veyra-demo-2026" },
-  { id: "admin", label: "Super Admin", detail: "Platform oversight console", email: "admin@veyra.dev", password: "veyra-admin-2026" },
-];
-
-type DemoAccount = { id: string; label: string; detail: string; email: string; password: string };
-
-/**
- * Which accounts to offer is the server's answer, not the bundle's: it returns
- * them from `/api/demo/accounts` when it actually holds them (dev servers and
- * the static preview), and an empty list in production. The hard-coded list
- * below is only a fallback for a dev build whose API call failed.
- */
-function useDemoAccounts(): DemoAccount[] {
-  const [accounts, setAccounts] = useState<DemoAccount[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<{ accounts: DemoAccount[] }>("/api/demo/accounts", { handleUnauthorized: false })
-      .then(res => { if (!cancelled) setAccounts(res.accounts ?? []); })
-      .catch(() => { if (!cancelled && import.meta.env.DEV) setAccounts(DEMO_ACCOUNTS); });
-    return () => { cancelled = true; };
-  }, []);
-  return accounts;
-}
-
-/** The demo-credential panel: one click per account, filled and submitted. */
-function DemoAccounts({ accounts, onPick, busyEmail }: { accounts: DemoAccount[]; onPick: (email: string, password: string) => void; busyEmail: string }) {
-  return (
-    <section className="demo-logins" aria-label="Demo accounts">
-      <header className="demo-logins-head">
-        <strong><Sparkles size={14} /> Demo accounts</strong>
-        <span>One click signs you in — dev only</span>
-      </header>
-      <div className="demo-logins-list">
-        {accounts.map((account, i) => {
-          const Icon = DEMO_ICONS[account.id] ?? UserRound;
-          const busyNow = busyEmail === account.email;
-          return (
-            <motion.button
-              key={account.id}
-              type="button"
-              className="demo-login"
-              disabled={Boolean(busyEmail)}
-              onClick={() => onPick(account.email, account.password)}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.05 + i * 0.05, duration: 0.35 }}
-            >
-              <span className="demo-login-icon"><Icon size={16} /></span>
-              <span className="demo-login-copy">
-                <strong>{account.label}</strong>
-                <small>{account.detail}</small>
-                <code>{account.email} · {account.password}</code>
-              </span>
-              <span className="demo-login-go">
-                {busyNow ? <Loader2 className="spin" size={15} /> : <>Sign in <ArrowRight size={14} /></>}
-              </span>
-            </motion.button>
-          );
-        })}
-
-      </div>
-    </section>
-  );
+  const busyAnywhere = disabled || Boolean(busyProvider) || passkeyBusy;
+  const choices: Array<{ id: ProviderId; label: string }> = [{ id: "google", label: "Google" }, { id: "apple", label: "Apple" }, { id: "microsoft", label: "Microsoft" }];
+  const unavailable = choices.filter(choice => !providers.some(provider => provider.id === choice.id));
+  return <section className="auth-other-methods" aria-label="Other sign-in methods">
+    <div className="auth-social-grid">
+      {choices.map(({ id, label }) => {
+        const enabled = providers.some(provider => provider.id === id);
+        return <button key={id} type="button" className="auth-provider-button" disabled={!enabled || busyAnywhere}
+          aria-label={`Continue with ${label}${enabled ? "" : loading ? " — checking availability" : " — unavailable"}`} aria-describedby={!enabled ? "provider-availability" : undefined}
+          onClick={() => onProvider(id)}>
+          {busyProvider === id ? <Loader2 size={18} className="spin" /> : <ProviderMark src={PROVIDER_ICON[id]} label={label} />}
+          <span><b>{label}</b><small>{enabled ? busyProvider === id ? "Connecting…" : "Continue" : loading ? "Checking…" : "Unavailable"}</small></span>
+        </button>;
+      })}
+    </div>
+    {unavailable.length > 0 && <p id="provider-availability" className="auth-method-note">{loading ? "Checking available sign-in providers…" : `${unavailable.map(p => p.label).join(", ")} sign-in is not available. Only connected providers can be used.`}</p>}
+    <button type="button" className="auth-provider-button passkey" onClick={onPasskey} disabled={busyAnywhere}>
+      {passkeyBusy ? <Loader2 size={18} className="spin" /> : <ProviderMark src={PASSKEY_ICON} label="Passkey" />}
+      <span>{passkeyBusy ? "Waiting for your device…" : "Use passkey"}</span>
+    </button>
+  </section>;
 }
 
 export function LoginPage() {
   const { login, verifyLoginCode, loginWithProvider, loginWithPasskey, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
 
   const toast = useToast();
-  const navigate = useNavigate();
-  const location = useLocation() as { state?: { from?: string } };
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [errorHint, setErrorHint] = useState("");
   const [busy, setBusy] = useState(false);
-  const [demoBusy, setDemoBusy] = useState("");
   const [busyProvider, setBusyProvider] = useState("");
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [providers, setProviders] = useState<Array<{ id: string; label: string }>>([]);
+  const [providersLoading, setProvidersLoading] = useState(true);
+  const [previewLogins, setPreviewLogins] = useState<PreviewLogin[]>([]);
   // Set once a correct password meets an account with an authenticator
   // enrolled: the form switches to the code step until it is verified or
   // abandoned. No session exists while this is set.
   const [challengeId, setChallengeId] = useState("");
   const [challengeEmail, setChallengeEmail] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
-  const demos = useDemoAccounts();
+  const [codeMode, setCodeMode] = useState<"authenticator" | "recovery">("authenticator");
+  const authBusy = busy || Boolean(busyProvider) || passkeyBusy;
 
-  // The server decides which providers exist, so a deployment with none
-  // configured simply doesn't render the buttons.
-  useEffect(() => { void federatedProviders().then(setProviders); }, []);
+  // Only server-advertised methods can initiate OAuth; unsupported methods stay disabled.
+  useEffect(() => {
+    let active = true;
+    void federatedProviders().then(available => { if (active) { setProviders(available); setProvidersLoading(false); } });
+    void authConfig().then(config => { if (active) setPreviewLogins(config.previewLogins); });
+    return () => { active = false; };
+  }, []);
 
-  /** Where a successful sign-in lands, whatever proved the identity. */
-  function afterSignIn(me: { role?: string }) {
-    const fallback = me.role && me.role !== "user" ? "/app/superadmin" : "/app";
-    navigate(location.state?.from && location.state.from !== "/app" ? location.state.from : fallback, { replace: true });
-  }
+  // RedirectIfAuthed owns successful navigation for password, MFA, OAuth and
+  // passkey sign-in. A second imperative redirect here races navigation from
+  // the newly mounted dashboard and can discard a QR payment's recipient.
 
   async function signIn(asEmail: string, asPassword: string) {
     setError(""); setErrorHint("");
@@ -257,11 +174,11 @@ export function LoginPage() {
       if ("twoFactorRequired" in result) {
         setChallengeId(result.challengeId);
         setChallengeEmail(asEmail.trim());
+        setCodeMode("authenticator");
         setVerificationCode("");
         setPassword("");
         return;
       }
-      afterSignIn(result);
     } catch (err) {
       // Say what happened AND what to do about it: the server's own wording, a
       // hint for the cause, and the status code. "Can't log in" with no reason
@@ -274,6 +191,7 @@ export function LoginPage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (authBusy) return;
     setBusy(true);
     if (!challengeId) {
       await signIn(email, password);
@@ -283,7 +201,7 @@ export function LoginPage() {
 
     setError(""); setErrorHint("");
     try {
-      afterSignIn(await verifyLoginCode(challengeId, verificationCode.trim()));
+      await verifyLoginCode(challengeId, verificationCode.trim());
     } catch (err) {
       const described = describeAuthError(err, "verify your authenticator code");
       setError(described.message);
@@ -293,19 +211,11 @@ export function LoginPage() {
     }
   }
 
-  /** One click: show the credentials in the form, then sign in with them. */
-  async function useDemo(asEmail: string, asPassword: string) {
-    setEmail(asEmail);
-    setPassword(asPassword);
-    setDemoBusy(asEmail);
-    await signIn(asEmail, asPassword);
-    setDemoBusy("");
-  }
-
   const handleProvider = async (id: ProviderId) => {
+    if (authBusy) return;
     setError(""); setErrorHint(""); setBusyProvider(id);
     try {
-      afterSignIn(await loginWithProvider(id));
+      await loginWithProvider(id);
     } catch (err) {
       // Closing the provider window is a decision, not a failure.
       if (!(err instanceof FederatedCancelled)) {
@@ -319,6 +229,7 @@ export function LoginPage() {
   };
 
   const handlePasskey = async () => {
+    if (authBusy) return;
     if (!passkeySupported()) {
       toast({ title: "Passkeys aren't supported in this browser", tone: "info",
         description: "Use a recent version of Chrome, Safari, Edge or Firefox, or sign in with your email and password." });
@@ -327,7 +238,7 @@ export function LoginPage() {
     setPasskeyBusy(true);
     setError("");
     try {
-      afterSignIn(await loginWithPasskey());
+      await loginWithPasskey();
     } catch (err) {
       // Backing out of the OS prompt is a decision, not a failure.
       if (isPasskeyCancellation(err)) return;
@@ -378,13 +289,18 @@ export function LoginPage() {
         </div>
       )}
 
-      {!challengeId && demos.length > 0 && <DemoAccounts accounts={demos} onPick={useDemo} busyEmail={demoBusy} />}
-
-
-      {!challengeId && (
-        <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey}
-          busyProvider={busyProvider} passkeyBusy={passkeyBusy} />
-      )}
+        {!challengeId && previewLogins.length > 0 && <section className="auth-quick-access" aria-label="Quick access accounts">
+          <div className="auth-quick-heading"><h2>Quick access</h2></div>
+          <p>Choose an account to fill in the form, then select Sign in.</p>
+          <div className="auth-quick-list">{previewLogins.map(entry => <article key={entry.email}>
+            <div className="auth-quick-account"><strong>{entry.label}</strong><button type="button" disabled={authBusy} aria-label={`Use ${entry.label} account`} onClick={() => {
+              setEmail(entry.email); setPassword(entry.password); setError(""); setErrorHint("");
+              document.getElementById("email")?.focus();
+            }}>Use account</button></div>
+            <div className="auth-quick-credential"><span>Email</span><code>{entry.email}</code></div>
+            <div className="auth-quick-credential"><span>Password</span><code>{entry.password}</code></div>
+          </article>)}</div>
+        </section>}
 
       <form className="auth-form" onSubmit={submit}>
         {challengeId ? (
@@ -396,24 +312,27 @@ export function LoginPage() {
                 <small>Enter a six-digit authenticator code or one of your unused recovery codes for {challengeEmail}.</small>
               </div>
             </div>
-            <label htmlFor="authenticator-code">Authenticator or recovery code</label>
-            <input
-              id="authenticator-code"
-              type="text"
-              inputMode="text"
-              autoComplete="one-time-code"
-              maxLength={24}
-              required
-              autoFocus
-              placeholder="123456 or ABCD-EFGH-JKLM"
-              value={verificationCode}
-              onChange={e => setVerificationCode(e.target.value.toUpperCase().replace(/[^A-Z0-9 -]/g, "").slice(0, 24))}
-            />
+            <div className="auth-code-options" aria-label="Verification method">
+              <button type="button" disabled={busy} aria-pressed={codeMode === "authenticator"} onClick={() => { setCodeMode("authenticator"); setVerificationCode(""); }}>Authenticator app</button>
+              <button type="button" disabled={busy} aria-pressed={codeMode === "recovery"} onClick={() => { setCodeMode("recovery"); setVerificationCode(""); }}>Recovery code</button>
+            </div>
+            <label htmlFor="authenticator-code">{codeMode === "authenticator" ? "Authenticator code" : "Recovery code"}</label>
+            <input key={codeMode} id="authenticator-code" type="text" inputMode={codeMode === "authenticator" ? "numeric" : "text"}
+              autoComplete="one-time-code" maxLength={codeMode === "authenticator" ? 6 : 24} required autoFocus
+              pattern={codeMode === "authenticator" ? "[0-9]{6}" : undefined} aria-describedby="verification-help"
+              placeholder={codeMode === "authenticator" ? "123456" : "ABCD-EFGH-JKLM"} value={verificationCode}
+              onPaste={e => {
+                e.preventDefault();
+                const pasted = e.clipboardData.getData("text");
+                setVerificationCode(codeMode === "authenticator" ? pasted.replace(/\D/g, "").slice(0, 6) : pasted.toUpperCase().replace(/[^A-Z0-9 -]/g, "").slice(0, 24));
+              }}
+              onChange={e => setVerificationCode(codeMode === "authenticator" ? e.target.value.replace(/\D/g, "").slice(0, 6) : e.target.value.toUpperCase().replace(/[^A-Z0-9 -]/g, "").slice(0, 24))} />
+            <p id="verification-help" className="auth-method-note">{codeMode === "authenticator" ? "Use the current six-digit code from your enrolled authenticator app. This is not an SMS code." : "Use one of the single-use recovery codes saved when you enabled two-step verification. A used code cannot be reused."}</p>
           </>
         ) : (
           <>
             <label htmlFor="email">Email</label>
-            <input id="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+            <input id="email" type="email" required autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
             <div className="label-row"><label htmlFor="password">Password</label><Link to="/forgot-password">Forgot?</Link></div>
             <PasswordField id="password" value={password} onChange={setPassword} autoComplete="current-password" />
           </>
@@ -424,7 +343,7 @@ export function LoginPage() {
             {errorHint && <small>{errorHint}</small>}
           </div>
         )}
-        <button className="auth-submit" type="submit" disabled={busy}>
+        <button className="auth-submit" type="submit" disabled={authBusy}>
           {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Signing in…" : challengeId ? "Verify and sign in" : "Sign in"}
         </button>
         {challengeId ? (
@@ -433,11 +352,16 @@ export function LoginPage() {
           }}>Use a different account</button>
         ) : storageBlocked() && (
           <p className="auth-storage-note">
-            This browser blocks web storage (preview frames and private mode often do), so sign-in works for this
+            This browser blocks web storage (embedded browsers and private mode often do), so sign-in works for this
             tab only — a reload asks again.
           </p>
         )}
       </form>
+      {!challengeId && <>
+        <div className="auth-divider"><span>Other ways to sign in</span></div>
+        <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey} busyProvider={busyProvider} passkeyBusy={passkeyBusy} disabled={authBusy} loading={providersLoading} />
+
+      </>}
     </AuthShell>
   );
 }
@@ -470,10 +394,7 @@ const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","
 
 export function SignupPage() {
   const { signup } = useAuth();
-  const [signupProviders, setSignupProviders] = useState<Array<{ id: string; label: string }>>([]);
-  useEffect(() => { void federatedProviders().then(setSignupProviders); }, []);
   const navigate = useNavigate();
-  const toast = useToast();
   const [params] = useSearchParams();
   const initialType = params.get("type") === "personal" ? "personal" : "business";
   const [form, setForm] = useState({
@@ -488,29 +409,6 @@ export function SignupPage() {
   const [busy, setBusy] = useState(false);
   const set = (k: keyof typeof form, v: string | boolean | number) => setForm(f => ({ ...f, [k]: v }));
   const business = form.accountType === "business";
-
-  const handleProvider = (id: ProviderId) => {
-    // Deliberate: federated sign-in never auto-provisions. Opening an account
-    // needs the full application (legal identity, tax ID, address, government
-    // ID), so a provider can link to an account but cannot create one.
-    const label = signupProviders.find(p => p.id === id)?.label ?? "That provider";
-    toast({
-      title: `${label} can't open an account`,
-      description: "Opening a Veyra account needs your full application. Complete it below, then link it from Security.",
-      tone: "info",
-    });
-  };
-
-  // A passkey is added to an account, never used to open one — the same rule
-  // the federated providers follow, for the same reason: opening a Veyra
-  // account requires the full application.
-  const handlePasskey = () => {
-    toast({
-      title: "Add a passkey once your account is open",
-      description: "Opening an account needs the application below. After that, Security \u2192 Passkeys sets one up in a few seconds.",
-      tone: "info",
-    });
-  };
 
   const strength = Math.min(4, (form.password.length >= 8 ? 1 : 0) + (/[A-Z]/.test(form.password) ? 1 : 0) + (/[0-9]/.test(form.password) ? 1 : 0) + (/[^A-Za-z0-9]/.test(form.password) ? 1 : 0));
   const labels = ["Too short", "Weak", "Fair", "Good", "Strong"];
@@ -556,25 +454,25 @@ export function SignupPage() {
   }
 
   return (
-    <AuthShell art={AUTH_ART.signup} wide title="Open your account"
-      sub={business ? "A few details and your business account is ready." : "Simple checking for spending, saving and everyday life."}
+    <AuthShell art={AUTH_ART.signup} wide title="Create your account"
+      sub="Choose your workspace, complete your details and submit your application for review."
       foot={<>Already with us? <Link to="/login">Sign in</Link></>}>
-      <AuthProviders providers={signupProviders} onProvider={handleProvider} onPasskey={handlePasskey} />
+      <div className="signup-intro"><ShieldCheck size={20} /><div><strong>Your application, clearly organized</strong><p>Complete the required fields; optional details are noted. After approval, add an authenticator app or passkey in Security.</p></div></div>
       <form className="auth-form" onSubmit={submit}>
         <span className="auth-choice-label">I want to open</span>
         <div className="account-type-toggle">
-          <button type="button" className={form.accountType === "personal" ? "on" : ""} onClick={() => setForm(f => ({ ...f, accountType: "personal", plan: "Starter" }))}>
+          <button type="button" aria-pressed={!business} className={form.accountType === "personal" ? "on" : ""} onClick={() => setForm(f => ({ ...f, accountType: "personal", plan: "Starter" }))}>
             <UserRound /><span><strong>Personal account</strong><small>For daily spending, bills and savings</small></span>
           </button>
-          <button type="button" className={form.accountType === "business" ? "on" : ""} onClick={() => setForm(f => ({ ...f, accountType: "business", plan: "Pro" }))}>
+          <button type="button" aria-pressed={business} className={form.accountType === "business" ? "on" : ""} onClick={() => setForm(f => ({ ...f, accountType: "business", plan: "Pro" }))}>
             <Building2 /><span><strong>Business account</strong><small>For company cards, invoices and teams</small></span>
           </button>
         </div>
 
-        <p className="auth-req-note">Federal law requires us to collect and verify the information below before we can open an account. It's used for identity checks only.</p>
+        <p className="auth-req-note">Do not submit real government identifiers. Submitting an application does not open a regulated bank account. Read our Privacy Policy and Disclosures before continuing.</p>
 
         {/* ------------------------------ Applicant ------------------------------ */}
-        <div className="app-section"><span>Your details</span></div>
+        <section className="signup-section" aria-labelledby="signup-details"><h2 id="signup-details">Your details</h2>
         <div className="field-row">
           <div>
             <label htmlFor="su-firstName">Legal first name</label>
@@ -595,11 +493,11 @@ export function SignupPage() {
             <input id="su-dob" type="date" required autoComplete="bday" max={new Date(Date.now() - 18 * 365 * 864e5).toISOString().slice(0, 10)} value={form.dob} onChange={e => set("dob", e.target.value)} />
           </div>
         </div>
-        <label htmlFor="su-ssn">Social Security number <em>· never shown to other members</em></label>
-        <input id="su-ssn" required inputMode="numeric" autoComplete="off" placeholder="123-45-6789" maxLength={11} value={form.ssn} onChange={e => set("ssn", e.target.value)} />
+        <label htmlFor="su-ssn">Social Security number (SSN)</label>
+        <SsnField id="su-ssn" value={form.ssn} onChange={value => set("ssn", value)} />
         <div className="field-row">
           <div>
-            <label htmlFor="su-phone">Mobile phone (for 2FA & alerts)</label>
+            <label htmlFor="su-phone">Mobile phone</label>
             <input id="su-phone" type="tel" required autoComplete="tel" placeholder="+1 (555) 019-2834" value={form.phone} onChange={e => set("phone", e.target.value)} />
           </div>
           <div>
@@ -611,9 +509,14 @@ export function SignupPage() {
         <input id="su-citizenship" required placeholder="United States" value={form.citizenship} onFocus={e => e.target.select()} onChange={e => set("citizenship", e.target.value)} />
 
         {/* ------------------------------ Address ------------------------------ */}
-        <div className="app-section"><span>Home address</span></div>
+        </section>
+        <section className="signup-section" aria-labelledby="signup-address"><h2 id="signup-address">Home address</h2>
         <label htmlFor="su-addressLine1">Street address</label>
-        <input id="su-addressLine1" required autoComplete="address-line1" placeholder="1841 Maple Grove Avenue" value={form.addressLine1} onChange={e => set("addressLine1", e.target.value)} />
+        <AddressField id="su-addressLine1" placeholder="Start typing your street address" value={form.addressLine1}
+          country={form.country} revision={JSON.stringify([form.addressLine1, form.city, form.state, form.postalCode, form.country])}
+          nextFieldId="su-addressLine2" onChange={value => set("addressLine1", value)}
+          onSelect={address => setForm(current => ({ ...current, addressLine1: address.street, addressLine2: current.addressLine2 || address.unit,
+            city: address.city, state: address.state, postalCode: address.postalCode, country: address.country }))} />
         <label htmlFor="su-addressLine2">Apartment, suite, unit <em>(optional)</em></label>
         <input id="su-addressLine2" autoComplete="address-line2" placeholder="Apt 4B" value={form.addressLine2} onChange={e => set("addressLine2", e.target.value)} />
         <div className="field-row-3">
@@ -637,7 +540,8 @@ export function SignupPage() {
         <input id="su-country" required autoComplete="country-name" placeholder="United States" value={form.country} onFocus={e => e.target.select()} onChange={e => set("country", e.target.value)} />
 
         {/* ------------------------------ Government ID ------------------------------ */}
-        <div className="app-section"><span>Government ID</span></div>
+        </section>
+        <section className="signup-section" aria-labelledby="signup-identity"><h2 id="signup-identity">Government ID</h2>
         <label htmlFor="su-idType">Document type</label>
         <select id="su-idType" required value={form.idType} onChange={e => set("idType", e.target.value)}>
           {ID_TYPE_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
@@ -656,7 +560,8 @@ export function SignupPage() {
         <input id="su-idExpiry" type="date" required value={form.idExpiry} onChange={e => set("idExpiry", e.target.value)} />
 
         {/* ------------------------------ Employment & funds ------------------------------ */}
-        <div className="app-section"><span>Employment & funds</span></div>
+        </section>
+        <section className="signup-section" aria-labelledby="signup-employment"><h2 id="signup-employment">Employment & funds</h2>
         <div className="field-row">
           <div>
             <label htmlFor="su-occupation">Occupation</label>
@@ -685,8 +590,9 @@ export function SignupPage() {
         </div>
 
         {/* ------------------------------ Business (business accounts only) ------------------------------ */}
+        </section>
         {business && <>
-          <div className="app-section"><span>The business</span></div>
+          <section className="signup-section" aria-labelledby="signup-business"><h2 id="signup-business">The business</h2>
           <label htmlFor="su-legalName">Registered legal name</label>
           <input id="su-legalName" required autoComplete="organization" placeholder="Lagos Logistics Ltd" value={form.legalName} onChange={e => set("legalName", e.target.value)} />
           <div className="field-row">
@@ -739,7 +645,11 @@ export function SignupPage() {
             </div>
           </div>
           <label htmlFor="su-bizAddressLine1">Business street address</label>
-          <input id="su-bizAddressLine1" required placeholder="220 West 34th Street" value={form.bizAddressLine1} onChange={e => set("bizAddressLine1", e.target.value)} />
+          <AddressField id="su-bizAddressLine1" placeholder="Start typing your business street address" value={form.bizAddressLine1}
+            country={form.bizCountry} revision={JSON.stringify([form.bizAddressLine1, form.bizCity, form.bizState, form.bizPostalCode, form.bizCountry])}
+            nextFieldId="su-bizAddressLine2" onChange={value => set("bizAddressLine1", value)}
+            onSelect={address => setForm(current => ({ ...current, bizAddressLine1: address.street, bizAddressLine2: current.bizAddressLine2 || address.unit,
+              bizCity: address.city, bizState: address.state, bizPostalCode: address.postalCode, bizCountry: address.country }))} />
           <label htmlFor="su-bizAddressLine2">Suite, floor, unit <em>(optional)</em></label>
           <input id="su-bizAddressLine2" placeholder="Suite 12" value={form.bizAddressLine2} onChange={e => set("bizAddressLine2", e.target.value)} />
           <div className="field-row-3">
@@ -760,8 +670,9 @@ export function SignupPage() {
             </div>
           </div>
 
-          <div className="app-section"><span>Beneficial owner</span></div>
-          <p className="auth-req-note">Every business account needs one person who owns 25% or more of it — that's who banks are required to identify.</p>
+          </section>
+        <section className="signup-section" aria-labelledby="signup-owner"><h2 id="signup-owner">Beneficial owner</h2>
+          <p className="auth-req-note">This application requests details of one owner with at least 25% ownership. Do not submit real government identifiers.</p>
           <div className="field-row">
             <div>
               <label htmlFor="su-ownerName">Owner's full legal name</label>
@@ -779,7 +690,7 @@ export function SignupPage() {
             </div>
             <div>
               <label htmlFor="su-ownerSsn">Owner's SSN</label>
-              <input id="su-ownerSsn" required inputMode="numeric" placeholder="123-45-6789" maxLength={11} value={form.ownerSsn} onChange={e => set("ownerSsn", e.target.value)} />
+              <SsnField id="su-ownerSsn" label="owner’s SSN" value={form.ownerSsn} onChange={value => set("ownerSsn", value)} />
             </div>
           </div>
           <label htmlFor="su-ownerOwnership">Ownership percentage</label>
@@ -787,10 +698,10 @@ export function SignupPage() {
               replaces the default instead of appending to it. */}
           <input id="su-ownerOwnership" type="number" required min={25} max={100} step={1} value={form.ownerOwnership}
             onFocus={e => e.target.select()} onChange={e => set("ownerOwnership", Number(e.target.value))} />
-        </>}
+        </section></>}
 
         {/* ------------------------------ Security & plan ------------------------------ */}
-        <div className="app-section"><span>Secure your account</span></div>
+        <section className="signup-section" aria-labelledby="signup-security"><h2 id="signup-security">Secure your account</h2>
         <label htmlFor="su-pw">Password</label>
         <PasswordField id="su-pw" value={form.password} onChange={v => set("password", v)} autoComplete="new-password" />
         <div className="strength"><div className="strength-bars">{[0, 1, 2, 3].map(i => <i key={i} className={i < strength ? `on s${strength}` : ""} />)}</div><span>{labels[strength]}</span></div>
@@ -799,16 +710,17 @@ export function SignupPage() {
           {(["Starter", "Pro"] as const).map(p => (
             <button type="button" key={p} className={form.plan === p ? "on" : ""} onClick={() => set("plan", p)}>
               <strong>{business ? p : (p === "Pro" ? "Plus" : "Everyday")}</strong>
-              <small>{business ? (p === "Pro" ? "$99/mo · Scout AI" : "$0/mo · core banking") : (p === "Pro" ? "$9/mo · enhanced rewards" : "$0/mo · daily banking")}</small>
+              <small>${PLANS[form.accountType].find(plan => plan.id === p)!.monthly}/mo · plan selection</small>
             </button>
           ))}
         </div>
+        </section>
         <label className="check-row"><input type="checkbox" checked={form.terms} onChange={e => set("terms", e.target.checked)} /><span>I agree to the <Link to="/legal/terms">Terms</Link> and <Link to="/legal/privacy">Privacy Policy</Link>, and I confirm the information above is accurate.</span></label>
-        {error && <p className="form-error">{error}</p>}
+        {error && <p role="alert" className="form-error">{error}</p>}
         <button className="auth-submit" type="submit" disabled={busy}>
           {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Creating account…" : "Create account"}
         </button>
-        <p className="auth-note">Bank-grade encryption · passwords stored as one-way scrypt hashes.</p>
+        <p className="auth-note">SSNs are masked on screen, not encrypted by the eye toggle. Your application is reviewed before account access.</p>
       </form>
     </AuthShell>
   );
@@ -876,7 +788,7 @@ export function ForgotPasswordPage() {
         <form className="auth-form" onSubmit={complete}>
           {demoCode && (
             <p className="auth-note" data-testid="demo-reset-code">
-              This demo has no mail service, so the code is shown here rather than emailed. It is already filled in
+              Email delivery is not connected, so the code is shown here rather than emailed. It is already filled in
               for you.
             </p>
           )}

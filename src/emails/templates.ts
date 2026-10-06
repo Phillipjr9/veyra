@@ -1,3 +1,6 @@
+import { CRYPTO_ACTIVITIES, CRYPTO_STATUSES } from "../../shared/cryptoNotifications";
+import { buildCryptoEmail } from "./crypto";
+import { buildZelleEmail, type ZelleEvent } from "./zelle";
 /**
  * Veyra transactional email templates.
  *
@@ -13,7 +16,7 @@ import {
   APP_BASE, emailShell, eyebrow, h1, p, amount, pill, details, btn, textLink, note, progress,
 } from "./design";
 
-export type EmailCategory = "security" | "transfers" | "cards" | "invoices" | "scout" | "account";
+export type EmailCategory = "security" | "transfers" | "cards" | "invoices" | "scout" | "account" | "crypto";
 
 export interface EmailTemplate {
   id: string;
@@ -194,35 +197,14 @@ const depositReceived: EmailTemplate = {
   }),
 };
 
-const transferSent: EmailTemplate = {
-  id: "transfer-sent",
-  name: "Transfer sent (Zelle®)",
-  category: "transfers",
-  subject: "You sent $1,200.00 to Harbor Studio",
-  preheader: "Sent with Zelle® in seconds from business checking •••• 9014.",
-  html: emailShell({
-    subject: "You sent $1,200.00 to Harbor Studio",
-    preheader: "Sent with Zelle® in seconds from business checking •••• 9014.",
-    content: `
-      ${eyebrow("Money out")}
-      ${h1("Transfer complete")}
-      ${p("Your Zelle® payment was delivered. The money left your account immediately.")}
-      ${amount("−$1,200.00", "out")}
-      ${pill("Delivered", "green")}
-      ${details([
-        ["Sent to", "Harbor Studio"],
-        ["Delivery", "Zelle® · within seconds"],
-        ["From", "Business checking •••• 9014"],
-        ["Memo", "Brand workshop deposit"],
-        ["Date & time", "Oct 2, 2026 · 10:26 AM PT"],
-        ["Reference", "VYR-Z9R3XW7D"],
-        ["New balance", "$83,090.42"],
-      ])}
-      ${btn("View transaction", `${APP}/transactions`)}
-      ${note("Zelle® payments are instant and can't be reversed once delivered. Only send to people and businesses you trust.")}
-    `,
-  }),
+const zellePreview = (id: string, name: string, event: ZelleEvent): EmailTemplate => {
+  const mail = buildZelleEmail({event,amountCents:120000,reference:'VYR-ZELLE-0001',occurredAt:Date.UTC(2026,9,6,14,30),accountLast4:'9014',counterparty:'Harbor Studio'},APP);
+  return {id,name,category:'transfers',subject:mail.subject,preheader:mail.preheader,html:mail.html};
 };
+const transferSent = zellePreview('transfer-sent','Zelle outgoing · ledger recorded','outgoing_recorded');
+const zellePending = zellePreview('zelle-incoming-pending','Zelle incoming · pending review','incoming_pending');
+const zelleConfirmed = zellePreview('zelle-incoming-confirmed','Zelle incoming · funds credited','incoming_confirmed');
+const zelleRejected = zellePreview('zelle-incoming-rejected','Zelle incoming · request declined','incoming_rejected');
 
 const billPaid: EmailTemplate = {
   id: "bill-paid",
@@ -736,7 +718,15 @@ const savingsGoal: EmailTemplate = {
 
 /* ============================================================ REGISTRY */
 
+const cryptoEmails: EmailTemplate[] = CRYPTO_ACTIVITIES.flatMap(activity => CRYPTO_STATUSES.map(status => {
+  const message = buildCryptoEmail({ activity, status, reference: "VYR-8F31A27C", occurredAt: Date.UTC(2026, 9, 6, 14, 30),
+    asset: activity === "buy" ? "USD" : "BTC", quantity: activity === "buy" ? "100.00" : "0.002",
+    ...(activity === "buy" || activity === "swap" ? { toAsset: "ETH", toQuantity: "0.032" } : activity === "sell" ? { toAsset: "USD", toQuantity: "100.00" } : {}),
+    settlement: ["buy", "sell", "swap"].includes(activity) || status === "completed" || status === "confirmed" ? "account" : "request", accountLast4: "4821" }, APP);
+  return { id: `crypto-${activity}-${status}`, name: `Crypto ${activity} · ${status}`, category: "crypto" as const, subject: message.subject, preheader: `Your crypto ${activity} is ${status}.`, html: message.html };
+}));
 export const emailTemplates: EmailTemplate[] = [
+  ...cryptoEmails,
   // Security
   signinAlert,
   passwordReset,
@@ -746,6 +736,9 @@ export const emailTemplates: EmailTemplate[] = [
   // Transfers
   depositReceived,
   transferSent,
+  zellePending,
+  zelleConfirmed,
+  zelleRejected,
   billPaid,
   rewardsRedeemed,
   // Cards
@@ -774,6 +767,7 @@ export const emailCategories: Array<{ id: EmailCategory | "all"; label: string }
   { id: "all", label: "All" },
   { id: "security", label: "Security" },
   { id: "transfers", label: "Transfers" },
+  { id: "crypto", label: "Crypto" },
   { id: "cards", label: "Cards" },
   { id: "invoices", label: "Invoices" },
   { id: "scout", label: "Scout" },

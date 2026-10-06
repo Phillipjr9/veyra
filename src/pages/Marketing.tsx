@@ -1,3 +1,4 @@
+import { PLANS, PLAN_NOTICE } from "../../shared/catalog";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { motion } from "motion/react";
@@ -90,7 +91,7 @@ export function PersonalBankingPage() {
 export function ScoutPage() {
   return (
     <>
-      <PageHead kicker="Veyra Scout" title="AI that hunts for savings on every charge." sub="Scout reviews each transaction, negotiates better pricing and returns the difference to your balance." />
+      <PageHead kicker="Veyra Scout" title="AI that hunts for savings on every charge." sub="Scout reviews saved transaction activity and highlights spending patterns and possible savings to investigate. It does not negotiate or credit money." />
       <AISavingsSection />
       <ScoutSteps />
       <FinalCTA />
@@ -98,58 +99,25 @@ export function ScoutPage() {
   );
 }
 
-const PLANS = [
-  { name: "Starter", price: "$0", cadence: "/mo", blurb: "Core business banking to get moving.", features: ["Business checking account", "2 virtual cards", "Free domestic ACH", "1% rewards on card spend", "Email support"], cta: "Start free" },
-  { name: "Pro", price: "$99", cadence: "/mo", blurb: "Full rewards and Scout AI savings.", features: ["Everything in Starter", "Up to 25 virtual cards", "Unlimited 2% rewards", "Scout AI negotiation", "Invoicing & payments", "24/7 chat support"], cta: "Choose Pro", featured: true },
-  { name: "Scale", price: "Custom", cadence: "", blurb: "For teams with complex finance needs.", features: ["Everything in Pro", "Unlimited cards & users", "Custom approval workflows", "Dedicated account partner", "API access", "Concierge service"], cta: "Talk to sales" },
-];
-
 export function PricingPage() {
-  const [annual, setAnnual] = useState(false);
+  const [kind, setKind] = useState<"personal" | "business">("personal");
   const navigate = useNavigate();
-  return (
-    <>
-      <PageHead kicker="Pricing" title="Pricing that pays for itself." sub="Pick a plan, keep the rewards. If Scout doesn't earn Pro members at least $100 a month, that month is on us." />
-      <section className="section pricing-page">
-        <div className="billing-toggle">
-          <button className={!annual ? "on" : ""} onClick={() => setAnnual(false)}>Monthly</button>
-          <button className={annual ? "on" : ""} onClick={() => setAnnual(true)}>Annual <small>−2 months</small></button>
-        </div>
-        <div className="plans">
-          {PLANS.map((p, i) => (
-            <Reveal key={p.name} delay={i * .08}>
-              <div className={`plan ${p.featured ? "featured" : ""}`}>
-                {p.featured && <span className="plan-tag">Most popular</span>}
-                <h3>{p.name}</h3>
-                <div className="plan-price">
-                  <strong>{p.price === "Custom" ? "Custom" : annual && p.price !== "$0" ? `$${Math.round(parseInt(p.price.slice(1)) * 10 / 12)}` : p.price}</strong>
-                  <span>{p.cadence}</span>
-                </div>
-                <p className="plan-blurb">{p.blurb}</p>
-                <ul>{p.features.map(f => <li key={f}><Check /> {f}</li>)}</ul>
-                <button className={`plan-cta ${p.featured ? "primary" : ""}`}
-                  onClick={() => (p.name === "Scale" ? navigate("/contact") : navigate(`/signup?plan=${p.name === "Pro" ? "Pro" : "Starter"}`))}>
-                  {p.cta} <ArrowRight size={15} />
-                </button>
-              </div>
-            </Reveal>
-          ))}
-        </div>
-        <div className="faq">
-          <h2>Common questions</h2>
-          {[
-            ["Are there hidden transfer fees?", "No. Domestic ACH and wires are included on every plan, with no per-transfer charge from Veyra."],
-            ["How are rewards paid out?", "Rewards accrue on every eligible purchase and can be redeemed to your balance at any time from the dashboard."],
-            ["What does Scout actually do?", "Scout reviews each transaction, looks for better pricing, promotional offers and retention rates, then credits recovered savings back to you."],
-            ["Can I change plans later?", "Yes — switch plans whenever you like from account settings. Changes apply to your next billing cycle."],
-          ].map(([q, a]) => (
-            <details key={q}><summary>{q}<span /></summary><p>{a}</p></details>
-          ))}
-        </div>
-      </section>
-      <FinalCTA />
-    </>
-  );
+  return <>
+    <PageHead kicker="Pricing" title="Plans that match your workspace." sub="The same plan names and monthly prices appear here, at signup and in account settings." />
+    <section className="section pricing-page">
+      <div className="billing-toggle" aria-label="Account pricing">
+        <button aria-pressed={kind === "personal"} className={kind === "personal" ? "on" : ""} onClick={() => setKind("personal")}>Personal</button>
+        <button aria-pressed={kind === "business"} className={kind === "business" ? "on" : ""} onClick={() => setKind("business")}>Business</button>
+      </div>
+      <div className="plans current-plans">{PLANS[kind].map(p => <div className={`plan ${p.id === "Pro" ? "featured" : ""}`} key={p.id}>
+        <h3>{p.name}</h3><div className="plan-price"><strong>${p.monthly}</strong><span>/mo</span></div>
+        <p className="plan-blurb">{kind === "personal" ? "Your personal workspace" : "Your business workspace"}</p>
+        <ul>{p.features.map(feature => <li key={feature}><Check />{feature}</li>)}</ul>
+        <button className="plan-cta primary" onClick={() => navigate(`/signup?type=${kind}&plan=${p.id}`)}>Choose {p.name}<ArrowRight size={15} /></button>
+      </div>)}</div>
+      <div className="panel" style={{ padding: 24, marginTop: 24 }}><h2>What is available today</h2><p>{PLAN_NOTICE}</p><p>There is no annual billing discount or automatic subscription collection in the current implementation. Funding requests need confirmation, and digital-asset prices come from a separate timestamped market feed. Network fees and third-party charges are not guaranteed by these plan prices.</p></div>
+    </section><FinalCTA />
+  </>;
 }
 
 export function SecurityPage() {
@@ -498,56 +466,7 @@ export function JobPage() {
   );
 }
 
-const LEGAL: Record<string, { title: string; body: string[] }> = {
-  privacy: {
-    title: "Privacy Policy",
-    body: [
-      "Veyra is a financial technology company. This policy summarizes what your account data is and how it is protected.",
-      "When you create an account we store your name, business name, email address and account activity in our secure database. Passwords are stored only as one-way scrypt hashes — the original text is never retained.",
-      "We use your data to operate your account, meet compliance obligations and prevent fraud. We do not sell personal data.",
-      "Sessions are bearer tokens bound to your account. You can revoke them at any time by signing out or changing your password.",
-    ],
-  },
-  terms: {
-    title: "Terms of Service",
-    body: [
-      "By using Veyra you acknowledge that it is a financial technology product and not a regulated depository institution.",
-      "Veyra is not a bank; banking services would be provided by partner financial institutions, and card products issued under license.",
-      "Balances, rewards and savings figures reflect the activity recorded in your Veyra account.",
-      "The software is provided as-is, without warranty of any kind.",
-      "Brand names, product names and imagery are original to Veyra.",
-    ],
-  },
-  disclosures: {
-    title: "Disclosures",
-    body: [
-      "Veyra is a financial technology company, not a bank.",
-      "Banking services would be provided by partner financial institutions, Members FDIC, and card products issued under license from a card network.",
-      "Reward rates, savings estimates and annual value figures are estimates based on your account activity and do not represent an offer or a guarantee of returns.",
-      "Calculator outputs are estimates based on the inputs you provide and do not constitute financial advice.",
-    ],
-  },
-};
-
-export function LegalPage({ doc }: { doc: keyof typeof LEGAL }) {
-  const page = LEGAL[doc];
-  return (
-    <>
-      <PageHead kicker="Legal" title={page.title} />
-      <section className="section legal-page">
-        <Reveal className="legal-body">
-          <p className="legal-updated">Last updated January 2026</p>
-          {page.body.map((p, i) => <p key={i}>{p}</p>)}
-          <div className="legal-links">
-            {Object.keys(LEGAL).filter(k => k !== doc).map(k => (
-              <Link key={k} to={`/legal/${k}`} className="text-link">{LEGAL[k].title} <ArrowRight size={14} /></Link>
-            ))}
-          </div>
-        </Reveal>
-      </section>
-    </>
-  );
-}
+export { LegalPage } from "./Legal";
 
 export function NotFoundPage() {
   return (

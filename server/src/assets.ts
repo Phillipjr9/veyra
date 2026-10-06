@@ -1,27 +1,11 @@
 /**
- * Digital asset registry and the switch that governs trading.
+ * Digital asset registry and internal account-trading switch.
  *
- * ---------------------------------------------------------------------------
- * REGULATORY NOTE — read before enabling this in production.
- *
- * Holding digital assets on a member's behalf and letting them buy and sell is
- * "virtual currency business activity" under 23 NYCRR 200.2(q): both *storing,
- * holding, or maintaining custody or control of virtual currency on behalf of
- * others* and *buying and selling virtual currency as a customer business*.
- * In New York that requires a BitLicense or a limited-purpose trust charter.
- *
- * Veyra's own README says it is a financial technology product, not a bank, so
- * the NY Banking Law charter exemption does not apply. NYDFS issued
- * cease-and-desist orders with six-figure penalties to unlicensed platforms
- * serving New Yorkers in early 2026.
- *
- * That is why CRYPTO_TRADING_ENABLED defaults ON in development and OFF in
- * production. It is an interlock, not an opinion: the product is built and
- * demonstrable, and turning it on for real customers is a deliberate act taken
- * with counsel, not something that ships by forgetting to look.
- *
- * Nothing here is FDIC insured, and the UI must never imply otherwise.
- * ---------------------------------------------------------------------------
+ * This release does not establish custody, asset backing or external execution.
+ * Production defaults off. Enabling the ledger is not activation of a live
+ * financial service: identified providers, reconciliation, security controls
+ * and qualified jurisdiction-specific legal review are required first.
+ * Digital assets are not FDIC insured; the UI must never imply otherwise.
  */
 import type { DatabaseSync } from "node:sqlite";
 
@@ -60,10 +44,8 @@ export function assetByCode(db: DatabaseSync, code: string): Asset | null {
 }
 
 /**
- * Whether members may buy and sell.
- *
- * Viewing holdings is always allowed — reading a balance is not a licensable
- * activity. Only movement is gated.
+ * Whether internal account trading is enabled. Read-only holdings remain
+ * available to authenticated users; mutations have additional authorization.
  */
 export function tradingEnabled(): boolean {
   const raw = (process.env.CRYPTO_TRADING_ENABLED ?? "").trim();
@@ -74,6 +56,6 @@ export function tradingEnabled(): boolean {
 
 export function describeCrypto(): string {
   return tradingEnabled()
-    ? "Digital assets: trading ON — licensable activity (23 NYCRR 200.2(q)); not FDIC insured"
-    : "Digital assets: view only (set CRYPTO_TRADING_ENABLED=1 to allow buying and selling)";
+    ? "Digital assets: account trading ON; custody and on-chain execution not connected; not FDIC insured"
+    : "Digital assets: view only (CRYPTO_TRADING_ENABLED controls internal account trading)";
 }

@@ -237,3 +237,10 @@
   .appstatus-card { width: 100%; border: 0; border-radius: 0; box-shadow: none; padding: 26px 20px 22px; }
   .appstatus h1 { font-size: 23px; }
 }
+
+/* Optional shared crypto enhancements (trade and withdrawal flows). */
+.flow-orbit-progress { position: absolute; inset: -10px; width: calc(100% + 20px); height: calc(100% + 20px); overflow: visible; transform: rotate(-90deg); pointer-events: none; }
+.flow-orbit-progress circle { fill: none; stroke-width: 2.5; }
+.flow-orbit-progress-rail { stroke: #e4d8f5; }
+.flow-orbit-progress-fill { stroke: var(--violet); stroke-linecap: round; }
+.flow-travelling-token { position: absolute; z-index: 2; top: 50%; width: 32px; height: 32px; margin: -16px 0 0 -16px; display: grid; place-items: center; border: 1px solid #fff; border-radius: 50%; background: linear-gradient(145deg,#fff,#e6dcfa); box-shadow: 0 4px 0 -1px #c7b4e5,0 7px 17px #62418d35; }

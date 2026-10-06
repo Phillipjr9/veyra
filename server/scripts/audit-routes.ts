@@ -52,17 +52,22 @@ const rawRoutes = [...source.matchAll(ROUTE_RE)];
  */
 type Policy = { method: string; path: string; auth: boolean; /** One permission, or any of several. */ perm: string | string[] | null };
 const BASELINE: Policy[] = [
+  { method: "GET", path: "/api/me/demo-payments", auth: true, perm: null },
+  { method: "POST", path: "/api/me/demo-payments/action", auth: true, perm: null },
   // Public surface: reachable without a session.
   { method: "GET", path: "/api/health", auth: false, perm: null },
   // Advertises the demo credentials the login page offers with one click. Public
   // by design (a signed-out visitor is who it's for) and empty in production —
   // see demoLoginsEnabled() in server/src/demo.ts.
-  { method: "GET", path: "/api/demo/accounts", auth: false, perm: null },
   // Tells a signed-out browser whether reCAPTCHA is enforced and which public
   // site key to mint tokens with. Public by necessity — it is read before
   // anyone can sign in — and carries no secret: the site key is designed to
   // ship inside the page, while the secret/API key never leaves the server.
   { method: "GET", path: "/api/auth/config", auth: false, perm: null },
+  // Public during signup; fixed upstream, bounded input, session-bound details,
+  // per-connection and instance request budgets, and server-only credentials.
+  { method: "POST", path: "/api/address/autocomplete", auth: false, perm: null },
+  { method: "POST", path: "/api/address/details", auth: false, perm: null },
   { method: "POST", path: "/api/auth/login", auth: false, perm: null },
   // Second step of a password sign-in for accounts with an authenticator
   // enrolled. Public of necessity — it runs before a session exists — and
@@ -92,6 +97,21 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/auth/change-password", auth: true, perm: null },
   { method: "GET", path: "/api/me/account", auth: true, perm: null },
   { method: "GET", path: "/api/me/transactions", auth: true, perm: null },
+  { method: "POST", path: "/api/admin/accounts/bulk-preview", auth: true, perm: "accounts.edit_number" },
+  { method: "POST", path: "/api/admin/accounts/bulk-apply", auth: true, perm: "accounts.edit_number" },
+  { method: "GET", path: "/api/admin/members/:id/account-details", auth: true, perm: "accounts.view" },
+  { method: "PATCH", path: "/api/admin/members/:id/account-details", auth: true, perm: "accounts.edit_number" },
+  { method: "GET", path: "/api/admin/members/:id/funding", auth: true, perm: "accounts.view" },
+  { method: "PUT", path: "/api/admin/members/:id/funding", auth: true, perm: "accounts.edit_number" },
+  { method: "POST", path: "/api/admin/members/:id/funding/:requestId/review", auth: true, perm: "customers.adjust_balance" },
+  { method: "GET", path: "/api/me/funding", auth: true, perm: null },
+  { method: "GET", path: "/api/me/external-accounts", auth: true, perm: null },
+  { method: "POST", path: "/api/me/external-accounts", auth: true, perm: null },
+  { method: "POST", path: "/api/admin/members/:id/external-accounts/:accountId/review", auth: true, perm: "accounts.edit_number" },
+  { method: "GET", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto-withdrawals/:id/cancel", auth: true, perm: null },
+
   { method: "POST", path: "/api/me/deposits", auth: true, perm: null },
   { method: "POST", path: "/api/me/transfers", auth: true, perm: null },
   { method: "GET", path: "/api/me/notifications", auth: true, perm: null },
@@ -124,6 +144,12 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/me/invoices/:id/remind", auth: true, perm: null },
   { method: "POST", path: "/api/me/team", auth: true, perm: null },
   { method: "DELETE", path: "/api/me/team/:id", auth: true, perm: null },
+  { method: "GET", path: "/api/me/crypto/capabilities", auth: true, perm: null },
+  { method: "GET", path: "/api/me/crypto/orders", auth: true, perm: null },
+  { method: "GET", path: "/api/me/crypto/orders/:id", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto/quote", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto/confirm", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto/wallet-balance", auth: true, perm: null },
   { method: "GET", path: "/api/me/holdings", auth: true, perm: null },
   { method: "POST", path: "/api/me/holdings/trade", auth: true, perm: null },
   { method: "GET", path: "/api/me/holdings/:asset/candles", auth: true, perm: null },
@@ -331,7 +357,7 @@ const grants: Record<string, string[]> = Object.fromEntries(rolesResponse.json.r
 
 /* ---------- resources owned by `owner`, for isolation probing ---------- */
 
-await call("POST", "/api/me/deposits", ownerToken, { amount: 5000, source: "Audit funding" });
+await call("POST", `/api/admin/members/${owner.user.id}/adjust`, superadmin, { direction: "credit", amount: 5000, memo: "Audit fixture funding" });
 const ownerCard = (await call("POST", "/api/me/cards", ownerToken, { label: "Audit card", limit: 1000, type: "virtual", cardholder: "Route Owner" })).json.card;
 const ownerInvoice = (await call("POST", "/api/me/invoices", ownerToken, { client: "Audit Client", clientEmail: "c@audit.test", amount: 10, dueDays: 1 })).json.invoice;
 const ownerPocket = (await call("POST", "/api/me/pockets", ownerToken, { name: "Audit pocket", target: 100, color: "#7558dc", icon: "general" })).json.pocket;
@@ -432,6 +458,12 @@ for (const route of declared) {
 
     if (label === "anonymous") {
       if (res.status !== 401) problems.push({ route: key, role: label, status: res.status, note: "no token did not get 401" });
+      continue;
+    }
+    // Submitting a member-owned funding reference is intentionally not a staff
+    // action, even for superadmins. Staff use the separately permissioned review.
+    if (key === "POST /api/me/external-accounts" && label !== "member") {
+      if (res.status !== 403) problems.push({ route: key, role: label, status: res.status, note: "staff must not submit an owner account reference" });
       continue;
     }
     if (label === "superadmin") {

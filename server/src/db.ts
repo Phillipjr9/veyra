@@ -1,3 +1,4 @@
+import { ASSETS } from "../../shared/catalog.js";
 /**
  * SQLite database layer for the Veyra backend.
  *
@@ -833,6 +834,167 @@ CREATE TABLE totp_recovery_codes (
   UNIQUE (user_id, code_hash)
 );
 CREATE INDEX idx_totp_recovery_codes_user ON totp_recovery_codes(user_id);
+`,
+  },
+  {
+    version: 16,
+    sql: `
+-- Prospective actor-attributed spend enforcement. Do not invent actors for
+-- historical transactions. applied_at records when tracking became available.
+CREATE INDEX idx_txns_actor_spend ON transactions(user_id, performed_by, created_at)
+  WHERE amount_cents < 0;
+`,
+  },
+  {
+    version: 17,
+    sql: `
+ALTER TABLE accounts ADD COLUMN bank_account_type TEXT NOT NULL DEFAULT 'Checking' CHECK (bank_account_type IN ('Checking','Savings'));
+CREATE TABLE funding_methods (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), label TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('bank','wire','card','check','other')), instructions TEXT NOT NULL,
+ bank_name TEXT NOT NULL DEFAULT '', routing_number TEXT NOT NULL DEFAULT '', account_number TEXT NOT NULL DEFAULT '',
+ recipient TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL
+);
+CREATE INDEX idx_funding_methods_user ON funding_methods(user_id);
+CREATE TABLE funding_requests (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), method_id TEXT NOT NULL REFERENCES funding_methods(id),
+ amount_cents INTEGER NOT NULL CHECK(amount_cents > 0), status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','rejected')),
+ reference TEXT NOT NULL, method_snapshot TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '',
+ request_key TEXT NOT NULL, created_at INTEGER NOT NULL, reviewed_at INTEGER, reviewed_by TEXT REFERENCES users(id),
+ UNIQUE(user_id, request_key)
+);
+CREATE INDEX idx_funding_requests_user ON funding_requests(user_id, created_at);
+CREATE TABLE crypto_withdrawals (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), asset TEXT NOT NULL REFERENCES crypto_assets(code),
+ units TEXT NOT NULL CHECK(units NOT LIKE '-%'), network TEXT NOT NULL, address TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','cancelled')),
+ reference TEXT NOT NULL, request_key TEXT NOT NULL, created_at INTEGER NOT NULL, cancelled_at INTEGER,
+ UNIQUE(user_id, request_key)
+);
+CREATE INDEX idx_crypto_withdrawals_user ON crypto_withdrawals(user_id, status);
+${ASSETS.map((a, i) => `INSERT OR IGNORE INTO crypto_assets(code,name,decimals,kind,sort_order) VALUES ('${a.code}','${a.name}',${a.decimals},'${'stable' in a ? 'stablecoin' : 'crypto'}',${i+1});`).join("\n")}
+`,
+  },
+
+  {
+    version: 18,
+    sql: `
+-- Rebuild both sides of the FK to extend the method kinds without disabling
+-- foreign-key enforcement. Preserve all identifiers, requests and snapshots.
+CREATE TABLE funding_methods_v18 (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), label TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('bank','wire','card','check','other','ach','zelle','direct_deposit')), instructions TEXT NOT NULL,
+ bank_name TEXT NOT NULL DEFAULT '', routing_number TEXT NOT NULL DEFAULT '', account_number TEXT NOT NULL DEFAULT '',
+ recipient TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL,
+ recipient_contact TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO funding_methods_v18 (id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at)
+ SELECT id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at FROM funding_methods;
+CREATE TABLE funding_requests_v18 (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), method_id TEXT NOT NULL REFERENCES funding_methods_v18(id),
+ amount_cents INTEGER NOT NULL CHECK(amount_cents > 0), status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','rejected')),
+ reference TEXT NOT NULL, method_snapshot TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '',
+ request_key TEXT NOT NULL, created_at INTEGER NOT NULL, reviewed_at INTEGER, reviewed_by TEXT REFERENCES users(id),
+ UNIQUE(user_id, request_key)
+);
+INSERT INTO funding_requests_v18 SELECT * FROM funding_requests;
+DROP TABLE funding_requests;
+DROP TABLE funding_methods;
+ALTER TABLE funding_methods_v18 RENAME TO funding_methods;
+ALTER TABLE funding_requests_v18 RENAME TO funding_requests;
+CREATE INDEX idx_funding_methods_user ON funding_methods(user_id);
+CREATE INDEX idx_funding_requests_user ON funding_requests(user_id, created_at);
+`,
+  },
+  {
+    version: 19,
+    sql: `
+CREATE TABLE account_bulk_previews (
+ id TEXT PRIMARY KEY, admin_id TEXT NOT NULL REFERENCES users(id), snapshot_json TEXT NOT NULL,
+ expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, applied_at INTEGER, changed_count INTEGER
+);
+CREATE INDEX idx_account_bulk_admin ON account_bulk_previews(admin_id,expires_at);
+`,
+  },
+
+  {
+    version: 20,
+    sql: `
+CREATE TABLE demo_wallets (
+ user_id TEXT PRIMARY KEY REFERENCES users(id), balance_cents INTEGER NOT NULL CHECK(balance_cents >= 0 AND balance_cents <= 100000000),
+ bank_status TEXT NOT NULL DEFAULT 'unlinked', card_linked INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE demo_payment_events (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), method TEXT NOT NULL, amount_cents INTEGER NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('pending','completed','declined')), reference TEXT NOT NULL,
+ description TEXT NOT NULL, request_key TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+ UNIQUE(user_id,request_key)
+);
+CREATE INDEX idx_demo_events_owner ON demo_payment_events(user_id,created_at);
+CREATE TABLE demo_payment_previews (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), recipient_id TEXT REFERENCES users(id),
+ identifier TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, method TEXT NOT NULL,
+ category TEXT NOT NULL, expires_at INTEGER NOT NULL, result_event_id TEXT REFERENCES demo_payment_events(id)
+);
+CREATE TABLE demo_payment_inbox (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), recipient TEXT NOT NULL,
+ subject TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_demo_inbox_owner ON demo_payment_inbox(user_id,created_at);
+`,
+  },
+  {
+    version: 21,
+    sql: `
+-- Separate namespace prevents an old playground review from debiting an account.
+CREATE TABLE demo_account_payment_previews (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), recipient_id TEXT REFERENCES users(id),
+ identifier TEXT NOT NULL, name TEXT NOT NULL, amount_cents INTEGER NOT NULL, method TEXT NOT NULL,
+ category TEXT NOT NULL, note TEXT NOT NULL, expires_at INTEGER NOT NULL, result_json TEXT
+);
+CREATE INDEX idx_demo_account_review_owner ON demo_account_payment_previews(user_id,expires_at);
+`,
+  },
+  {
+    version: 22,
+    sql: `
+CREATE TABLE crypto_orders (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ quote_json TEXT NOT NULL, result_json TEXT, reference TEXT UNIQUE,
+ expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_crypto_orders_owner ON crypto_orders(user_id,created_at DESC);
+`,
+  },
+  {
+    version: 23,
+    sql: `
+ALTER TABLE accounts ADD COLUMN receiving_details_configured INTEGER NOT NULL DEFAULT 0;
+UPDATE accounts SET receiving_details_configured=1 WHERE EXISTS (
+ SELECT 1 FROM audit_log WHERE target='user:' || accounts.user_id AND action IN ('account.details','account.bulk_details')
+);
+-- Only a trusted provider adapter may create verified links. No client-supplied
+-- verification flag, full account number, password or access token is stored here.
+CREATE TABLE external_accounts (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), bank_name TEXT NOT NULL,
+ account_name TEXT NOT NULL, last4 TEXT NOT NULL CHECK(length(last4)=4 AND last4 NOT GLOB '*[^0-9]*'),
+ account_type TEXT NOT NULL CHECK(account_type IN ('Checking','Savings')),
+ status TEXT NOT NULL CHECK(status IN ('pending','verified','disconnected')),
+ provider_reference TEXT UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+ CHECK(status != 'verified' OR length(trim(provider_reference)) > 0 AND provider_reference IS NOT NULL)
+);
+CREATE INDEX idx_external_accounts_owner ON external_accounts(user_id,status);
+`,
+  },
+  {
+    version: 24,
+    sql: `
+-- Staff approval is an account-entry reference, NEVER provider authorization.
+ALTER TABLE external_accounts ADD COLUMN verification_kind TEXT NOT NULL DEFAULT 'provider' CHECK(verification_kind IN ('provider','staff_reference'));
+ALTER TABLE external_accounts ADD COLUMN verification_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE external_accounts ADD COLUMN reviewed_by TEXT REFERENCES users(id);
+ALTER TABLE external_accounts ADD COLUMN request_key TEXT;
+CREATE UNIQUE INDEX idx_external_accounts_request ON external_accounts(user_id,request_key);
 `,
   },
 ];

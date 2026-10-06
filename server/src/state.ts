@@ -1,3 +1,5 @@
+import { readLedgerAnalytics } from "./ledgerAnalytics.js";
+import { teamSpendByActor, teamSpendWindow } from "./teamSpending.js";
 /**
  * Member state engine — server-side source of truth for the Account model
  * (src/lib/store.tsx). buildMemberState() reads every table for a user and
@@ -97,6 +99,10 @@ export function buildMemberState(db: DatabaseSync, userId: string, currentTokenI
     description: s(i.description),
   }));
 
+  const spendAt = Date.now();
+  const spentByActor = teamSpendByActor(db, userId, spendAt);
+  const { resetsAt } = teamSpendWindow(spendAt);
+  const trackingSince = (db.prepare("SELECT applied_at FROM schema_migrations WHERE version = 16").get() as { applied_at: number }).applied_at;
   const team = (db.prepare("SELECT * FROM team_members WHERE user_id = ?").all(userId) as Array<Record<string, unknown>>).map(m => ({
     id: String(m.id),
     name: String(m.name),
@@ -104,6 +110,10 @@ export function buildMemberState(db: DatabaseSync, userId: string, currentTokenI
     role: m.role,
     cardCount: m.card_count as number,
     monthlyLimit: dollars(m.monthly_limit_cents as number),
+    monthlySpent: dollars(spentByActor.get(String(m.member_user_id ?? "")) ?? 0),
+    monthlyRemaining: m.role === "Owner" ? null : dollars(Math.max(0, (m.monthly_limit_cents as number) - (spentByActor.get(String(m.member_user_id ?? "")) ?? 0))),
+    spendResetsAt: resetsAt,
+    spendTrackingSince: trackingSince,
     status: m.status,
   }));
 
@@ -241,12 +251,13 @@ export function buildMemberState(db: DatabaseSync, userId: string, currentTokenI
     scoutSaved: dollars((account?.scout_saved_cents as number) ?? 0),
     cards,
     transactions,
+    analytics: readLedgerAnalytics(db, userId),
     invoices,
     bankDetails: {
       accountNumber: String(account?.account_number ?? ""),
       routingNumber: String(account?.routing_number ?? ""),
       bankName: String(account?.bank_name ?? ""),
-      accountType: personal ? "Personal checking" : "Business checking",
+      accountType: `${personal ? "Personal" : "Business"} ${String(account?.bank_account_type ?? "Checking").toLowerCase()}`,
       holder,
     },
     team,

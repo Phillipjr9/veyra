@@ -17,6 +17,10 @@ export type Holding = {
   decimals: number;
   /** Integer base units as a decimal string. Not safe as a number. */
   units: string;
+  reservedUnits?: string;
+  reservedQuantity?: string;
+  totalQuantity?: string;
+  withdrawalNetwork?: string | null;
   /** Human quantity, trailing zeros trimmed — "0.25", not "0.250000000000000000". */
   quantity: string;
   /** USD price of one whole unit, or null when no quote is available. */
@@ -28,6 +32,8 @@ export type Holding = {
 };
 
 export type HoldingsResponse = {
+  previewData?: boolean;
+  quoteStatus?: "current" | "stale" | "unavailable";
   holdings: Holding[];
   totalUsd: string;
   /** True when a held asset could not be priced, so totalUsd understates reality. */
@@ -45,14 +51,21 @@ export type TradeResult = {
   priceUsd: string;
 };
 
-export const fetchHoldings = () => apiGet<HoldingsResponse>("/api/me/holdings");
+export async function fetchHoldings(): Promise<HoldingsResponse> {
+  const data = await apiGet<HoldingsResponse>("/api/me/holdings");
+  // Generated server fixtures are never shown as current market prices in the
+  // customer UI. Preserve owned quantities, but mark all valuations unavailable.
+  if (!data.previewData) return data;
+  return { ...data, disclosure: "Current market quotes are unavailable. Digital assets are not deposits or FDIC insured.", quoteStatus: "unavailable", partial: true, tradingEnabled: false, totalUsd: "0.00",
+    holdings: data.holdings.map(holding => ({ ...holding, priceUsd: null, valueUsd: null, quotedAt: null })) };
+}
 
 /**
  * Buys are priced in dollars, sells in units of the asset — the same asymmetry
  * the server enforces, so a member can sell a position to exactly zero.
  */
-export const tradeHolding = (asset: string, side: "buy" | "sell", amount: string) =>
-  apiPost<TradeResult>("/api/me/holdings/trade", { asset, side, amount });
+export const tradeHolding = (asset: string, side: "buy" | "sell", amount: string, expectedPriceUsd?: string | null) =>
+  apiPost<TradeResult>("/api/me/holdings/trade", { asset, side, amount, ...(expectedPriceUsd ? { expectedPriceUsd } : {}) });
 
 /** Formats a quote timestamp as "as of 14:32", or null when there is nothing to date. */
 export function quoteAge(quotedAt: number | null): string | null {
@@ -60,31 +73,7 @@ export function quoteAge(quotedAt: number | null): string | null {
   return `as of ${new Date(quotedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-/**
- * 3D rendered mark per asset, keyed by code.
- *
- * These are stylised interpretations rendered for Veyra, not official brand
- * assets pulled from each project's press kit. Bitcoin's mark is effectively
- * public domain and Ethereum's is published for free use, but Solana and USDC
- * are trademarks of their respective owners — swap in the official artwork
- * before this is used commercially.
- */
-const ASSET_ICONS: Record<string, string> = {
-  BTC: "/images/icon-btc-3d.webp",
-  ETH: "/images/icon-eth-3d.webp",
-  SOL: "/images/icon-sol-3d.webp",
-  USDC: "/images/icon-usdc-3d.webp",
-};
-
-/**
- * The mark for an asset, falling back to the generic coin.
- *
- * The registry lives in the database, so a migration can add an asset before
- * anyone draws its logo. Falling back keeps that card rendering instead of
- * leaving a broken image where a balance should be.
- */
-export const assetIcon = (code: string): string =>
-  ASSET_ICONS[code.toUpperCase()] ?? "/images/icon-crypto-3d.webp";
+export { assetIcon } from "../../shared/assetIcons";
 
 /**
  * Shared holdings state for any surface that needs it.
@@ -124,10 +113,11 @@ export const RANGE_LABEL: Record<CandleRange, string> = {
   "1d": "24H", "7d": "7D", "30d": "30D", "90d": "90D",
 };
 
-export const fetchCandles = (asset: string, range: CandleRange) =>
-  apiGet<{ asset: string; range: CandleRange; candles: Candle[] }>(
-    `/api/me/holdings/${encodeURIComponent(asset)}/candles?range=${range}`,
-  );
+export async function fetchCandles(asset: string, range: CandleRange) {
+  const data = await apiGet<{ previewData?: boolean; asset: string; range: CandleRange; candles: Candle[] }>(`/api/me/holdings/${encodeURIComponent(asset)}/candles?range=${range}`);
+  if (data.previewData) throw new Error("Current market history is unavailable.");
+  return data;
+}
 
 /**
  * Candles for one asset and range.
@@ -181,13 +171,18 @@ export type MarketRow = {
 };
 
 export type MarketsResponse = {
+  previewData?: boolean;
+  quoteStatus?: "current" | "stale" | "unavailable";
   markets: MarketRow[];
   quotedAt: number | null;
   tradingEnabled: boolean;
   disclosure: string;
 };
 
-export const fetchMarkets = () => apiGet<MarketsResponse>("/api/me/markets");
+export async function fetchMarkets(): Promise<MarketsResponse> {
+  const data = await apiGet<MarketsResponse>("/api/me/markets");
+  return data.previewData ? { ...data, disclosure: "Current market quotes are unavailable. Digital assets are not deposits or FDIC insured.", markets: [], quotedAt: null, quoteStatus: "unavailable", tradingEnabled: false } : data;
+}
 
 export function useMarkets() {
   const [data, setData] = useState<MarketsResponse | null>(null);

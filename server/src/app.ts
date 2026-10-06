@@ -1,3 +1,13 @@
+import { sendCryptoNotification } from "./cryptoNotifications.js";
+import { previewCryptoEnabled, PREVIEW_CRYPTO_NOTICE } from "./previewCrypto.js";
+import { createPreviewAccess } from "./previewAccess.js";
+import { createCryptoWorkspace } from "./cryptoWorkspace.js";
+import { readLedgerAnalytics } from "./ledgerAnalytics.js";
+import { createDemoPayments, demoPaymentsEnabled } from "./demoPayments.js";
+import { createBulkAccounts } from "./bulkAccounts.js";
+import { sendZelleNotification } from "./zelleNotifications.js";
+import { ASSETS } from "../../shared/catalog.js";
+import { createBanking } from "./banking.js";
 /**
  * Veyra backend API — Express + SQLite.
  *
@@ -9,6 +19,8 @@
  *   4. runs financial operations inside IMMEDIATE transactions (atomic),
  *   5. writes an audit entry with before/after values.
  */
+import { addressConfig, createAddressService } from "./addresses.js";
+import { enforceTeamSpend, TeamSpendingError } from "./teamSpending.js";
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -21,7 +33,6 @@ import {
   webauthnConfig, issueChallenge, verifyRegistration, verifyAuthentication,
   registrationOptions, authenticationOptions,
 } from "./webauthn.js";
-import { demoLoginOptions, demoLoginsEnabled } from "./demo.js";
 import {
   can, isStaffRole, rolePermissions, setRolePermissions, resetRolePermissions,
   PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS, type Permission, type StaffRole,
@@ -33,7 +44,7 @@ import { sendMail, mailDelivers, passwordResetMail, applicationReceivedMail, kyc
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
 import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
 import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
-import { loadPrices, loadMarkets, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
+import { loadPrices, loadMarkets, quoteIsFresh, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
 import { OTHER_REASON_CODE, SUSPENSION_REASONS, resolveSuspensionReason } from "./suspension.js";
 import { authenticatorUri, decryptTotpSecret, encryptTotpSecret, generateRecoveryCodes, generateTotpSecret, hashRecoveryCode, verifyTotp } from "./totp.js";
 
@@ -66,6 +77,7 @@ export function teamAllows(method: string, path: string, role: TeamRole): boolea
   if (!path.startsWith("/api/me/")) return false;
   if (TEAM_NEVER.test(path)) return false;
   if (method === "GET" || method === "HEAD") return true;
+  if (method === "POST" && path === "/api/me/crypto/wallet-balance") return true; // Read-only RPC adapter, no financial mutation.
   if (TEAM_ALL_WRITE.test(path)) return true;
   if (role === "Bookkeeper") return false;
   if (TEAM_MEMBER_WRITE.test(path)) return true;
@@ -97,13 +109,13 @@ class RouteError extends Error {
 
 /** Maps a thrown error to its response: RouteError keeps its status, anything else is a 400. */
 const fail = (res: Response, err: unknown, fallback: string) => {
+  if (err instanceof TeamSpendingError) return void res.status(err.status).json({ error: err.message, code: err.code, ...err.details });
   if (err instanceof RouteError) return void res.status(err.status).json({ error: err.message });
   if (err instanceof BadInputError) return void res.status(400).json({ error: err.message });
   res.status(400).json({ error: err instanceof Error ? err.message : fallback });
 };
 
 const MAX_TRANSFER_CENTS = 250_000_00;      // $250k per transfer
-const MAX_DEPOSIT_CENTS = 100_000_00;       // $100k per deposit
 
 /**
  * What a reviewer can ask an applicant for. Deliberately a short, closed list:
@@ -428,9 +440,16 @@ export function createApp(dbPath?: string) {
    * the API can never disagree: turning the gate on does not need a rebuild,
    * and a stale bundle cannot start withholding tokens the server now demands.
    */
+  const previewAccess = createPreviewAccess(db);
   app.get("/api/auth/config", wrap((_req, res) => {
-    res.json({ recaptcha: publicRecaptchaConfig(), federated: publicFederatedConfig() });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ recaptcha: publicRecaptchaConfig(), federated: publicFederatedConfig(), addresses: addressConfig(), previewLogins: previewAccess() });
   }));
+
+  // Signup address lookup is intentionally public, but bounded and server-keyed.
+  const addresses = createAddressService();
+  app.post("/api/address/autocomplete", addresses.autocomplete);
+  app.post("/api/address/details", addresses.details);
 
   /**
    * Federated sign-in — Google, via a Firebase ID token.
@@ -974,23 +993,6 @@ export function createApp(dbPath?: string) {
     res.json({ ok: true });
   }));
 
-  /**
-   * The accounts the login page may offer with one click.
-   *
-   * Public and unauthenticated on purpose (it is what a signed-out visitor
-   * needs), but it only ever answers on a server that holds demo accounts —
-   * a production build returns an empty list, so no credentials are advertised
-   * where members sign up for real. See server/src/demo.ts.
-   */
-  app.get("/api/demo/accounts", wrap((_req, res) => {
-    if (!demoLoginsEnabled()) return void res.json({ accounts: [] });
-    const known = new Set(
-      (db.prepare("SELECT email FROM users").all() as Array<{ email: string }>).map(r => r.email.toLowerCase()),
-    );
-    const accounts = demoLoginOptions().filter(a => known.has(a.email.toLowerCase()));
-    res.json({ accounts });
-  }));
-
   /* ============================== member routes ============================== */
 
   app.get("/api/me/account", requireAuth, wrap((req, res) => {
@@ -1017,44 +1019,36 @@ export function createApp(dbPath?: string) {
     res.json({ transactions: rows.map(txnOut) });
   }));
 
-  app.post("/api/me/deposits", requireAuth, requireApproved, wrap((req, res) => {
-    const cents = dollarsToCents(req.body?.amount ?? 0);
-    if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
-    if (cents > MAX_DEPOSIT_CENTS) return void res.status(400).json({ error: "Deposits are limited to $100,000 per transaction." });
-    const isCheck = typeof req.body?.checkNumber === "string" && String(req.body.checkNumber).trim() !== "";
-    const merchant = isCheck
-      ? `Check #${String(req.body.checkNumber).trim()} · ${String(req.body?.issuer ?? "Issuer")}`
-      : String(req.body?.source ?? "External transfer");
-    const method = isCheck ? "Mobile Check" : "ACH";
-    const note = isCheck ? (String(req.body?.memo ?? "") || `Mobile check deposit from ${String(req.body?.issuer ?? "issuer")}`) : "Incoming ACH deposit";
-    try {
-      const result = inTransaction(db, () => {
-        const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
-          | { id: number; balance_cents: number }
-          | undefined;
-        if (!account) throw new Error("No account found.");
-        const before = account.balance_cents;
-        const after = before + cents;
-        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(after, now(), account.id);
-        const txn = { id: rid("txn"), reference: makeReference() };
-        db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
-           VALUES (?, ?, ?, ?, 'Operations', ?, ?, 'cleared', ?, ?, ?)`,
-        ).run(txn.id, account.id, req.user!.id, merchant, method, cents, txn.reference, note, now());
-        notify(req.user!.id, "transfer", "Deposit received", `+${centsToDecimal(cents)} from ${merchant} is available now.`);
-        return { id: txn.id, reference: txn.reference, before, after };
-      });
-      res.status(201).json({
-        result: { reference: result.reference, date: now(), amount: cents / 100, balanceBefore: result.before / 100, balanceAfter: result.after / 100, reward: 0, scout: 0 },
-        transaction: { id: result.id, merchant, amount: money(cents), reference: result.reference, status: "cleared" },
-        balance: money(result.after),
-      });
-    } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Deposit failed." });
-    }
+  const bulkAccounts = createBulkAccounts(db, audit);
+  app.post("/api/admin/accounts/bulk-preview", requireAuth, requirePerm("accounts.edit_number"), wrap(bulkAccounts.preview));
+  app.post("/api/admin/accounts/bulk-apply", requireAuth, requirePerm("accounts.edit_number"), wrap(bulkAccounts.apply));
+  const banking = createBanking(db, audit);
+  app.get("/api/admin/members/:id/account-details", requireAuth, requirePerm("accounts.view"), wrap(banking.accountGet));
+  app.patch("/api/admin/members/:id/account-details", requireAuth, requirePerm("accounts.edit_number"), wrap(banking.accountSave));
+  app.get("/api/admin/members/:id/funding", requireAuth, requirePerm("accounts.view"), wrap(banking.adminFundingGet));
+  app.put("/api/admin/members/:id/funding", requireAuth, requirePerm("accounts.edit_number"), wrap(banking.fundingSave));
+  app.post("/api/admin/members/:id/funding/:requestId/review", requireAuth, requirePerm("customers.adjust_balance"), wrap(banking.reviewDeposit));
+  const demoPayments = createDemoPayments(db);
+  app.get("/api/me/demo-payments", requireAuth, wrap((req, res) => {
+    res.json(demoPayments.snapshot(req.user!.loginId ?? req.user!.id));
   }));
+  app.post("/api/me/demo-payments/action", requireAuth, requireApproved, wrap((req, res) => {
+    res.json(demoPayments.action(req.user!.loginId ?? req.user!.id, req.body));
+  }));
+  const guardDemoLedger: RequestHandler = (_req, res, next) => {
+    if (demoPaymentsEnabled()) return void res.status(400).json({ error: "Review the payment before confirming it." });
+    next();
+  };
+  app.post("/api/me/external-accounts", requireAuth, requireApproved, wrap(banking.requestExternalAccount));
+  app.post("/api/admin/members/:id/external-accounts/:accountId/review", requireAuth, requirePerm("accounts.edit_number"), wrap(banking.reviewExternalAccount));
+  app.get("/api/me/external-accounts", requireAuth, wrap(banking.externalAccountsGet));
+  app.get("/api/me/funding", requireAuth, wrap(banking.fundingGet));
+  app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
+  app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
+  app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, wrap(banking.withdraw));
+  app.post("/api/me/crypto-withdrawals/:id/cancel", requireAuth, wrap(banking.cancelWithdrawal));
 
-  app.post("/api/me/transfers", requireAuth, requireApproved, wrap((req, res) => {
+  app.post("/api/me/transfers", requireAuth, requireApproved, guardDemoLedger, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_TRANSFER_CENTS) return void res.status(400).json({ error: "Transfers are limited to $250,000 per transaction." });
@@ -1066,14 +1060,17 @@ export function createApp(dbPath?: string) {
     if (getSetting(db, "payment_rails") === "halted") {
       return void res.status(503).json({ error: "Payment rails are temporarily halted. Please try again shortly." });
     }
-    const category = String(req.body?.category ?? "Operations");
+    const suppliedCategory = typeof req.body?.category === "string" ? req.body.category.trim() : "";
+    if (req.user!.accountType === "business" && !suppliedCategory) return void res.status(400).json({ error: "A category is required for business transfers." });
+    if (suppliedCategory.length > 80) return void res.status(400).json({ error: "Category is too long." });
+    const category = suppliedCategory || "Uncategorized";
     const method = String(req.body?.method ?? "ACH");
     const note = String(req.body?.note ?? `${method} payment`);
     const cardId = typeof req.body?.cardId === "string" ? req.body.cardId : null;
     const reward = Math.round(cents * rewardRate(category));
-    const prefs = db.prepare("SELECT scout_auto FROM preferences WHERE user_id = ?").get(req.user!.id) as { scout_auto: number } | undefined;
-    const scoutOn = prefs?.scout_auto !== 0;
-    const scout = scoutOn && Math.random() < 0.65 ? Math.round(cents * (0.03 + Math.random() * 0.07)) : 0;
+    // No funded savings provider is connected. Preferences cannot authorize
+    // creating money; Scout analysis never changes the ledger.
+    const scout = 0;
     try {
       const result = inTransaction(db, () => {
         const account = db.prepare("SELECT id, balance_cents, rewards_cents, lifetime_rewards_cents, scout_saved_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as
@@ -1110,20 +1107,22 @@ export function createApp(dbPath?: string) {
           }
         }
         const before = account.balance_cents;
-        const after = before - cents + scout; // Scout savings are credited immediately
+        const at = now();
+        enforceTeamSpend(db, req.user!.id, personOf(req.user!), cents, at);
+        const after = before - cents;
         if (after < 0) throw new Error("Insufficient funds for this transfer.");
         db.prepare("UPDATE accounts SET balance_cents = ?, rewards_cents = ?, lifetime_rewards_cents = ?, scout_saved_cents = ?, updated_at = ? WHERE id = ?")
           .run(after, account.rewards_cents + reward, account.lifetime_rewards_cents + reward, account.scout_saved_cents + scout, now(), account.id);
         const txn = { id: rid("txn"), reference: makeReference() };
         db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, reward_cents, scout_cents, card_id, status, reference, note, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?)`,
-        ).run(txn.id, account.id, req.user!.id, counterparty, category, method, -cents, reward, scout, cardId, txn.reference, note, now());
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, reward_cents, scout_cents, card_id, status, reference, note, created_at, performed_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?)`,
+        ).run(txn.id, account.id, req.user!.id, counterparty, category, method, -cents, reward, scout, cardId, txn.reference, note, at, personOf(req.user!));
         if (cardId) db.prepare("UPDATE cards SET spent_cents = spent_cents + ? WHERE id = ? AND user_id = ?").run(cents, cardId, req.user!.id);
-        if (scout > 0) notify(req.user!.id, "scout", `Scout saved ${(scout / 100).toFixed(2)}`, `Found a better rate on your ${counterparty} payment.`);
         notify(req.user!.id, "transfer", `Sent ${(cents / 100).toFixed(2)} to ${counterparty}`, `${method} · +${(reward / 100).toFixed(2)} rewards earned.`);
         return { id: txn.id, reference: txn.reference, before, after };
       });
+      if (method.trim().toLowerCase() === "zelle") sendZelleNotification(db,req.user!.id,{event:"outgoing_recorded",amountCents:cents,reference:result.reference,occurredAt:now(),counterparty});
       res.status(201).json({
         result: { reference: result.reference, date: now(), amount: cents / 100, balanceBefore: result.before / 100, balanceAfter: result.after / 100, reward: reward / 100, scout: scout / 100 },
         transaction: { id: result.id, merchant: counterparty, amount: money(-cents), reference: result.reference, status: "cleared" },
@@ -1139,6 +1138,14 @@ export function createApp(dbPath?: string) {
   // server/src/assets.ts for why trading is gated, and server/src/money.ts for
   // why every quantity below is a bigint of base units rather than a number.
 
+  const cryptoWorkspace = createCryptoWorkspace(db, audit);
+  app.get("/api/me/crypto/capabilities", requireAuth, wrap(cryptoWorkspace.capabilities));
+  app.get("/api/me/crypto/orders", requireAuth, wrap(cryptoWorkspace.history));
+  app.get("/api/me/crypto/orders/:id", requireAuth, wrap(cryptoWorkspace.order));
+  app.post("/api/me/crypto/quote", requireAuth, requireApproved, wrap(cryptoWorkspace.quote));
+  app.post("/api/me/crypto/confirm", requireAuth, wrap(cryptoWorkspace.confirm));
+  app.post("/api/me/crypto/wallet-balance", requireAuth, wrap(cryptoWorkspace.walletBalance));
+
   app.get("/api/me/holdings", requireAuth, wrap(async (req, res) => {
     const assets = listAssets(db);
     const quotes = await loadPrices();
@@ -1146,22 +1153,30 @@ export function createApp(dbPath?: string) {
       .all(req.user!.id) as unknown as { asset: string; units: string; updated_at: number }[];
     const held = new Map(rows.map((row) => [row.asset, row]));
 
+    const pending = new Map<string, bigint>();
+    for (const r of db.prepare("SELECT asset, units FROM crypto_withdrawals WHERE user_id=? AND status='pending'").all(req.user!.id) as { asset: string; units: string }[]) pending.set(r.asset,(pending.get(r.asset) ?? 0n)+BigInt(r.units));
     let totalCents = 0;
     let priced = true;
     const holdings = assets.map((asset) => {
       const row = held.get(asset.code);
       const units = BigInt(row?.units ?? "0");
       const quote = quotes.get(asset.code) ?? null;
+      const reserved = pending.get(asset.code) ?? 0n;
+      const totalUnits = units + reserved;
       // A missing quote yields null, never 0 — a zero would be silently summed
       // into the total and render as a confident, wrong valuation.
-      const valueCents = quote ? valueInCents(units, asset.decimals, quote.cents) : null;
-      if (valueCents === null) { if (units > 0n) priced = false; } else totalCents += valueCents;
+      const valueCents = quote ? valueInCents(totalUnits, asset.decimals, quote.cents) : null;
+      if (valueCents === null) { if (totalUnits > 0n) priced = false; } else totalCents += valueCents;
       return {
         asset: asset.code,
         name: asset.name,
         kind: asset.kind,
         decimals: asset.decimals,
         units: units.toString(),
+        reservedUnits: reserved.toString(),
+        reservedQuantity: formatUnitsTrimmed(reserved, asset.decimals),
+        totalQuantity: formatUnitsTrimmed(totalUnits, asset.decimals),
+        withdrawalNetwork: ASSETS.find(a => a.code === asset.code)?.network ?? null,
         quantity: formatUnitsTrimmed(units, asset.decimals),
         priceUsd: quote ? centsToDecimal(Number(quote.cents)) : null,
         valueUsd: valueCents === null ? null : centsToDecimal(valueCents),
@@ -1172,12 +1187,14 @@ export function createApp(dbPath?: string) {
 
     res.json({
       holdings,
+      previewData: previewCryptoEnabled(),
       // `partial` tells the client that at least one held asset could not be
       // priced, so the total understates reality and must be labelled.
       totalUsd: centsToDecimal(totalCents),
+      quoteStatus: quotes.size === 0 ? "unavailable" : [...quotes.values()].every(q => quoteIsFresh(q.fetchedAt)) ? "current" : "stale",
       partial: !priced,
       tradingEnabled: tradingEnabled(),
-      disclosure: "Digital assets are not FDIC insured and can lose value.",
+      disclosure: previewCryptoEnabled() ? PREVIEW_CRYPTO_NOTICE : "Digital assets are not FDIC insured and can lose value.",
     });
   }));
 
@@ -1203,6 +1220,7 @@ export function createApp(dbPath?: string) {
     if (!quote) {
       return void res.status(503).json({ error: `No current price for ${asset.code}.`, code: "crypto_no_price" });
     }
+    if (req.body?.expectedPriceUsd !== undefined && String(req.body.expectedPriceUsd) !== centsToDecimal(Number(quote.cents))) return void res.status(409).json({ error: "The quote changed. Refresh and review the current price before trading." });
     try {
       if (side === "buy") {
         cents = dollarsToCents(req.body?.amount ?? 0);
@@ -1219,8 +1237,9 @@ export function createApp(dbPath?: string) {
       return void res.status(400).json({ error: "Invalid amount." });
     }
 
+    let event: { reference: string; at: number };
     try {
-      inTransaction(db, () => {
+      event = inTransaction(db, () => {
         const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?")
           .get(req.user!.id) as { id: number; balance_cents: number } | undefined;
         if (!account) throw new BadInputError("No account found.");
@@ -1231,6 +1250,8 @@ export function createApp(dbPath?: string) {
         const nextCents = side === "buy" ? account.balance_cents - cents : account.balance_cents + cents;
         if (side === "buy" && nextCents < 0) throw new BadInputError("Insufficient funds in checking.");
         if (nextUnits < 0n) throw new BadInputError(`Insufficient ${asset.code}.`);
+        const at = now();
+        if (side === "buy") enforceTeamSpend(db, req.user!.id, personOf(req.user!), cents, at);
 
         db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?")
           .run(nextCents, now(), account.id);
@@ -1248,25 +1269,23 @@ export function createApp(dbPath?: string) {
         // The deposit leg also lands in the member's statement. Money leaving a
         // checking balance with no matching line is how support tickets start.
         db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
-           VALUES (?, ?, ?, ?, 'Investing', 'Internal', ?, 'cleared', ?, ?, ?)`,
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at, performed_by)
+           VALUES (?, ?, ?, ?, 'Investing', 'Internal', ?, 'cleared', ?, ?, ?, ?)`,
         ).run(
           rid("txn"), account.id, req.user!.id, `${side === "buy" ? "Bought" : "Sold"} ${asset.code}`,
           side === "buy" ? -cents : cents, reference,
           `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} at ${centsToDecimal(Number(quote.cents))}/${asset.code}`,
-          now(),
+          at, personOf(req.user!),
         );
+        return { reference, at };
       });
     } catch (err) {
       return void fail(res, err, "Trade failed.");
     }
 
-    notify(
-      req.user!.id,
-      "transaction",
-      side === "buy" ? "Digital asset purchased" : "Digital asset sold",
-      `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} for ${centsToDecimal(cents)}.`,
-    );
+    sendCryptoNotification(db, req.user!.id, { activity: side, status: "completed", reference: event.reference, occurredAt: event.at,
+      asset: side === "buy" ? "USD" : asset.code, quantity: side === "buy" ? centsToDecimal(cents) : formatUnitsTrimmed(units, asset.decimals),
+      toAsset: side === "buy" ? asset.code : "USD", toQuantity: side === "buy" ? formatUnitsTrimmed(units, asset.decimals) : centsToDecimal(cents), settlement: "account" });
     res.status(201).json({
       ok: true,
       asset: asset.code,
@@ -1287,7 +1306,7 @@ export function createApp(dbPath?: string) {
     // A coin appearing on CoinGecko is not consent to custody it: decimals,
     // and therefore every unit conversion, only exist for assets we seeded.
     const rows = markets.map(row => {
-      const asset = registry.get(row.code);
+      const asset = ASSETS.find(a => a.code === row.code)?.id === row.id ? registry.get(row.code) : undefined;
       const units = asset ? held.get(row.code) ?? "0" : "0";
       return {
         code: row.code,
@@ -1314,9 +1333,11 @@ export function createApp(dbPath?: string) {
 
     res.json({
       markets: rows,
+      previewData: previewCryptoEnabled(),
+      quoteStatus: !fetchedAt ? "unavailable" : quoteIsFresh(fetchedAt) ? "current" : "stale",
       quotedAt: fetchedAt || null,
       tradingEnabled: tradingEnabled(),
-      disclosure: "Market data is indicative. Digital assets are not FDIC insured and can lose value.",
+      disclosure: previewCryptoEnabled() ? PREVIEW_CRYPTO_NOTICE : "Market data is indicative. Digital assets are not FDIC insured and can lose value.",
     });
   }));
 
@@ -1337,7 +1358,7 @@ export function createApp(dbPath?: string) {
     if (!candles) {
       return void res.status(503).json({ error: `No price history for ${asset.code}.`, code: "crypto_no_history" });
     }
-    res.json({ asset: asset.code, range, candles });
+    res.json({ asset: asset.code, range, candles, previewData: previewCryptoEnabled() });
   }));
 
   app.get("/api/me/notifications", requireAuth, wrap((req, res) => {
@@ -1776,6 +1797,9 @@ export function createApp(dbPath?: string) {
     if (!name || !email) return void res.status(400).json({ error: "Name and email are required." });
     if (!/^\S+@\S+\.\S+$/.test(email)) return void res.status(400).json({ error: "Enter a valid email address." });
     if (!["Admin", "Member", "Bookkeeper"].includes(role)) return void res.status(400).json({ error: "Invalid role." });
+    if (monthlyLimit < 0 || monthlyLimit > MAX_TRANSFER_CENTS || (role === "Bookkeeper" && monthlyLimit !== 0)) {
+      return void res.status(400).json({ error: "Monthly limits must be between $0 and $250,000; Bookkeepers must have a $0 limit." });
+    }
     if (req.user!.accountType !== "business") return void res.status(400).json({ error: "Team access is available on business accounts." });
     if (db.prepare("SELECT 1 FROM users WHERE email = ? COLLATE NOCASE").get(email)) {
       return void res.status(409).json({ error: "That email already has a Veyra login. Invite a different address." });
@@ -1792,7 +1816,7 @@ export function createApp(dbPath?: string) {
     ).run(id, req.user!.id, name, email, role, role === "Bookkeeper" ? 0 : 1, monthlyLimit, hashInvite(token), now() + INVITE_TTL_MS);
     const business = req.user!.business || req.user!.name;
     void sendMail(teamInviteMail(email, name, req.user!.name, business, role, token));
-    notify(req.user!.id, "security", `Invite sent to ${name}`, `${role} · ${monthlyLimit ? `${centsToDecimal(monthlyLimit)} monthly limit` : "view-only access"}.`);
+    notify(req.user!.id, "security", `Invite sent to ${name}`, `${role} · ${monthlyLimit ? `${centsToDecimal(monthlyLimit)} monthly limit (UTC)` : role === "Bookkeeper" ? "view-only access" : "no outgoing spending allowance"}.`);
     // Without a mail provider the link would only exist in an email that never
     // leaves the server, so development hands it back for the owner to share.
     const inviteUrl = process.env.NODE_ENV !== "production" && !mailDelivers() ? `/#/invite/accept?token=${token}` : undefined;
@@ -2023,6 +2047,8 @@ export function createApp(dbPath?: string) {
         const cents = payment.amount_cents as number;
         const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as { id: number; balance_cents: number };
         if (account.balance_cents < cents) throw new Error("Insufficient funds for this payment.");
+        const at = now();
+        enforceTeamSpend(db, req.user!.id, personOf(req.user!), cents, at);
         const base = Number(payment.next_date);
         const nextDate = payment.frequency === "weekly"
           ? base + 7 * 86_400_000
@@ -2034,10 +2060,10 @@ export function createApp(dbPath?: string) {
           .run(nextDate, payment.frequency === "once" ? "completed" : String(payment.status), id);
         const txn = rid("txn");
         db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at)
-           VALUES (?, ?, ?, ?, ?, 'ACH', ?, 'cleared', ?, ?, ?)`,
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at, performed_by)
+           VALUES (?, ?, ?, ?, ?, 'ACH', ?, 'cleared', ?, ?, ?, ?)`,
         ).run(txn, account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
-          makeReference(), String(payment.memo ?? "Scheduled payment"), now());
+          makeReference(), String(payment.memo ?? "Scheduled payment"), at, personOf(req.user!));
         notify(req.user!.id, "transfer", `${centsToDecimal(cents)} paid to ${String(payment.payee_name)}`,
           payment.frequency === "once" ? "One-time payment completed." : "Next payment scheduled.");
         return txn;
@@ -2046,7 +2072,7 @@ export function createApp(dbPath?: string) {
       // just wrote (dispute it) before the refreshed snapshot lands.
       res.json({ ok: true, transaction: { id: txnId } });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Payment failed." });
+      fail(res, err, "Payment failed.");
     }
   }));
 
@@ -2075,34 +2101,11 @@ export function createApp(dbPath?: string) {
     }
   }));
 
-  app.post("/api/me/scout/apply", requireAuth, requireApproved, wrap((req, res) => {
-    const opportunityId = String(req.body?.opportunityId ?? "");
-    const merchant = String(req.body?.merchant ?? "merchant");
-    const note = String(req.body?.note ?? "");
-    if (!opportunityId) return void res.status(400).json({ error: "An opportunity id is required." });
-    try {
-      const applied = inTransaction(db, () => {
-        const account = db.prepare("SELECT id, balance_cents, scout_saved_cents, scout_applied_json FROM accounts WHERE user_id = ?").get(req.user!.id) as
-          | { id: number; balance_cents: number; scout_saved_cents: number; scout_applied_json: string }
-          | undefined;
-        if (!account) throw new Error("No account found.");
-        const already = JSON.parse(account.scout_applied_json ?? "[]") as string[];
-        if (already.includes(opportunityId)) return false;
-        const cents = dollarsToCents(req.body?.amount ?? 0);
-        if (cents <= 0) return false;
-        db.prepare("UPDATE accounts SET balance_cents = ?, scout_saved_cents = ?, scout_applied_json = ?, updated_at = ? WHERE id = ?")
-          .run(account.balance_cents + cents, account.scout_saved_cents + cents, JSON.stringify([...already, opportunityId]), now(), account.id);
-        db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, reward_cents, scout_cents, status, reference, note, created_at)
-           VALUES (?, ?, ?, ?, 'Operations', 'Scout credit', ?, 0, ?, 'cleared', ?, ?, ?)`,
-        ).run(rid("txn"), account.id, req.user!.id, `Scout savings · ${merchant}`, cents, cents, makeReference(), note, now());
-        notify(req.user!.id, "scout", `Scout credited ${centsToDecimal(cents)}`, `Savings from ${merchant} were credited to checking.`);
-        return true;
-      });
-      res.json({ applied });
-    } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Failed to apply savings." });
-    }
+  app.post("/api/me/scout/apply", requireAuth, requireApproved, wrap((_req, res) => {
+    res.status(410).json({
+      error: "Scout estimates cannot be credited to your balance. No funded savings provider is connected.",
+      code: "scout_credit_disabled",
+    });
   }));
 
   app.post("/api/me/perks/:id/redeem", requireAuth, requireApproved, wrap((req, res) => {
@@ -2245,20 +2248,26 @@ export function createApp(dbPath?: string) {
     const txns = db.prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").all(String(req.params.id));
     const kyc = db.prepare("SELECT * FROM kyc_records WHERE user_id = ?").get(String(req.params.id));
     const identityRow = db.prepare("SELECT * FROM identity_profiles WHERE user_id = ?").get(String(req.params.id)) as Record<string, unknown> | undefined;
+    const viewAccounts = can(db, req.user!.role, "accounts.view");
     res.json({
       member: {
         id: user.id, name: user.name, email: user.email, phone: user.phone, business: user.business,
         accountType: user.account_type, plan: user.plan, status: user.status, createdAt: user.created_at,
-        balance: money((account?.balance_cents as number) ?? 0),
-        accountNumber: account?.account_number, routingNumber: account?.routing_number,
+        balance: viewAccounts ? money((account?.balance_cents as number) ?? 0) : undefined,
+        accountNumber: viewAccounts ? account?.account_number : undefined, routingNumber: viewAccounts ? account?.routing_number : undefined,
+        bankName: viewAccounts ? account?.bank_name : undefined, bankAccountType: viewAccounts ? account?.bank_account_type : undefined,
+        statusReason: user.status_reason ?? "", teamOwnerId: user.team_owner_id ?? null,
+        pending: viewAccounts ? money((account?.pending_cents as number) ?? 0) : undefined,
       },
-      // The full application, unmasked: staff reviewing an account see the
-      // Social Security and EIN numbers exactly as the member entered them.
-      identity: identityRow
+      // Full identity data on this endpoint is restricted to KYC reviewers;
+      // ordinary customer-directory readers do not receive SSNs or EINs.
+      identity: identityRow && can(db, req.user!.role, "kyc.review")
         ? { ...rowToApplication(identityRow), submittedAt: identityRow.submitted_at ?? null }
         : null,
-      transactions: txns.map(txnOut),
+      transactions: can(db, req.user!.role, "transactions.view") ? txns.map(txnOut) : [],
       kyc,
+      permissions: rolePermissions(db, req.user!.role as StaffRole),
+      emailDeliveryConfigured: mailDelivers(),
     });
   }));
 
@@ -3296,7 +3305,7 @@ export function createApp(dbPath?: string) {
     const settings = Object.fromEntries(settingsRows.map(r => [r.key, r.value]));
     const operationCases = loadOperationCases();
 
-    res.json({ users, accounts, transactions, disputes, kycQueue, operationCases, audit: auditEntries, roles, settings });
+    res.json({ users, accounts, transactions, analytics: readLedgerAnalytics(db, undefined), disputes, kycQueue, operationCases, audit: auditEntries, roles, settings });
   }));
 
   /* ============================== errors ============================== */

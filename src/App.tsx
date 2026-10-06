@@ -1,3 +1,6 @@
+import { ExternalAccountsPage } from "./components/ExternalAccounts";
+import { DemoPaymentsProvider } from "./lib/demoPayments";
+import { AdminMemberPage } from "./pages/AdminMember";
 import { HashRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { MotionConfig } from "motion/react";
 import { AuthProvider, useAuth } from "./lib/auth";
@@ -19,7 +22,7 @@ import {
   ScoutAIPage, TeamPage, PerksPage, StatementsPage,
   AccountsPage, BillsPage, DisputesPage, SecurityCenterPage, KYCPage
 } from "./pages/Dashboard";
-import { ClassicApp, MarketsPage } from "./pages/dashboards/ClassicDashboard";
+import { ClassicApp, MarketsPage, AssetsPage } from "./pages/dashboards/ClassicDashboard";
 import { useAcct } from "./lib/store";
 import { SuperAdminPage } from "./pages/SuperAdmin";
 import { ApplicationStatusPage } from "./pages/ApplicationStatus";
@@ -29,14 +32,19 @@ import { MoneyPlanPage } from "./components/MoneyPlan";
 
 /** Public marketing pages share the site chrome. Auth and app layouts add the footer themselves. */
 function SiteLayout({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation();
+  if (pathname === "/") return <div className="crypto-site"><a className="vh-skip-link" href="#/#main-content" onClick={() => document.getElementById("main-content")?.focus({ preventScroll: true })}>Skip to content</a><Header />{children}<Footer /></div>;
   return <><Header />{children}<Footer /></>;
 }
 
 function RedirectIfAuthed({ children }: { children: React.ReactNode }) {
   const { user, ready } = useAuth();
+  const location = useLocation();
   if (!ready) return <div className="route-loading"><span className="spinner" /></div>;
   if (!user) return <>{children}</>;
-  return <Navigate to={user.role && user.role !== "user" ? "/app/superadmin" : "/app"} replace />;
+  const from: unknown = location.state?.from;
+  const memberTarget = typeof from === "string" && /^\/app(?:[/?]|$)/.test(from) && !from.startsWith("/app/superadmin") ? from : "/app";
+  return <Navigate to={user.role && user.role !== "user" ? "/app/superadmin" : memberTarget} replace />;
 }
 
 function BusinessOnly({ children }: { children: React.ReactNode }) {
@@ -119,18 +127,20 @@ function Shell() {
           element={
             <RequireAuth>
               <AccountProvider>
-                <MoneyFlowProvider>
+                <DemoPaymentsProvider><MoneyFlowProvider>
                   <RequireApproved>
                     <MemberSurface />
                   </RequireApproved>
-                </MoneyFlowProvider>
+                </MoneyFlowProvider></DemoPaymentsProvider>
               </AccountProvider>
             </RequireAuth>
           }
         >
           <Route index element={<Overview />} />
           <Route path="accounts" element={<AccountsPage />} />
+          <Route path="external-accounts" element={<ExternalAccountsPage />} />
           <Route path="markets" element={<MarketsPage />} />
+          <Route path="assets" element={<AssetsPage />} />
           <Route path="cards" element={<CardsPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="transfers" element={<PaymentsPage />} />
@@ -164,6 +174,7 @@ function Shell() {
         />
 
         {/* Staff console: its own shell (dark control room), not the member dashboard chrome. */}
+        <Route path="/app/superadmin/customers/:memberId" element={<RequireAuth><AdminMemberPage /></RequireAuth>} />
         <Route path="/app/superadmin" element={<RequireAuth><SuperAdminPage /></RequireAuth>} />
 
         <Route path="*" element={<SiteLayout><NotFoundPage /></SiteLayout>} />

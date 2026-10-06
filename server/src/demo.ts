@@ -183,9 +183,21 @@ export async function seedDemoAccounts(opts: {
       continue;
     }
 
+    // Demo funding uses an authenticated staff adjustment, never a member
+    // self-credit. This seeds an internal demonstration ledger, not bank funds.
+    const fundDemo = async (amount: number, description: string) => {
+      if (!adminToken || !memberId) throw new Error("Demo funding requires the administrator session.");
+      const funded = await call("POST", `/api/admin/members/${memberId}/adjust`, adminToken, { direction: "credit", amount, description, memo: "Synthetic demo funding — no external settlement" });
+      if (funded.status !== 200) throw new Error(`Demo funding failed: ${funded.json.error ?? funded.status}`);
+    };
+    if (adminToken && memberId) {
+      const configured = await call("PUT", `/api/admin/members/${memberId}/funding`, adminToken, { methods: [{ label: "Demo bank transfer", kind: "bank", enabled: true, instructions: "Demonstration only. Do not transfer real funds. Submit a request to test the pending/review workflow; an administrator must independently confirm receipt before crediting." }] });
+      if (configured.status !== 200) throw new Error("Could not configure demo funding instructions.");
+    }
+
     if (member.accountType === "personal") {
-      await call("POST", "/api/me/deposits", token, { amount: 5200, source: "Payroll — Acme Studio" });
-      await call("POST", "/api/me/deposits", token, { amount: 340, source: "Refund — TravelCo" });
+      await fundDemo(5200, "Payroll — Acme Studio");
+      await fundDemo(340, "Refund — TravelCo");
       const card = await call("POST", "/api/me/cards", token, { label: "Everyday debit", limit: 2500, type: "virtual" });
       for (const [merchant, amount, category, useCard] of [
         ["Whole Foods", 128.4, "Operations", true],
@@ -205,8 +217,8 @@ export async function seedDemoAccounts(opts: {
         if (pocket.json.pocket?.id) await call("POST", `/api/me/pockets/${pocket.json.pocket.id}/move`, token, { amount: move, direction: "to_pocket" });
       }
     } else {
-      await call("POST", "/api/me/deposits", token, { amount: 48000, source: "Northwind — invoice #1042" });
-      await call("POST", "/api/me/deposits", token, { amount: 16500, source: "Lekki Retail — retainer" });
+      await fundDemo(48000, "Northwind — invoice #1042");
+      await fundDemo(16500, "Lekki Retail — retainer");
       for (const invoice of [
         { client: "Northwind Freight", clientEmail: "ap@northwind.test", amount: 12400, dueDays: 21, description: "Q4 haulage" },
         { client: "Ikeja Foods", clientEmail: "finance@ikejafoods.test", amount: 5600, dueDays: 7, description: "Cold chain" },

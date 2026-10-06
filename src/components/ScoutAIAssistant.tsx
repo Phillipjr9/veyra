@@ -1,8 +1,8 @@
+import { Area, CartesianGrid, ComposedChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { motion } from "motion/react";
-import { Area, CartesianGrid, ComposedChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ArrowDownLeft, ArrowRight, ArrowUpRight, Bot, Check, CircleHelp, CreditCard, LoaderCircle, MessageCircle, Pause, Play, RefreshCw, Send, ShieldCheck, Sparkles, TrendingUp, Wallet, X, Zap } from "lucide-react";
 import { longDate, money, shortDate, useAcct, type Account } from "../lib/store";
 import { analyzeAccountWithScout, answerScoutQuery, type ScoutChatMessage, type ScoutInsight } from "../lib/scoutEngine";
@@ -25,7 +25,7 @@ function FinancialCharts({ account }: { account: Account }) {
   const week = 7 * DAY;
   const now = Date.now();
   const start = now - 8 * week;
-  const recentTransactions = account.transactions.filter(t => t.date >= start && t.date <= now);
+  const recentTransactions = account.transactions.filter(t => t.status === "cleared" && t.date >= start && t.date <= now);
   let balance = account.balance - recentTransactions.reduce((sum, txn) => sum + txn.amount, 0);
   const history = Array.from({ length: 8 }, (_, index) => {
     const from = start + index * week;
@@ -67,15 +67,13 @@ function ScoutChat({ account, userName, storageId }: { account: Account; userNam
 }
 
 export function ScoutAIPage() {
-  const { account, user, setPreference, applyScoutSavings, transferSavings } = useAcct();
+  const { account, user, setPreference, transferSavings } = useAcct();
   const toast = useToast();
   const [tab, setTab] = useState<"insights" | "chat" | "history">("insights");
-  const [negotiatingId, setNegotiatingId] = useState<string | null>(null); const [stage, setStage] = useState(0); const [handled, setHandled] = useState<string[]>([]); const [lastAction, setLastAction] = useState<{ label: string; amount: number } | null>(null); const [reviewedAt, setReviewedAt] = useState(Date.now());
-  const timer = useRef<number | null>(null);
+  const [handled, setHandled] = useState<string[]>([]); const [lastAction, setLastAction] = useState<{ label: string; amount: number } | null>(null); const [reviewedAt, setReviewedAt] = useState(Date.now());
   const insights = useMemo(() => account ? analyzeAccountWithScout(account).filter(i => !handled.includes(i.id)) : [], [account, handled]);
   const recoveries = useMemo(() => account ? account.transactions.filter(t => (t.scout ?? 0) > 0).sort((a, b) => b.date - a.date) : [], [account]);
   const auto = account?.preferences.scoutAuto ?? false;
-  useEffect(() => () => { if (timer.current !== null) window.clearInterval(timer.current); }, []);
   if (!account || !user) return null;
   const isBusiness = user.accountType === "business";
   const typeNames: Record<ScoutInsight["type"], string> = { savings_opportunity: "Savings opportunity", anomaly: "Activity to review", recurring_creep: "Recurring charge", card_optimization: "Card health", runway_alert: "Cash-flow review" };
@@ -92,17 +90,9 @@ export function ScoutAIPage() {
       if (amount <= 0 || !transferSavings(pocket.id, amount, "to_pocket")) return toast({ tone: "info", title: "Keep your cash buffer", description: "No funds are available above the suggested reserve." });
       setHandled(list => [...list, item.id]); setLastAction({ label: pocket.name, amount }); toast({ tone: "success", title: `${money(amount)} moved to ${pocket.name}` }); return;
     }
-    if (item.actionType !== "negotiate" || !item.targetMerchant || !item.targetAmount || negotiatingId) return;
-    setNegotiatingId(item.id); setStage(0); setTab("insights"); let current = 0;
-    timer.current = window.setInterval(() => {
-      current += 1; setStage(current);
-      if (current >= negotiationStages.length) {
-        if (timer.current !== null) window.clearInterval(timer.current); timer.current = null;
-        const saved = applyScoutSavings(item.id, item.targetMerchant!, item.targetAmount!, "Illustrative Scout estimate · simulated locally"); setNegotiatingId(null);
-        if (saved) { setHandled(list => [...list, item.id]); setLastAction({ label: item.targetMerchant!, amount: item.targetAmount! }); toast({ tone: "scout", title: `Estimate credited: ${money(item.targetAmount!)}`, description: `Illustrative estimate for ${item.targetMerchant}. No external merchant was contacted.` }); }
-        else toast({ tone: "info", title: "This estimate was already applied" });
-      }
-    }, 520);
+    if (item.actionType === "negotiate") {
+      toast({ tone: "info", title: "Planning estimate only", description: `${item.targetMerchant}: ${money(item.targetAmount ?? 0)} estimated per charge. No offer is verified, no merchant was contacted and no money was credited.` });
+    }
   };
 
   return <div className="app-page scout-ai-page">
@@ -114,18 +104,18 @@ export function ScoutAIPage() {
     {tab === "insights" && <motion.div className="scout-tab-content" key="insights" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       {lastAction && <motion.div className="scout-applied-banner" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}><span><Check size={14} /></span><div><strong>Action recorded</strong><small>{money(lastAction.amount)} · {lastAction.label}</small></div><button type="button" onClick={() => setLastAction(null)} aria-label="Dismiss"><X size={14} /></button></motion.div>}
       <div className="scout-content-heading"><div><span className="scout-kicker">Based on saved activity</span><h2>Recommended next steps</h2><p>Review each insight before acting. Merchant discount values are estimates, not live offers.</p></div><span className="scout-data-badge"><ShieldCheck size={13} /> Private analysis</span></div>
-      {insights.length ? <div className="scout-insights-grid">{insights.map((item, index) => { const running = negotiatingId === item.id; const applied = account.scoutApplied.includes(item.id) || handled.includes(item.id); return <motion.article className={`scout-insight-card insight-${item.type}`} key={item.id} {...rise(index)}><div className="insight-card-top"><span className="insight-type-tag"><InsightIcon type={item.type} />{typeNames[item.type]}</span><span className="insight-confidence">{Math.round(item.confidence * 100)}% data match</span></div><h3>{item.title}</h3><p>{item.description}</p>{running && <NegotiationProgress stage={stage} />}<div className="insight-action-footer">{item.actionType === "negotiate" ? <button type="button" className="solid-btn sm scout-action-btn" disabled={running || applied} onClick={() => actOnInsight(item)}>{running ? <><LoaderCircle className="spin" size={14} /> Applying estimate…</> : applied ? <><Check size={14} /> Estimate posted</> : <><Zap size={14} /> {item.actionText}</>}</button> : item.actionType === "manage_card" ? <Link to="/app/cards" className="ghost-btn sm scout-action-btn">{item.actionText}<ArrowRight size={14} /></Link> : item.actionType === "move_savings" ? <button type="button" className="ghost-btn sm scout-action-btn" onClick={() => actOnInsight(item)}>{item.actionText}<ArrowRight size={14} /></button> : <Link to="/app/transactions" className="ghost-btn sm scout-action-btn">{item.actionText}<ArrowRight size={14} /></Link>}</div>{item.actionType === "negotiate" && <small className="scout-estimate-note">Estimate based on your account activity</small>}</motion.article>; })}</div> : <div className="scout-no-insights"><span><Check size={18} /></span><div><strong>Nothing needs attention right now.</strong><p>Scout recalculates when saved account activity changes.</p></div></div>}
+      {insights.length ? <div className="scout-insights-grid">{insights.map((item, index) => { return <motion.article className={`scout-insight-card insight-${item.type}`} key={item.id} {...rise(index)}><div className="insight-card-top"><span className="insight-type-tag"><InsightIcon type={item.type} />{typeNames[item.type]}</span><span className="insight-confidence">{Math.round(item.confidence * 100)}% data match</span></div><h3>{item.title}</h3><p>{item.description}</p><div className="insight-action-footer">{item.actionType === "negotiate" ? <button type="button" className="solid-btn sm scout-action-btn" onClick={() => actOnInsight(item)}><Zap size={14} /> {item.actionText}</button> : item.actionType === "manage_card" ? <Link to="/app/cards" className="ghost-btn sm scout-action-btn">{item.actionText}<ArrowRight size={14} /></Link> : item.actionType === "move_savings" ? <button type="button" className="ghost-btn sm scout-action-btn" onClick={() => actOnInsight(item)}>{item.actionText}<ArrowRight size={14} /></button> : <Link to="/app/transactions" className="ghost-btn sm scout-action-btn">{item.actionText}<ArrowRight size={14} /></Link>}</div>{item.actionType === "negotiate" && <small className="scout-estimate-note">Planning estimate only · cannot be credited</small>}</motion.article>; })}</div> : <div className="scout-no-insights"><span><Check size={18} /></span><div><strong>Nothing needs attention right now.</strong><p>Scout recalculates when saved account activity changes.</p></div></div>}
       <div className="scout-content-heading chart-heading"><div><span className="scout-kicker">From your saved ledger</span><h2>Account activity</h2><p>Transaction history with an illustrative one-week trend estimate.</p></div></div><FinancialCharts account={account} />
-      <section className="scout-audit-explain"><div><span><CircleHelp size={17} /></span><div><strong>How Scout works</strong><p>Pattern checks use saved data. Estimates are local simulations; Scout does not contact merchants, banks or credit bureaus.</p></div></div><Link to="/help-center">Learn about Scout <ArrowRight size={14} /></Link></section>
+      <section className="scout-audit-explain"><div><span><CircleHelp size={17} /></span><div><strong>How Scout works</strong><p>Pattern checks use saved data. Estimates are read-only planning aids. Savings credits are disabled until a funded provider is connected; Scout does not contact merchants, banks or credit bureaus.</p></div></div><Link to="/help-center">Learn about Scout <ArrowRight size={14} /></Link></section>
     </motion.div>}
     {tab === "chat" && <motion.div className="scout-tab-content" key="chat" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><ScoutChat account={account} userName={user.name} storageId={`veyra.scout.chat.${user.id}`} /></motion.div>}
-    {tab === "history" && <motion.div className="scout-tab-content" key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><section className="panel scout-history-panel"><div className="panel-head"><div><h2>Recorded savings</h2><span className="panel-sub">Credits already reflected in account transactions.</span></div><strong className="scout-history-total">{money(account.scoutSaved)}</strong></div>{recoveries.length ? <div className="scout-recoveries-ledger">{recoveries.map(t => <div key={t.id} className="scout-recovery-row"><div className="recovery-left"><span className="scout-star-icon"><Sparkles size={15} /></span><div><strong>{t.merchant}</strong><small>{t.category} · Purchase {money(Math.abs(t.amount))} · {longDate(t.date)}</small></div></div><div className="recovery-right"><strong className="in">+{money(t.scout ?? 0)}</strong><span className="chip chip-green">Credited</span></div></div>)}</div> : <div className="scout-no-insights"><span><Sparkles size={17} /></span><div><strong>No savings recorded yet.</strong><p>Any future transaction credits will appear here.</p></div></div>}</section><div className="scout-history-note"><ShieldCheck size={15} /><span>Estimates are clearly labeled in their ledger memo.</span></div></motion.div>}
+    {tab === "history" && <motion.div className="scout-tab-content" key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><section className="panel scout-history-panel"><div className="panel-head"><div><h2>Recorded savings</h2><span className="panel-sub">Credits already reflected in account transactions.</span></div><strong className="scout-history-total">{money(account.scoutSaved)}</strong></div>{recoveries.length ? <div className="scout-recoveries-ledger">{recoveries.map(t => <div key={t.id} className="scout-recovery-row"><div className="recovery-left"><span className="scout-star-icon"><Sparkles size={15} /></span><div><strong>{t.merchant}</strong><small>{t.category} · Purchase {money(Math.abs(t.amount))} · {longDate(t.date)}</small></div></div><div className="recovery-right"><strong className="in">+{money(t.scout ?? 0)}</strong><span className="chip chip-green">Credited</span></div></div>)}</div> : <div className="scout-no-insights"><span><Sparkles size={17} /></span><div><strong>No savings recorded yet.</strong><p>Any future transaction credits will appear here.</p></div></div>}</section><div className="scout-history-note"><ShieldCheck size={15} /><span>Historical account entries are retained. They do not verify external savings. New estimate credits are disabled.</span></div></motion.div>}
   </div>;
 }
 
-const negotiationStages = ["Reviewing account activity", "Checking recurring patterns", "Preparing your estimate", "Posting the credit"];
+
 function InsightIcon({ type }: { type: ScoutInsight["type"] }) { if (type === "anomaly") return <CircleHelp size={15} />; if (type === "card_optimization") return <CreditCard size={15} />; if (type === "recurring_creep") return <RefreshCw size={15} />; if (type === "runway_alert") return <Wallet size={15} />; return <Sparkles size={15} />; }
-function NegotiationProgress({ stage }: { stage: number }) { return <div className="scout-negotiation-progress">{negotiationStages.map((label, index) => <div key={label} className={index < stage ? "done" : index === stage ? "active" : ""}><span>{index < stage ? <Check size={12} /> : index === stage ? <LoaderCircle className="spin" size={12} /> : index + 1}</span><small>{label}</small></div>)}</div>; }
+
 
 export function ScoutQuickDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { account, user } = useAcct(); const [messages, setMessages] = useState<ScoutChatMessage[]>([]); const [query, setQuery] = useState(""); const [thinking, setThinking] = useState(false); const end = useRef<HTMLDivElement>(null);

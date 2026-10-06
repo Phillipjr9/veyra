@@ -6,6 +6,7 @@ import { useToast } from "../components/Toast";
 import "../styles/emails.css";
 
 const CATEGORY_COLORS: Record<EmailCategory, string> = {
+  crypto: "#356aaf",
   security: "#9d4040",
   transfers: "#2f7a4c",
   cards: "#7558dc",
@@ -14,7 +15,7 @@ const CATEGORY_COLORS: Record<EmailCategory, string> = {
   account: "#443173",
 };
 
-const CATEGORY_ORDER: EmailCategory[] = ["security", "transfers", "cards", "invoices", "scout", "account"];
+const CATEGORY_ORDER: EmailCategory[] = ["security", "transfers", "crypto", "cards", "invoices", "scout", "account"];
 
 /**
  * Public gallery of the transactional email templates defined in src/emails.
@@ -65,8 +66,8 @@ export function EmailTemplatesPage() {
           <span className="eyebrow">Design system</span>
           <h1>Email notifications</h1>
           <p>
-            Every transactional email Veyra sends — {emailTemplates.length} templates across security, transfers,
-            cards, invoicing, Scout and account lifecycle — built on the same tokens as the app.
+            Preview {emailTemplates.length} Veyra email designs across security, transfers, cards, invoicing,
+            Scout and account lifecycle. Some are design examples; live delivery requires a configured provider.
           </p>
         </div>
       </header>

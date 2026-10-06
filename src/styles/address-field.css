@@ -1,0 +1,16 @@
+.address-field { min-width: 0; }
+.address-results { margin-top: 7px; border: 1px solid #d7cbe8; border-radius: 10px; background: #fff; box-shadow: 0 8px 22px #39284e0a; }
+.address-results ul { list-style: none; padding: 5px; margin: 0; max-height: 280px; overflow-y: auto; overscroll-behavior: contain; }
+.address-results li { min-height: 44px; padding: 12px 10px; border-radius: 6px; font-size: 14px; line-height: 1.6; cursor: pointer; overflow-wrap: anywhere; }
+.address-results li:hover, .address-results li[aria-selected="true"] { color: #513578; background: #eee7f8; }
+.address-attribution { padding: 10px 15px 8px; border-top: 1px solid #ece6f2; background: #fff; border-radius: 0 0 10px 10px; }
+.address-attribution span { font-family: Arial, sans-serif; font-weight: 400; font-style: normal; font-size: 13px; letter-spacing: normal; color: #5e5e5e; white-space: nowrap; }
+.address-help p, .address-status, .address-providers { margin: 8px 0 0; font-size: 12px; line-height: 1.7; color: #695f74; overflow-wrap: anywhere; }
+.address-help a, .address-providers a { color: #68408f; text-decoration: underline; text-underline-offset: 3px; }
+.address-mode { display: inline-flex; align-items: center; min-height: 44px; padding: 7px 0; border: 0; background: transparent; color: #67478c; font-size: 12px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.address-status:empty { display: none; }
+.address-providers { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 600px) {
+  .address-results li { font-size: 13px; }
+  .address-help a { display: inline-flex; align-items: center; min-height: 44px; }
+}

@@ -1171,3 +1171,7 @@ footer { padding: 80px max(40px, calc((100% - 1160px) / 2)) 35px; background: #0
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* The supported plan catalog has two tiers, not a third unimplemented tier. */
+.current-plans { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 940px; margin-inline: auto; }
+@media (max-width: 700px) { .current-plans { grid-template-columns: minmax(0, 1fr); } }

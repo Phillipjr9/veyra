@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 
 const SERVER_FILE = "server/src/app.ts";
 const CLIENT_FILES = [
+  "src/lib/demoPayments.tsx",
   "src/lib/api.ts",
   "src/lib/auth.tsx",
   "src/lib/recaptcha.ts",
@@ -23,13 +24,24 @@ const CLIENT_FILES = [
   "src/lib/federated.ts",
   "src/lib/passkey.ts",
   "src/lib/holdings.ts",
+  "src/lib/web3.ts",
+  "src/components/CryptoWorkspace.tsx",
+  "src/components/CryptoTradeDialog.tsx",
   "src/lib/store.tsx",
   "src/pages/Dashboard.tsx",
   "src/pages/SuperAdmin.tsx",
+  "src/pages/AdminMember.tsx",
+  "src/components/BulkAccountEditor.tsx",
+  "src/components/FundingDialog.tsx",
+  "src/components/ExternalAccounts.tsx",
+  "src/components/ExternalAccountReview.tsx",
   "src/pages/Auth.tsx",
   "src/pages/SupportCenter.tsx",
   "src/pages/Marketing.tsx",
   "src/components/Chrome.tsx",
+  "src/components/BankingControls.tsx",
+  "src/components/CryptoSend.tsx",
+  "src/components/AddressField.tsx",
   "src/components/CommandPalette.tsx",
   "src/components/MoneyFlow.tsx",
   "src/components/SecurityCenterContent.tsx",
@@ -54,6 +66,13 @@ const SUPERSEDED_BY_SNAPSHOT = new Map([
   ["GET /api/admin/roles", "GET /api/admin/state"],
   ["GET /api/admin/audit", "GET /api/admin/state"],
   ["GET /api/admin/settings", "GET /api/admin/state"],
+]);
+
+// Deliberate compatibility tombstones: stale clients get an explicit error,
+// but the current UI must never call these endpoints.
+const RETIRED_ROUTES = new Map([
+  ["PATCH /api/admin/members/:id/account-number", "Legacy number-only compatibility endpoint; UI uses account-details"],
+  ["POST /api/me/scout/apply", "410 scout_credit_disabled — no funded savings provider"],
 ]);
 
 const server = readFileSync(SERVER_FILE, "utf8");
@@ -128,7 +147,7 @@ const unwired = [...serverKeys]
     return !(method === "GET" && [...referenced].some(path => accepts.test(path)));
   })
   .map(([, route]) => route)
-  .filter(route => !SUPERSEDED_BY_SNAPSHOT.has(route));
+  .filter(route => !SUPERSEDED_BY_SNAPSHOT.has(route) && !RETIRED_ROUTES.has(route));
 
 // Client calls that don't correspond to any route (typos, removed endpoints,
 // or a method the route doesn't accept).
@@ -138,6 +157,11 @@ const dead = [...new Set(clientKeys)]
   .filter(k => ![...SUPERSEDED_BY_SNAPSHOT.keys()].map(key).includes(k));
 
 let failed = false;
+const retiredCalls = [...clientCalls].filter(call => RETIRED_ROUTES.has(call));
+if (retiredCalls.length) {
+  failed = true;
+  console.log(`Retired endpoints must not have UI callers: ${retiredCalls.join(", ")}`);
+}
 
 if (unwired.length) {
   failed = true;
@@ -157,4 +181,4 @@ if (failed) {
   process.exit(1);
 }
 
-console.log(`✓ route coverage: all ${serverRoutes.length} server routes are wired (${SUPERSEDED_BY_SNAPSHOT.size} aggregate-only reads allowlisted)`);
+console.log(`✓ route coverage: all ${serverRoutes.length} server routes accounted for (${SUPERSEDED_BY_SNAPSHOT.size} aggregate-only reads, ${RETIRED_ROUTES.size} retired endpoints)`);

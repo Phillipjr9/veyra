@@ -11,7 +11,7 @@
  *   CORS_ORIGIN    — allow a non-proxied browser origin
  */
 import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 // Minimal zero-dependency .env loader (KEY=VALUE lines, # comments).
 (function loadEnv() {
@@ -25,6 +25,8 @@ import { resolve } from "node:path";
   }
 })();
 
+import { previewCryptoEnabled } from "./previewCrypto.js";
+import { seedPreviewCrypto } from "./previewCryptoSeed.js";
 import { createApp } from "./app.js";
 import { describeRecaptcha, recaptchaConfig } from "./recaptcha.js";
 import { describeFederated } from "./federated.js";
@@ -41,17 +43,30 @@ const isProduction = process.env.NODE_ENV === "production";
  * Development defaults, applied only when nothing else is set (a real .env
  * always wins, and production never takes these paths):
  *
- *   - ADMIN_EMAIL/PASSWORD: the pair the login page's one-click Super Admin
- *     button uses, so a fresh dev database still has a console to sign into.
- *   - Demo members are seeded after listen (see below).
+ *   - ADMIN_EMAIL/PASSWORD: a local administrator account for development.
+ *   - Account-ledger operations work before external provider integration.
+ *   - Development members are seeded after listen (see below).
  */
 if (!isProduction) {
+  process.env.PREVIEW_LOGIN_SHORTCUTS ??= "1";
+  // Honor explicit configuration, including the older switch. Tests that call
+  // createApp directly opt in separately; this is only the normal dev entrypoint.
+  if (!process.env.ACCOUNT_LEDGER_ENABLED && !process.env.DEMO_PAYMENTS_ENABLED) process.env.ACCOUNT_LEDGER_ENABLED = "1";
   process.env.ADMIN_EMAIL ??= DEMO_ADMIN_EMAIL;
   process.env.ADMIN_PASSWORD ??= DEMO_ADMIN_PASSWORD;
   process.env.ADMIN_NAME ??= "System Admin";
 }
 
-const { app } = createApp(undefined);
+// Test balances must never share the ordinary or production database.
+const previewDb = resolve(process.cwd(), "server/preview-crypto.db");
+if (isProduction && (process.env.PREVIEW_CRYPTO_DATA === "1" || basename(process.env.DB_PATH ?? "") === "preview-crypto.db")) {
+  throw new Error("Preview crypto data/database cannot be used in production.");
+}
+if (previewCryptoEnabled()) {
+  if (process.env.DB_PATH && resolve(process.env.DB_PATH) !== previewDb) throw new Error("Preview crypto requires the isolated server/preview-crypto.db database.");
+  process.env.DB_PATH = previewDb;
+}
+const { app, db } = createApp(process.env.DB_PATH);
 
 if (process.env.NODE_ENV === "production" && !process.env.TOKEN_SECRET) {
   console.error("Refusing to start: TOKEN_SECRET is required in production.");
@@ -69,7 +84,14 @@ if (isProduction && !recaptchaConfig().enabled) {
   console.warn("  Set RECAPTCHA_SITE_KEY + RECAPTCHA_SECRET_KEY (classic v3), or + RECAPTCHA_PROJECT_ID/RECAPTCHA_API_KEY (Enterprise).");
 }
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", (error?: Error) => {
+  // Express 5 passes bind failures to this callback. Never announce readiness
+  // or seed against another process that already owns the requested port.
+  if (error) {
+    console.error(`Veyra API could not bind port ${PORT}: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(`Veyra API listening on http://0.0.0.0:${PORT}`);
   console.log(describeRecaptcha());
   console.log(describeFederated());
@@ -96,7 +118,8 @@ app.listen(PORT, "0.0.0.0", () => {
   // one is seeded on boot: the login page's one-click accounts always exist.
   console.log("Mode: development — seeding demo accounts…");
   void seedDemoAccounts({ baseUrl: `http://127.0.0.1:${PORT}`, log: line => console.log(`  ${line}`) })
-    .then(result => {
+    .then(async result => {
+      await seedPreviewCrypto(db, `http://127.0.0.1:${PORT}`, line => console.log(`  ${line}`));
       console.log(`  ready: ${result.created} created, ${result.seeded} seeded, ${result.skipped} already had data`);
       console.log(`  demo logins: demo.personal@veyra.dev, demo.business@veyra.dev (${DEMO_PASSWORD}), ${result.adminEmail}`);
     })

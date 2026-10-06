@@ -164,7 +164,7 @@ export function StatementsPage() {
     document.setFont("helvetica", "normal");
     document.text(`Account: XXXX XXXX ${account.bankDetails.accountNumber.slice(-4)}`, 310, 112);
     document.text(`Routing (ABA): ${account.bankDetails.routingNumber}`, 310, 126);
-    document.text(`Type: ${isPersonal ? "Personal Everyday Checking" : "Commercial Treasury Checking"}`, 310, 140);
+    document.text(`Type: ${account.bankDetails.accountType}`, 310, 140);
     document.text(`Statement ID: VYR-${activeStatement.key.replace("-", "")}-${account.bankDetails.accountNumber.slice(-4)}`, 310, 154);
 
     document.setFillColor(247, 244, 252);
@@ -308,7 +308,7 @@ export function StatementsPage() {
             <div className="stmt-meta-line"><span>Statement Period:</span> <strong>{activeStatement?.label}</strong></div>
             <div className="stmt-meta-line"><span>Account Number:</span> <code>•••• •••• {account.bankDetails.accountNumber.slice(-4)}</code></div>
             <div className="stmt-meta-line"><span>Routing (ABA):</span> <code>{account.bankDetails.routingNumber}</code></div>
-            <div className="stmt-meta-line"><span>Account Type:</span> <strong>{isPersonal ? "Personal Everyday Checking" : "Commercial Treasury Checking"}</strong></div>
+            <div className="stmt-meta-line"><span>Account Type:</span> <strong>{account.bankDetails.accountType}</strong></div>
           </div>
         </div>
 

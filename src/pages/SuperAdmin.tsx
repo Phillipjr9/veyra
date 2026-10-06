@@ -1,16 +1,20 @@
+import { buildLedgerAnalytics, type FlowRange, type LedgerAnalytics } from "../lib/dashboardAnalytics";
+import { createPortal } from "react-dom";
+import { BulkAccountEditor } from "../components/BulkAccountEditor";
+import { AccountEditor, FundingManager } from "../components/BankingControls";
 import { useEffect, useMemo, useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Activity, AlertOctagon, AlertTriangle, BadgeCheck, Bell, Check, ClipboardList, Clock3, Download, FileText,
   ExternalLink, KeyRound, Landmark, Lock, LogOut, Mail, Megaphone, MessageSquare, Plus, RefreshCw, ScrollText, Search, ShieldAlert, ShieldCheck,
   TrendingUp, UserCheck, UserPlus, UserRound, Users, Wallet,
 } from "lucide-react";
 import {
-  Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Cell, Pie, PieChart,
+  ResponsiveContainer, Tooltip,
 } from "recharts";
 import { useAuth, type User, type UserRole } from "../lib/auth";
-import { apiGet, apiGetText, apiPatch, apiPost, apiPut } from "../lib/api";
+import { apiGet, apiGetText, apiPost, apiPut } from "../lib/api";
 import {
   money, longDate, downloadFile,
   type KycQueueItem, type KycRequirement, type PlatformAccount, type Txn, type Dispute,
@@ -22,6 +26,7 @@ import {
 } from "../lib/permissions";
 import { useToast } from "../components/Toast";
 import { Logo } from "../components/common";
+import { CashFlowExplorer } from "../components/DashboardIntelligence";
 
 type AdminUser = User & { role?: UserRole };
 type TabId =
@@ -115,6 +120,7 @@ type AdminServerState = {
   users: Array<{ id: string; name: string; email: string; phone: string; business: string; accountType: "personal" | "business"; avatarUrl: string; role: string; plan: "Starter" | "Pro"; createdAt: number }>;
   accounts: PlatformAccount[];
   transactions: Array<Txn & { userId: string; memberName: string }>;
+  analytics?: LedgerAnalytics;
   disputes: Array<Dispute & { userId: string; memberName: string }>;
   kycQueue: KycQueueItem[];
   operationCases: OperationCase[];
@@ -135,14 +141,17 @@ export function SuperAdminPage() {
   const { user, logout } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
+  const [query] = useSearchParams();
 
   // Staff only, in every environment: the console exposes other members' money
   // and identity data, and the API enforces the same rule (`requirePerm`), so a
   // non-staff viewer would only see a wall of 403s.
   if (!isStaff(user?.role)) return <Navigate to="/app" replace />;
 
-  const [activeTab, setActiveTab] = useState<TabId>("dashboard");
+  const [activeTab, setActiveTab] = useState<TabId>(() => query.get("module") === "customers" ? "customers" : "dashboard");
+  useEffect(() => { if (query.get("module") === "customers") setActiveTab("customers"); }, [query]);
   const [tick, setTick] = useState(0);
+  const [snapshotAt, setSnapshotAt] = useState<number | null>(null);
   const refresh = () => setTick(t => t + 1);
 
   /** Opens the restrict/restore modal with a clean reason picker. */
@@ -177,14 +186,14 @@ export function SuperAdminPage() {
     return () => { cancelled = true; clearInterval(iv); };
   }, []);
 
+  const [bulkOpen, setBulkOpen] = useState(false);
   // Customers
   const [searchTerm, setSearchTerm] = useState("");
   // Transactions
   const [txnFilter, setTxnFilter] = useState<"all" | "in" | "out" | "pending">("all");
   // Account number correction
   const [acctModal, setAcctModal] = useState(false);
-  const [acctNumber, setAcctNumber] = useState("");
-  const [acctSaving, setAcctSaving] = useState(false);
+  const [fundingUser, setFundingUser] = useState<AdminUser | null>(null);
   // Balance adjustment
   const [adjustModal, setAdjustModal] = useState(false);
   const [targetUser, setTargetUser] = useState<AdminUser | null>(null);
@@ -271,6 +280,7 @@ export function SuperAdminPage() {
       .then(data => {
         if (cancelled) return;
         setAdminData(data);
+        setSnapshotAt(Date.now());
         setAdminLoadError(null);
         setServerRoleMatrix(data.roles as Partial<Record<StaffRole, Permission[]>>);
         setInterestRate(data.settings.core_apy ?? "4.25");
@@ -313,8 +323,8 @@ export function SuperAdminPage() {
     openAccounts: accounts.filter(a => a.hasAccount).length,
     balances: accounts.reduce((s, a) => s + a.balance, 0),
     pending: accounts.reduce((s, a) => s + a.pendingBalance, 0),
-    txns: allTxns.length,
-    pendingTxns: allTxns.filter(t => t.status === "pending").length,
+    txns: accounts.reduce((sum, account) => sum + account.txnCount, 0),
+    pendingTxns: accounts.reduce((sum, account) => sum + account.pendingTxns, 0),
     kycPending: kycQueue.length + accounts.filter(a => a.kycStatus === "requested").length,
     riskAlerts: openDisputes.length + accounts.filter(a => a.accountStatus === "restricted").length,
     restricted: accounts.filter(a => a.accountStatus === "restricted").length,
@@ -516,36 +526,7 @@ export function SuperAdminPage() {
     toast({ tone: "success", title: "Export ready", description: `${kind[0].toUpperCase() + kind.slice(1)} CSV downloaded.` });
   };
 
-  const openAccountNumber = (u: AdminUser) => {
-    setTargetUser(u);
-    setAcctNumber(accountBy(u.id)?.accountNumber ?? "");
-    setAcctModal(true);
-  };
-
-  const handleSaveAccountNumber = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!targetUser) return;
-    if (!guard("accounts.edit_number", "edit account numbers")) return;
-    const digits = acctNumber.replace(/[\s-]/g, "");
-    if (!/^\d{12}$/.test(digits)) {
-      toast({ tone: "error", title: "Account number not saved", description: "An account number is exactly 12 digits." });
-      return;
-    }
-    setAcctSaving(true);
-    apiPatch<{ accountNumber: string; changed: boolean }>(`/api/admin/members/${targetUser.id}/account-number`, { accountNumber: digits })
-      .then(r => {
-        toast({
-          tone: "success",
-          title: r.changed ? "Account number updated" : "Account number unchanged",
-          description: r.changed
-            ? `${targetUser.name} is now addressed as ${r.accountNumber}. The change is on the audit trail.`
-            : `${targetUser.name} already had ${r.accountNumber}.`,
-        });
-        setAcctModal(false); setAcctNumber(""); refresh();
-      })
-      .catch((err: Error) => toast({ tone: "error", title: "Account number not saved", description: err.message }))
-      .finally(() => setAcctSaving(false));
-  };
+  const openAccountNumber = (u: AdminUser) => { setTargetUser(u); setAcctModal(true); };
 
   const handleSaveSettings = () => {
     if (!guard("settings.manage", "change banking settings")) return;
@@ -688,35 +669,23 @@ export function SuperAdminPage() {
   // Console metrics deliberately derive from the live server snapshot rather
   // than displaying sample financial figures. This keeps the control room
   // useful on a brand-new platform as well as at scale.
-  const adminNetFlow = useMemo(() => {
-    const now = new Date();
-    return Array.from({ length: 6 }, (_, index) => {
-      const period = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
-      const nextPeriod = new Date(period.getFullYear(), period.getMonth() + 1, 1);
-      const rows = allTxns.filter(transaction => transaction.date >= period.getTime() && transaction.date < nextPeriod.getTime());
-      return {
-        month: period.toLocaleDateString("en-US", { month: "short" }),
-        inflow: rows.filter(transaction => transaction.amount > 0).reduce((sum, transaction) => sum + transaction.amount, 0),
-        outflow: rows.filter(transaction => transaction.amount < 0).reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0),
-      };
-    });
-  }, [allTxns]);
-
+  const [flowDays, setFlowDays] = useState<FlowRange>(30);
+  const analytics = useMemo(() => adminData?.analytics ?? buildLedgerAnalytics(allTxns), [adminData, allTxns]);
+  const adminNetFlow = analytics.months;
   const channelMix = useMemo(() => {
-    const colorByChannel: Record<string, string> = { Card: "#7558dc", ACH: "#5aa77b", Wire: "#e2a649", Transfer: "#4b8fb2", Other: "#a9a2b6" };
-    const totalsByChannel = new Map<string, number>();
-    allTxns.forEach(transaction => {
-      const raw = (transaction.method ?? "Other").toLowerCase();
-      const channel = raw.includes("card") ? "Card" : raw.includes("ach") ? "ACH" : raw.includes("wire") ? "Wire" : raw.includes("transfer") || raw.includes("zelle") ? "Transfer" : "Other";
-      totalsByChannel.set(channel, (totalsByChannel.get(channel) ?? 0) + Math.abs(transaction.amount));
-    });
-    const total = [...totalsByChannel.values()].reduce((sum, amount) => sum + amount, 0);
-    if (!total) return [{ name: "Awaiting activity", value: 100, color: "#ded9e5" }];
-    return [...totalsByChannel.entries()]
-      .sort(([, amountA], [, amountB]) => amountB - amountA)
-      .slice(0, 4)
-      .map(([name, amount]) => ({ name, value: Math.round((amount / total) * 100), color: colorByChannel[name] ?? colorByChannel.Other }));
-  }, [allTxns]);
+    const colors: Record<string, string> = { Card: "#7558dc", ACH: "#418467", Wire: "#bb812b", Transfer: "#4b8fb2", Other: "#787080", Zelle: "#a951b0", Check: "#aa6551", Internal: "#52658e" };
+    return analytics.ranges[flowDays].channels.map(channel => ({ ...channel, color: colors[channel.name] ?? colors.Other }));
+  }, [analytics, flowDays]);
+
+  useEffect(() => {
+    // Refresh chart data without overwriting drafts on settings/role screens.
+    if (activeTab !== "dashboard") return;
+    const refresh = () => { if (document.visibilityState !== "hidden") setTick(value => value + 1); };
+    const interval = window.setInterval(refresh, 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.clearInterval(interval); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [activeTab]);
 
   const sixMonthInflow = adminNetFlow.reduce((sum, period) => sum + period.inflow, 0);
   const sixMonthOutflow = adminNetFlow.reduce((sum, period) => sum + period.outflow, 0);
@@ -742,7 +711,7 @@ export function SuperAdminPage() {
   const trackedSources = new Set(operationCases.filter(item => item.sourceType && item.sourceId).map(item => `${item.sourceType}:${item.sourceId}`));
 
   return (
-    <div className="app-page superadmin-page">
+    <div className="app-page superadmin-page dx-admin">
       {/* Console chrome.
           The hero below is the page's banner and scrolls away with it, which
           used to leave a long tab with no brand, no status and no way out. This
@@ -799,7 +768,7 @@ export function SuperAdminPage() {
             <AlertOctagon size={13} /> SUPER ADMIN CONTROL CENTER
           </span>
           <h1>Platform command</h1>
-          <p>Real-time authority over member safety, money movement and platform configuration.</p>
+          <p>A clear view of member safety, money movement, and the decisions that need you.</p>
           <div className="admin-command-meta">
             <span className="admin-role-chip">{ROLE_LABELS[role]}</span>
             <span className="admin-identity">{systemFrozen ? "Payment rails halted platform-wide" : "All payment rails available"}</span>
@@ -808,7 +777,19 @@ export function SuperAdminPage() {
             <span className="admin-identity admin-identity-phone">{user?.name ?? "Operator"} · {user?.email ?? ""}</span>
           </div>
         </div>
+        <div className="dx-control-state" role="region" aria-label="Platform control status">
+          <span><ShieldCheck size={19} /> CONTROL STATUS</span>
+          <div><span>Payment rails</span><strong>{adminLoadError ? "Unavailable" : !adminData ? "Loading…" : systemFrozen ? "Halted" : "Enabled"}</strong></div>
+          <div><span>API connection</span><strong>{apiHealth === "online" ? "Connected" : apiHealth === "offline" ? "Degraded" : "Checking…"}</strong></div>
+          <p>Actions are permission-gated and audited.</p>
+        </div>
       </header>
+
+      <div className="dx-module-toolbar">
+        <div><span className="dx-kicker">OPERATIONS WORKSPACE</span><strong>{visibleModules.find(module => module.id === activeTab)?.label ?? "Console"}</strong></div>
+        <span className="dx-snapshot" role="status">{adminLoadError ? (adminData ? "Showing last snapshot · refresh failed" : "Snapshot unavailable · retry above") : snapshotAt ? `Snapshot updated ${new Date(snapshotAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Loading snapshot…"}</span>
+        <label className="dx-module-picker"><span>Open a module</span><select aria-label="Open admin module" value={activeTab} onChange={event => { setActiveTab(event.target.value as TabId); setMatrixDraft(null); }}>{visibleModules.map(module => <option value={module.id} key={module.id}>{module.label}{moduleCount(module.id) !== undefined ? ` (${moduleCount(module.id)})` : ""}</option>)}</select></label>
+      </div>
 
       {/* Module navigation */}
       <div className="admin-tabs-nav" role="tablist" aria-label="Admin modules">
@@ -859,7 +840,7 @@ export function SuperAdminPage() {
       )}
 
       {/* ============================ DASHBOARD ============================ */}
-      {activeTab === "dashboard" && adminData && !adminLoadError && (
+      {activeTab === "dashboard" && adminData && (
         <div className="admin-tab-pane">
           <div className="admin-kpi-grid">
             {([
@@ -882,64 +863,38 @@ export function SuperAdminPage() {
           </div>
 
           <div className="admin-chart-grid">
-            <div className="admin-chart-panel admin-chart-main">
-              <div className="chart-panel-head">
-                <div>
-                  <span className="chart-panel-kicker">Live member ledger · 6 months</span>
-                  <h3>Incoming and outgoing movement</h3>
-                </div>
-                <span className={`chart-panel-badge ${sixMonthInflow >= sixMonthOutflow ? "positive" : "neutral"}`}>{sixMonthInflow >= sixMonthOutflow ? "Inflow-led" : "Outflow-led"}</span>
-              </div>
-              <div className="chart-panel-body">
-                <ResponsiveContainer width="100%" height={250}>
-                  <AreaChart data={adminNetFlow} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="netflow-fill" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="#7558dc" stopOpacity={0.32} />
-                        <stop offset="100%" stopColor="#7558dc" stopOpacity={0.04} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="rgba(24, 23, 29, 0.08)" strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="month" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} />
-                    <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: "#716e78" }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
-                    <Tooltip
-                      formatter={(value, name) => [money(Number(value ?? 0), false), name === "inflow" ? "Inflow" : "Outflow"]}
-                      contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)", boxShadow: "0 18px 38px rgba(24,23,29,.12)" }}
-                    />
-                    <Area type="monotone" dataKey="outflow" stackId="1" stroke="#c2b4ff" strokeWidth={2.2} fill="rgba(117,88,220,0.14)" />
-                    <Area type="monotone" dataKey="inflow" stackId="2" stroke="#7558dc" strokeWidth={2.5} fill="url(#netflow-fill)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
+            <div className="admin-chart-panel admin-chart-main dx-admin-flow">
+              <CashFlowExplorer analytics={analytics} days={flowDays} onDaysChange={setFlowDays} platform transactions={allTxns} title="Platform cash movement" />
             </div>
 
             <div className="admin-chart-panel">
               <div className="chart-panel-head">
                 <div>
                   <span className="chart-panel-kicker">Payment rails</span>
-                  <h3>Movement by channel</h3>
+                  <h3>Movement by channel</h3><small>Cleared volume · last {flowDays} days</small>
                 </div>
               </div>
               <div className="chart-panel-body chart-panel-compact">
-                <div className="admin-pie-wrap">
+                <div className="admin-pie-wrap" role="img" aria-label={`Cleared payment channel volume over ${flowDays} days. Values listed below.`}>
+                  {channelMix.length ? <>
                   <ResponsiveContainer width="100%" height={170}>
                     <PieChart>
-                      <Pie data={channelMix} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={35} outerRadius={58} paddingAngle={3}>
+                      <Pie data={channelMix} dataKey="total" nameKey="name" cx="50%" cy="50%" innerRadius={35} outerRadius={58} paddingAngle={3}>
                         {channelMix.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                       </Pie>
                       <Tooltip
-                        formatter={value => [`${value ?? 0}%`, "Share"]}
+                        formatter={value => [money(Number(value)), "Cleared volume"]}
                         contentStyle={{ borderRadius: 12, border: "1px solid rgba(24,23,29,.12)", background: "rgba(255,255,255,.96)" }}
                       />
                     </PieChart>
-                  </ResponsiveContainer>
+                  </ResponsiveContainer></> : <p className="admin-chart-empty">No cleared activity in this period.</p>}
                 </div>
                 <div className="admin-mix-legend">
                   {channelMix.map((item) => (
                     <div key={item.name} className="admin-mix-item">
                       <span className="admin-mix-dot" style={{ background: item.color }} />
                       <span>{item.name}</span>
-                      <strong>{item.value}%</strong>
+                      <strong title={money(item.total)}>{item.share.toFixed(1)}%</strong>
                     </div>
                   ))}
                 </div>
@@ -968,6 +923,7 @@ export function SuperAdminPage() {
             <section className="admin-command-summary">
               <span className="admin-section-kicker">Command summary</span>
               <h2>Operational snapshot</h2>
+              <p className="panel-sub">Six calendar months · current month to date (UTC)</p>
               <div className="admin-summary-stats">
                 <div><span>Ledger inflow</span><strong>{money(sixMonthInflow, false)}</strong></div>
                 <div><span>Ledger outflow</span><strong>{money(sixMonthOutflow, false)}</strong></div>
@@ -1010,7 +966,8 @@ export function SuperAdminPage() {
                       <span className="admin-activity-cat">{l.category}</span>
                       <div>
                         <strong>{l.summary}</strong>
-                        <small>{l.adminName} · {ago(l.at)} {l.before || l.after ? `· ${l.before ?? "—"} → ${l.after ?? "—"}` : ""}</small>
+                        <small>{l.adminName} · {ago(l.at)}</small>
+                        {(l.before || l.after) && <details className="admin-change-details"><summary>View changes</summary><pre>Before: {l.before ?? "—"}{"\n"}After: {l.after ?? "—"}</pre></details>}
                       </div>
                     </div>
                   ))}
@@ -1144,7 +1101,7 @@ export function SuperAdminPage() {
                 <h2>Customer directory</h2>
                 <span className="panel-sub">{members.length} members · balances, KYC and treasury actions</span>
               </div>
-              {allow("reports.view") && <button type="button" className="ghost-btn sm" onClick={() => handleExport("customers")}><Download size={13} /> Export CSV</button>}
+              <div className="customer-directory-actions">{allow("accounts.edit_number") && <button type="button" className="solid-btn sm" disabled={!adminData || !!adminLoadError} onClick={() => setBulkOpen(true)}><Landmark size={14} /> Bulk account details</button>}{allow("reports.view") && <button type="button" className="ghost-btn sm" onClick={() => handleExport("customers")}><Download size={13} /> Export CSV</button>}</div>
             </div>
             <div className="admin-search-wrap" style={{ maxWidth: 340 }}>
               <Search size={14} />
@@ -1163,7 +1120,7 @@ export function SuperAdminPage() {
                     const acct = accountBy(u.id);
                     return (
                       <tr key={u.id}>
-                        <td><strong>{u.name}</strong><br /><small><code>{u.id}</code></small></td>
+                        <td><Link className="customer-name-link" to={`/app/superadmin/customers/${u.id}`}><strong>{u.name}</strong></Link><br /><small><code>{u.id}</code></small></td>
                         <td><span className={`chip ${u.accountType === "personal" ? "chip-green" : "chip-violet"}`}>{u.accountType.toUpperCase()}</span></td>
                         <td><small>{u.email}<br />{u.phone || "—"}</small></td>
                         <td><small>{u.business || "Personal account"}</small></td>
@@ -1174,9 +1131,10 @@ export function SuperAdminPage() {
                             {allow("customers.adjust_balance") && (
                               <button type="button" className="solid-btn sm" onClick={() => { setTargetUser(u); setAdjustType("credit"); setAdjustModal(true); }}>Deposit / Withdraw</button>
                             )}
-                            {allow("accounts.edit_number") && acct && (
-                              <button type="button" className="ghost-btn sm" onClick={() => openAccountNumber(u)}><KeyRound size={13} /> Account no.</button>
-                            )}
+                            {allow("accounts.edit_number") && acct && (<>
+                              <button type="button" className="ghost-btn sm" onClick={() => openAccountNumber(u)}><KeyRound size={13} /> Account details</button>
+                              <button type="button" className="ghost-btn sm" onClick={() => setFundingUser(u)}><Landmark size={13} /> Funding</button>
+                            </>)}
                             {allow("kyc.request") && (
                               <button type="button" className="ghost-btn sm" onClick={() => { setTargetUser(u); setKycReqs(["identity", "address"]); setKycModal(true); }}><UserCheck size={13} /> Request KYC</button>
                             )}
@@ -1261,7 +1219,7 @@ export function SuperAdminPage() {
             <div className="panel-head">
               <div>
                 <h2>Platform ledger</h2>
-                <span className="panel-sub">{allTxns.length} transactions across every member account</span>
+                <span className="panel-sub">{allTxns.length} most recent platform transactions</span>
               </div>
               {allow("transactions.export") && <button type="button" className="ghost-btn sm" onClick={() => handleExport("transactions")}><Download size={13} /> Export CSV</button>}
             </div>
@@ -1791,31 +1749,9 @@ export function SuperAdminPage() {
         </div>
       )}
 
-      {/* Account number correction */}
-      {acctModal && targetUser && (
-        <div className="modal-scrim" onClick={() => setAcctModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h3>Account number: {targetUser.name}</h3></div>
-            <form onSubmit={handleSaveAccountNumber} className="dash-form">
-              <label htmlFor="adm-acct-number">12-digit account number</label>
-              <input
-                id="adm-acct-number"
-                inputMode="numeric"
-                value={acctNumber}
-                onChange={e => setAcctNumber(e.target.value)}
-                placeholder="000000000000"
-              />
-              <p className="admin-before-after">
-                Current: <strong>{accountBy(targetUser.id)?.accountNumber || "not set"}</strong>
-              </p>
-              <div className="modal-actions">
-                <button type="button" className="ghost-btn" onClick={() => setAcctModal(false)}>Cancel</button>
-                <button type="submit" className="solid-btn" disabled={acctSaving}>{acctSaving ? "Saving…" : "Save account number"}</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {bulkOpen && createPortal(<BulkAccountEditor candidates={members.filter(m => accounts.some(a => a.userId === m.id && a.hasAccount))} close={() => setBulkOpen(false)} saved={refresh} />, document.body)}
+      {acctModal && targetUser && <AccountEditor userId={targetUser.id} name={targetUser.name} close={() => setAcctModal(false)} saved={refresh} />}
+      {fundingUser && <FundingManager userId={fundingUser.id} name={fundingUser.name} canEdit={allow("accounts.edit_number")} canReview={allow("customers.adjust_balance")} close={() => { setFundingUser(null); refresh(); }} />}
 
       {/* KYC request */}
       {kycModal && targetUser && (

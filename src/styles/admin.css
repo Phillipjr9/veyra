@@ -2089,3 +2089,12 @@
   .status-reason-grid { max-height: 44vh; }
   .status-reason-note { max-width: none; }
 }
+
+/* Account/funding audit snapshots contain long identifiers and JSON. Keep the
+   actual content readable instead of letting a flex item's min-content width
+   push the entire mobile dashboard sideways. */
+.admin-activity-row > div { flex: 1 1 180px; min-width: 0; max-width: 100%; }
+.admin-activity-row :is(strong,small) { overflow-wrap: anywhere; white-space: normal; }
+.admin-change-details { margin-top: 8px; font-size: 12px; min-width: 0; }
+.admin-change-details summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
+.admin-change-details pre { font-family: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; font-size: 11px; line-height: 1.6; }

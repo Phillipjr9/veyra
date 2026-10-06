@@ -56,6 +56,7 @@ async function deliver(cfg: MailConfig, mail: OutgoingMail): Promise<void> {
   if (cfg.provider === "resend") {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
+      signal: AbortSignal.timeout(10_000),
       headers: { authorization: `Bearer ${cfg.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({ from: cfg.from, to: [mail.to], subject: mail.subject, html: mail.html, text: mail.text, tags: [{ name: "type", value: mail.tag }] }),
     });
@@ -63,6 +64,7 @@ async function deliver(cfg: MailConfig, mail: OutgoingMail): Promise<void> {
   } else if (cfg.provider === "postmark") {
     const r = await fetch("https://api.postmarkapp.com/email", {
       method: "POST",
+      signal: AbortSignal.timeout(10_000),
       headers: { "X-Postmark-Server-Token": cfg.apiKey, "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ From: cfg.from, To: mail.to, Subject: mail.subject, HtmlBody: mail.html, TextBody: mail.text, Tag: mail.tag, MessageStream: "outbound" }),
     });
@@ -70,6 +72,7 @@ async function deliver(cfg: MailConfig, mail: OutgoingMail): Promise<void> {
   } else if (cfg.provider === "sendgrid") {
     const r = await fetch("https://api.sendgrid.com/v3/mail/send", {
       method: "POST",
+      signal: AbortSignal.timeout(10_000),
       headers: { authorization: `Bearer ${cfg.apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({
         personalizations: [{ to: [{ email: mail.to }] }], from: parseFrom(cfg.from), subject: mail.subject,
