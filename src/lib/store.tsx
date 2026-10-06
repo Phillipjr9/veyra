@@ -83,7 +83,7 @@ export type TeamMember = { id: string; name: string; email: string; role: "Owner
   monthlySpent?: number; monthlyRemaining?: number | null;
   spendResetsAt?: number; spendTrackingSince?: number };
 export type Perk = { id: string; partner: string; category: string; value: string; description: string; code: string; status: "available" | "redeemed" };
-export type NotificationItem = { id: string; title: string; detail: string; time: number; read: boolean; type: "scout" | "card" | "transfer" | "security" | "invoice" | "info" };
+export type NotificationItem = { id: string; title: string; detail: string; time: number; read: boolean; type: "scout" | "card" | "transfer" | "security" | "invoice" | "info" | "crypto" };
 export type Preferences = { twoFactor: boolean; loginAlerts: boolean; scoutAuto: boolean; weeklyDigest: boolean };
 
 export type SavingsPocket = {

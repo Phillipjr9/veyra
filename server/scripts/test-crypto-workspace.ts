@@ -1,0 +1,146 @@
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
+import { createApp, teamAllows } from "../src/app.js";
+import { applicationFor } from "./fixtures.js";
+import { createPriceFixture } from "./price-fixture.js";
+import { resetPrices } from "../src/prices.js";
+import { setSetting } from "../src/db.js";
+import { displayUnits } from "../../shared/cryptoWorkspace.js";
+import { validWallet } from "../../shared/walletAddress.js";
+
+process.env.NODE_ENV = "development";
+process.env.MAIL_PROVIDER = "off";
+process.env.ADMIN_EMAIL = "crypto-admin@veyra.test";
+process.env.ADMIN_PASSWORD = "Crypto-test-password!";
+process.env.RECAPTCHA_SITE_KEY = "";
+process.env.FIREBASE_PROJECT_ID = "";
+process.env.CRYPTO_TRADING_ENABLED = "1";
+process.env.SOLANA_RPC_URL = "";
+const prices = createPriceFixture();
+await new Promise<void>(resolve => prices.listen(0, "127.0.0.1", resolve));
+process.env.CRYPTO_PRICES_URL = `http://127.0.0.1:${(prices.address() as { port: number }).port}`;
+const { app, db } = createApp(":memory:");
+const server = createServer(app);
+await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+const api = async (method: string, path: string, token?: string, body?: unknown) => {
+  const response = await fetch(base + path, { method, headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+  return { status: response.status, json: await response.json() as any };
+};
+let checks = 0;
+const check = (name: string, value: unknown) => { assert.ok(value, name); console.log(`✓ ${name}`); checks++; };
+let rpc: ReturnType<typeof createServer> | null = null;
+try {
+  check("base-unit formatting never loses 18-decimal precision", displayUnits("100000000000000001", 18) === "0.100000000000000001" && displayUnits("100000000", 6) === "100" && displayUnits("0", 8) === "0");
+  check("shared address validation rejects wrong networks and checksum errors", validWallet("Bitcoin", "1BoatSLRHtKNngkdXEeobR76b53LETtpyT") && !validWallet("Bitcoin", "1BoatSLRHtKNngkdXEeobR76b53LETtpyU") && !validWallet("Ethereum", "0x0000000000000000000000000000000000000000"));
+  const admin = (await api("POST", "/api/auth/login", undefined, { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD })).json.token;
+  async function member(name: string, approved = true) {
+    const r = await api("POST", "/api/auth/register", undefined, { name, email: `${name}@veyra.test`, password: "Crypto-owner-password!", accountType: "personal", profile: applicationFor("personal", name) });
+    assert.equal(r.status, 201, JSON.stringify(r.json));
+    if (approved) await api("POST", `/api/admin/kyc/${r.json.user.id}/decision`, admin, { decision: "approved" });
+    return { id: r.json.user.id as string, token: r.json.token as string };
+  }
+  const alice = await member("CryptoAlice"), bob = await member("CryptoBob"), pending = await member("CryptoPending", false);
+  db.prepare("UPDATE accounts SET balance_cents=100000 WHERE user_id=?").run(alice.id);
+  const cash = () => Number(db.prepare("SELECT balance_cents FROM accounts WHERE user_id=?").get(alice.id)!.balance_cents);
+  const held = (asset: string) => BigInt(String(db.prepare("SELECT units FROM holdings WHERE user_id=? AND asset=?").get(alice.id, asset)?.units ?? "0"));
+  const qpath = "/api/me/crypto/quote", cpath = "/api/me/crypto/confirm";
+  const buy = { action: "buy", fromAsset: "USD", toAsset: "BTC", amount: "100.00" };
+  const quote = async (body: unknown) => { const r = await api("POST", qpath, alice.token, body); assert.equal(r.status, 201, JSON.stringify(r.json)); return r.json.quote; };
+  const confirm = (id: string, token = alice.token) => api("POST", cpath, token, { quoteId: id });
+  check("anonymous quote and confirmation requests are denied", (await api("POST", qpath, undefined, buy)).status === 401 && (await api("POST", cpath, undefined, { quoteId: randomUUID() })).status === 401);
+  check("unapproved account cannot quote", (await api("POST", qpath, pending.token, buy)).status === 403);
+  const caps = (await api("GET", "/api/me/crypto/capabilities", alice.token)).json;
+  check("capabilities distinguish account orders from all unconnected execution services", caps.canOperate && caps.accountTrading && !caps.custody && !caps.onchainSend && !caps.onchainSwap && !caps.cashOnramp && !caps.cashOfframp && caps.networks.length === 3);
+  check("staff accounts cannot create account crypto orders", (await api("POST", qpath, admin, buy)).status === 400);
+  for (const role of ["Admin", "Member", "Bookkeeper"] as const) {
+    check(`${role} cannot bypass owner-only quote or confirm, but can read wallet balances`, !teamAllows("POST", qpath, role) && !teamAllows("POST", cpath, role) && teamAllows("POST", "/api/me/crypto/wallet-balance", role));
+  }
+  const btc = await quote(buy);
+  check("review performs no financial mutation and has a bounded expiry", cash() === 100000 && held("BTC") === 0n && btc.toUnits === "200000" && btc.expiresAt - btc.createdAt <= 60000 && btc.feeUsd === "0.00");
+  check("quote reads and executions are owner scoped", (await api("GET", `/api/me/crypto/orders/${btc.id}`, bob.token)).status === 400 && (await confirm(btc.id, bob.token)).status === 400);
+  const [first, replay] = await Promise.all([confirm(btc.id), confirm(btc.id)]);
+  check("concurrent confirm and retry debit only once and return identical receipts", first.status === 200 && replay.status === 200 && JSON.stringify(first.json) === JSON.stringify(replay.json) && cash() === 90000 && held("BTC") === 200000n);
+  check("receipt cannot claim blockchain execution", first.json.receipt.settlement === "account" && first.json.receipt.transactionHash === null && first.json.receipt.reference.startsWith("VYR-"));
+  check("account order produces exactly one cash entry and one asset movement", Number(db.prepare("SELECT COUNT(*) n FROM transactions WHERE reference=?").get(first.json.receipt.reference)!.n) === 1 && Number(db.prepare("SELECT COUNT(*) n FROM holding_transactions WHERE reference=?").get(first.json.receipt.reference)!.n) === 1);
+  check("order mutation and audit are paired", !!db.prepare("SELECT 1 FROM audit_log WHERE action='crypto.buy' AND target=?").get(`user:${alice.id}`));
+  process.env.CRYPTO_TRADING_ENABLED = "0";
+  check("completed orders replay even after the execution flag is disabled", (await confirm(btc.id)).json.receipt.reference === first.json.receipt.reference && cash() === 90000);
+  check("disabled trading refuses new quotes", (await api("POST", qpath, alice.token, buy)).status === 400);
+  process.env.CRYPTO_TRADING_ENABLED = "1";
+  const swap = await quote({ action: "swap", fromAsset: "BTC", toAsset: "ETH", amount: "0.001" });
+  check("swap quote uses exact rational asset conversion", swap.toUnits === "16666666666666666" && swap.fromUnits === "100000");
+  const swapResult = await confirm(swap.id);
+  check("swap updates both asset legs atomically without any cash movement", swapResult.status === 200 && cash() === 90000 && held("BTC") === 100000n && held("ETH") === 16666666666666666n && !db.prepare("SELECT 1 FROM transactions WHERE reference=?").get(swapResult.json.receipt.reference));
+  check("swap records two linked asset movements and one audited order", Number(db.prepare("SELECT COUNT(*) n FROM holding_transactions WHERE reference=?").get(swapResult.json.receipt.reference)!.n) === 2 && !!db.prepare("SELECT 1 FROM audit_log WHERE action='crypto.swap'").get());
+  const sell = await quote({ action: "sell", fromAsset: "ETH", toAsset: "USD", amount: "0.016666666666666666" });
+  check("sell quote exposes exact rounding to USD cents", sell.toQuantity === "49.99");
+  check("sell credits checking and consumes exact base units", (await confirm(sell.id)).status === 200 && held("ETH") === 0n && cash() === 94999);
+  const reservedQuote = await quote({ action: "swap", fromAsset: "BTC", toAsset: "SOL", amount: "0.001" });
+  const withdrawal = { asset: "BTC", network: "Bitcoin", address: "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", amount: "0.0008", requestKey: randomUUID() };
+  const send = await api("POST", "/api/me/crypto-withdrawals", alice.token, withdrawal);
+  check("send only reserves available holdings and never broadcasts", send.status === 201 && send.json.withdrawal.status === "pending" && held("BTC") === 20000n && !send.json.withdrawal.transaction_hash);
+  check("new reservation invalidates a previously affordable quote at confirmation", (await confirm(reservedQuote.id)).status === 400 && held("SOL") === 0n && held("BTC") === 20000n);
+  const repeatedSend = await api("POST", "/api/me/crypto-withdrawals", alice.token, withdrawal);
+  check("withdrawal replay cannot reserve twice", repeatedSend.json.withdrawal.id === send.json.withdrawal.id && held("BTC") === 20000n);
+  await api("POST", `/api/me/crypto-withdrawals/${send.json.withdrawal.id}/cancel`, alice.token);
+  await api("POST", `/api/me/crypto-withdrawals/${send.json.withdrawal.id}/cancel`, alice.token);
+  check("withdrawal cancellation restores reserved units once", held("BTC") === 100000n);
+  check("the still-valid quote can execute after reservations are released", (await confirm(reservedQuote.id)).status === 200 && held("BTC") === 0n && held("SOL") === 250000000n);
+  const invalid = [
+    { ...buy, amount: "1e2" }, { ...buy, amount: 100 }, { ...buy, amount: "-1" }, { ...buy, amount: "1.001" }, { ...buy, amount: "0" }, { ...buy, amount: "250000.01" },
+    { ...buy, price: 1 }, { ...buy, toAsset: "UNKNOWN" }, { ...buy, action: "swap" }, { action: "swap", fromAsset: "SOL", toAsset: "SOL", amount: "1" },
+    { action: "sell", fromAsset: "ETH", toAsset: "USD", amount: "0.0000000000000000001" }, { action: "sell", fromAsset: "SOL", toAsset: "USD", amount: "99" },
+  ];
+  for (const body of invalid) check(`strict invalid-order refusal ${JSON.stringify(body)}`, (await api("POST", qpath, alice.token, body)).status === 400);
+  const expires = await quote({ ...buy, amount: "1" });
+  db.prepare("UPDATE crypto_orders SET expires_at=? WHERE id=?").run(Date.now() - 1, expires.id);
+  check("expired review cannot execute and can be recovered as expired", (await confirm(expires.id)).status === 400 && (await api("GET", `/api/me/crypto/orders/${expires.id}`, alice.token)).json.status === "expired");
+  const changed = await quote({ ...buy, amount: "1" });
+  db.prepare("UPDATE kyc_records SET review_state='pending' WHERE user_id=?").run(alice.id);
+  check("approval revocation after review is checked again at execution", (await confirm(changed.id)).status === 400);
+  db.prepare("UPDATE kyc_records SET review_state='approved' WHERE user_id=?").run(alice.id);
+  setSetting(db, "payment_rails", "halted", alice.id);
+  check("operational halt is checked at execution", (await confirm(changed.id)).status === 400);
+  setSetting(db, "payment_rails", "live", alice.id);
+  db.exec("CREATE TRIGGER fail_crypto_audit BEFORE INSERT ON audit_log WHEN NEW.action='crypto.buy' BEGIN SELECT RAISE(ABORT,'audit failure fixture'); END;");
+  const beforeCash = cash(), beforeBtc = held("BTC");
+  check("failed audit rolls back balances, cash transactions and completion receipt", (await confirm(changed.id)).status === 500 && cash() === beforeCash && held("BTC") === beforeBtc && !(await api("GET", `/api/me/crypto/orders/${changed.id}`, alice.token)).json.receipt);
+  db.exec("DROP TRIGGER fail_crypto_audit;");
+  check("same quote can recover from a rolled-back failure", (await confirm(changed.id)).status === 200);
+  process.env.CRYPTO_PRICE_MAX_AGE_MS = "-1";
+  check("stale market quotes cannot generate an executable review", (await api("POST", qpath, alice.token, buy)).status === 400);
+  delete process.env.CRYPTO_PRICE_MAX_AGE_MS;
+  check("unknown confirm fields cannot override a reviewed amount", (await api("POST", cpath, alice.token, { quoteId: btc.id, toUnits: "999999" })).status === 400);
+  check("history includes completed reviewed orders only and never another owner's records", (await api("GET", "/api/me/crypto/orders", alice.token)).json.orders.length === 5 && (await api("GET", "/api/me/crypto/orders", bob.token)).json.orders.length === 0);
+  const creditLimitQuote = await quote({ action: "sell", fromAsset: "SOL", toAsset: "USD", amount: "0.01" });
+  const restoreCash = cash();
+  db.prepare("UPDATE accounts SET balance_cents=1000000000 WHERE user_id=?").run(alice.id);
+  check("sell checks the checking balance ceiling again at confirmation", (await confirm(creditLimitQuote.id)).status === 400 && held("SOL") === 250000000n && cash() === 1000000000);
+  db.prepare("UPDATE accounts SET balance_cents=? WHERE user_id=?").run(restoreCash, alice.id);
+  const competing = await Promise.all([quote({ ...buy, amount: "600" }), quote({ ...buy, amount: "600" })]);
+  const competingResults = await Promise.all(competing.map(q => confirm(q.id)));
+  check("different concurrent orders cannot reuse the same checking balance", competingResults.filter(r => r.status === 200).length === 1 && competingResults.filter(r => r.status === 400).length === 1 && cash() === restoreCash - 60000);
+  const solAddress = "So11111111111111111111111111111111111111112";
+  const noReader = await api("POST", "/api/me/crypto/wallet-balance", alice.token, { network: "Solana", address: solAddress });
+  check("unconfigured wallet reader returns unavailable, not zero", noReader.json.status === "unavailable" && noReader.json.units === null);
+  let genesis = "wrong-chain", solUnits: number = 1234567891;
+  rpc = createServer(async (req, res) => { let body = ""; for await (const chunk of req) body += chunk; const call = JSON.parse(body); res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: call.method === "getGenesisHash" ? genesis : { value: solUnits } })); });
+  await new Promise<void>(resolve => rpc!.listen(0, "127.0.0.1", resolve));
+  process.env.SOLANA_RPC_URL = `http://127.0.0.1:${(rpc.address() as { port: number }).port}`;
+  const readSol = () => api("POST", "/api/me/crypto/wallet-balance", alice.token, { network: "Solana", address: solAddress });
+  check("wrong-genesis Solana reader cannot publish a mainnet balance", (await readSol()).json.units === null);
+  genesis = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2cWB";
+  check("verified Solana mainnet read returns exact lamports", (await readSol()).json.units === "1234567891");
+  solUnits = Number.MAX_SAFE_INTEGER + 1;
+  check("unsafe numeric RPC balances are unavailable instead of rounded", (await readSol()).json.units === null);
+  check("wallet balance lookup does not mutate account holdings", held("SOL") === 250000000n);
+  check("all financial foreign keys remain valid", db.prepare("PRAGMA foreign_key_check").all().length === 0);
+  console.log(`\n${checks} crypto workspace checks passed.`);
+} finally {
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  await new Promise<void>(resolve => prices.close(() => resolve()));
+  if (rpc) await new Promise<void>(resolve => rpc!.close(() => resolve()));
+  db.close(); resetPrices();
+}

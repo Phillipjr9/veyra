@@ -6,6 +6,7 @@ import { BadgeCheck, Building2, Check, Eye, EyeOff, Loader2, ShieldCheck, Sparkl
 import { Logo } from "../components/common";
 import { Footer } from "../components/Chrome";
 import { useAuth } from "../lib/auth";
+import { authConfig, type PreviewLogin } from "../lib/authConfig";
 import { apiGet, describeAuthError, ApiError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { prewarmRecaptcha } from "../lib/recaptcha";
@@ -123,7 +124,7 @@ function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "", pa
         </button>;
       })}
     </div>
-    {unavailable.length > 0 && <p id="provider-availability" className="auth-method-note">{loading ? "Checking available sign-in providers…" : `${unavailable.map(p => p.label).join(", ")} sign-in is not available in this environment. Only connected providers can be used.`}</p>}
+    {unavailable.length > 0 && <p id="provider-availability" className="auth-method-note">{loading ? "Checking available sign-in providers…" : `${unavailable.map(p => p.label).join(", ")} sign-in is not available. Only connected providers can be used.`}</p>}
     <button type="button" className="auth-provider-button passkey" onClick={onPasskey} disabled={busyAnywhere}>
       {passkeyBusy ? <Loader2 size={18} className="spin" /> : <ProviderMark src={PASSKEY_ICON} label="Passkey" />}
       <span>{passkeyBusy ? "Waiting for your device…" : "Use passkey"}</span>
@@ -144,6 +145,7 @@ export function LoginPage() {
   const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [providers, setProviders] = useState<Array<{ id: string; label: string }>>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
+  const [previewLogins, setPreviewLogins] = useState<PreviewLogin[]>([]);
   // Set once a correct password meets an account with an authenticator
   // enrolled: the form switches to the code step until it is verified or
   // abandoned. No session exists while this is set.
@@ -157,6 +159,7 @@ export function LoginPage() {
   useEffect(() => {
     let active = true;
     void federatedProviders().then(available => { if (active) { setProviders(available); setProvidersLoading(false); } });
+    void authConfig().then(config => { if (active) setPreviewLogins(config.previewLogins); });
     return () => { active = false; };
   }, []);
 
@@ -286,6 +289,19 @@ export function LoginPage() {
         </div>
       )}
 
+        {!challengeId && previewLogins.length > 0 && <section className="auth-quick-access" aria-label="Quick access accounts">
+          <div className="auth-quick-heading"><h2>Quick access</h2></div>
+          <p>Choose an account to fill in the form, then select Sign in.</p>
+          <div className="auth-quick-list">{previewLogins.map(entry => <article key={entry.email}>
+            <div className="auth-quick-account"><strong>{entry.label}</strong><button type="button" disabled={authBusy} aria-label={`Use ${entry.label} account`} onClick={() => {
+              setEmail(entry.email); setPassword(entry.password); setError(""); setErrorHint("");
+              document.getElementById("email")?.focus();
+            }}>Use account</button></div>
+            <div className="auth-quick-credential"><span>Email</span><code>{entry.email}</code></div>
+            <div className="auth-quick-credential"><span>Password</span><code>{entry.password}</code></div>
+          </article>)}</div>
+        </section>}
+
       <form className="auth-form" onSubmit={submit}>
         {challengeId ? (
           <>
@@ -316,7 +332,7 @@ export function LoginPage() {
         ) : (
           <>
             <label htmlFor="email">Email</label>
-            <input id="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
+            <input id="email" type="email" required autoComplete="email" placeholder="you@example.com" value={email} onChange={e => setEmail(e.target.value)} />
             <div className="label-row"><label htmlFor="password">Password</label><Link to="/forgot-password">Forgot?</Link></div>
             <PasswordField id="password" value={password} onChange={setPassword} autoComplete="current-password" />
           </>
@@ -336,7 +352,7 @@ export function LoginPage() {
           }}>Use a different account</button>
         ) : storageBlocked() && (
           <p className="auth-storage-note">
-            This browser blocks web storage (preview frames and private mode often do), so sign-in works for this
+            This browser blocks web storage (embedded browsers and private mode often do), so sign-in works for this
             tab only — a reload asks again.
           </p>
         )}
@@ -344,6 +360,7 @@ export function LoginPage() {
       {!challengeId && <>
         <div className="auth-divider"><span>Other ways to sign in</span></div>
         <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey} busyProvider={busyProvider} passkeyBusy={passkeyBusy} disabled={authBusy} loading={providersLoading} />
+
       </>}
     </AuthShell>
   );
@@ -452,7 +469,7 @@ export function SignupPage() {
           </button>
         </div>
 
-        <p className="auth-req-note">Preview environment: use synthetic details, not real government identifiers. Submitting an application does not open a regulated bank account. Read our Privacy Policy and Disclosures before continuing.</p>
+        <p className="auth-req-note">Do not submit real government identifiers. Submitting an application does not open a regulated bank account. Read our Privacy Policy and Disclosures before continuing.</p>
 
         {/* ------------------------------ Applicant ------------------------------ */}
         <section className="signup-section" aria-labelledby="signup-details"><h2 id="signup-details">Your details</h2>
@@ -655,7 +672,7 @@ export function SignupPage() {
 
           </section>
         <section className="signup-section" aria-labelledby="signup-owner"><h2 id="signup-owner">Beneficial owner</h2>
-          <p className="auth-req-note">This application requests details of one owner with at least 25% ownership. Use synthetic owner information in the preview.</p>
+          <p className="auth-req-note">This application requests details of one owner with at least 25% ownership. Do not submit real government identifiers.</p>
           <div className="field-row">
             <div>
               <label htmlFor="su-ownerName">Owner's full legal name</label>
@@ -771,7 +788,7 @@ export function ForgotPasswordPage() {
         <form className="auth-form" onSubmit={complete}>
           {demoCode && (
             <p className="auth-note" data-testid="demo-reset-code">
-              Email delivery is not connected in this environment, so the code is shown here rather than emailed. It is already filled in
+              Email delivery is not connected, so the code is shown here rather than emailed. It is already filled in
               for you.
             </p>
           )}

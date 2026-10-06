@@ -1,4 +1,6 @@
+import { previewCryptoEnabled, previewMarketRows, previewCandles } from "./previewCrypto.js";
 import { ASSETS } from "../../shared/catalog.js";
+import { marketFeedUrl, candleFeedUrl, fetchMarketFeed, describeMarketFeed } from "./marketFeed.js";
 /**
  * Market prices for digital assets.
  *
@@ -23,22 +25,20 @@ import { ASSETS } from "../../shared/catalog.js";
  *
  * Environment:
  *   CRYPTO_PRICES_URL   Override the upstream (tests, or an egress proxy).
- *   CRYPTO_PRICES_TTL_MS    Cache lifetime. Default 60s.
- *   CRYPTO_PRICE_MAX_AGE_MS Oldest quote a trade may execute against. Default 120s.
+ *   COINGECKO_API_KEY  Server-only key, sent in the matching authentication header.
+ *   COINGECKO_API_PLAN demo (default) or pro; selects both market/chart origins.
+ *   CRYPTO_PRICES_TTL_MS    Cache lifetime. Default 300s.
+ *   CRYPTO_PRICE_MAX_AGE_MS Oldest quote a trade may execute against. Default 1.2x cache TTL.
  *   CRYPTO_PRICES_TIMEOUT_MS Request timeout. Default 4s.
  */
 
-/** CoinGecko ids for the seeded registry — free, keyless, widely mirrored. */
+/** CoinGecko ids for the supported asset registry. */
 export const UPSTREAM_IDS: Record<string, string> = Object.fromEntries(ASSETS.map(a => [a.code, a.id]));
 
 // One call does everything. /coins/markets returns price, 1h/24h/7d change,
 // market cap, volume and a 7-day sparkline for up to 250 coins — so the
 // markets page and the holdings valuations share a single upstream request
 // rather than each paying for their own.
-const DEFAULT_URL =
-  "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc" +
-  "&per_page=250&page=1&sparkline=true&price_change_percentage=1h,24h,7d";
-
 export type Quote = {
   /** USD cents for one whole unit. bigint so a $100k BTC price stays exact. */
   cents: bigint;
@@ -84,9 +84,9 @@ const ttlMs = () => Number(process.env.CRYPTO_PRICES_TTL_MS) || 300_000;
  * the gap between a quote expiring and the refetch landing.
  */
 const maxAgeMs = () => Number(process.env.CRYPTO_PRICE_MAX_AGE_MS) || Math.round(ttlMs() * 1.2);
+export const quoteValidUntil = (at: number) => at + maxAgeMs();
 export const quoteIsFresh = (at: number | null) => !!at && Date.now() - at <= maxAgeMs();
 const timeoutMs = () => Number(process.env.CRYPTO_PRICES_TIMEOUT_MS) || 4_000;
-const upstreamUrl = () => (process.env.CRYPTO_PRICES_URL ?? "").trim() || DEFAULT_URL;
 
 /** Test helper: drops every cached quote and forces the next read to refetch. */
 export function resetPrices(): void {
@@ -124,9 +124,8 @@ async function refresh(): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs());
   try {
-    const res = await fetch(upstreamUrl(), { signal: controller.signal, headers: { accept: "application/json" } });
-    if (!res.ok) throw new Error(`upstream returned ${res.status}`);
-    const body = await res.json();
+    const body = await (previewCryptoEnabled() ? previewMarketRows() :
+      fetchMarketFeed(marketFeedUrl(), controller.signal));
     if (!Array.isArray(body)) throw new Error("upstream did not return a market array");
 
     const fetchedAt = Date.now();
@@ -187,7 +186,18 @@ async function refresh(): Promise<void> {
 }
 
 /** Fetches if the cache is cold or stale; concurrent callers share one request. */
+let cacheSource = "";
+function syncPriceSource() {
+  // Include chart overrides and auth changes so neither cache crosses sources.
+  // This identity stays in server memory and is never logged or returned.
+  const source = previewCryptoEnabled() ? "preview" : JSON.stringify([
+    process.env.CRYPTO_PRICES_URL, process.env.CRYPTO_OHLC_URL,
+    process.env.COINGECKO_API_PLAN, process.env.COINGECKO_API_KEY,
+  ]);
+  if (source !== cacheSource) { resetPrices(); cacheSource = source; }
+}
 export async function loadPrices(): Promise<Map<string, Quote>> {
+  syncPriceSource();
   const fresh = cache.fetchedAt > 0 && Date.now() - cache.fetchedAt < ttlMs();
   if (fresh) return cache.quotes;
   if (!cache.inFlight) cache.inFlight = refresh();
@@ -225,9 +235,8 @@ export async function tradableQuote(code: string): Promise<Quote | null> {
 }
 
 export function describePrices(): string {
-  const url = upstreamUrl();
-  const host = (() => { try { return new URL(url).host; } catch { return url; } })();
-  return `Asset prices: ${host} · cache ${ttlMs() / 1000}s · trades refuse quotes older than ${maxAgeMs() / 1000}s`;
+  if (previewCryptoEnabled()) return "Asset prices: TEST DATA · 24 sample markets and charts · NOT LIVE";
+  return `Asset prices: ${describeMarketFeed()} · cache ${ttlMs() / 1000}s · trades refuse quotes older than ${maxAgeMs() / 1000}s`;
 }
 
 /* ---------- OHLC candles ---------- */
@@ -270,12 +279,6 @@ export const isCandleRange = (value: unknown): value is CandleRange =>
 type CandleEntry = { candles: Candle[]; fetchedAt: number; inFlight: Promise<void> | null };
 const candleCache = new Map<string, CandleEntry>();
 
-const DEFAULT_OHLC_URL = "https://api.coingecko.com/api/v3/coins/{id}/ohlc?vs_currency=usd&days={days}";
-const ohlcUrl = (id: string, days: number) =>
-  ((process.env.CRYPTO_OHLC_URL ?? "").trim() || DEFAULT_OHLC_URL)
-    .replace("{id}", encodeURIComponent(id))
-    .replace("{days}", String(days));
-
 /** Dollars to integer cents without re-entering float math. Mirrors toCents above. */
 function centsFrom(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
@@ -292,11 +295,8 @@ async function refreshCandles(code: string, range: CandleRange, key: string): Pr
   const timer = setTimeout(() => controller.abort(), timeoutMs());
   try {
     if (!id) throw new Error(`no upstream id for ${code}`);
-    const res = await fetch(ohlcUrl(id, RANGES[range].days), {
-      signal: controller.signal, headers: { accept: "application/json" },
-    });
-    if (!res.ok) throw new Error(`upstream returned ${res.status}`);
-    const body = await res.json();
+    const body = await (previewCryptoEnabled() ? previewCandles(code, RANGES[range].days) :
+      fetchMarketFeed(candleFeedUrl(id, RANGES[range].days), controller.signal));
     if (!Array.isArray(body)) throw new Error("upstream did not return an array");
 
     const candles: Candle[] = [];
@@ -330,6 +330,7 @@ async function refreshCandles(code: string, range: CandleRange, key: string): Pr
  * when the truth is "we do not know". The caller must show the difference.
  */
 export async function loadCandles(code: string, range: CandleRange): Promise<Candle[] | null> {
+  syncPriceSource();
   const key = `${code}:${range}`;
   const entry = candleCache.get(key);
   if (entry && Date.now() - entry.fetchedAt < RANGES[range].ttlMs) return entry.candles;

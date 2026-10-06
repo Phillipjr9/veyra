@@ -58,7 +58,7 @@ const DEPOSIT_MAX_LABEL = "$100,000";
 const SOURCES = [
   { id: "processor", label: "Card processor payout", short: "Card processor", sub: "Daily sales settlement", Icon: Zap },
   { id: "client", label: "Client wire transfer", short: "Client wire", sub: "Incoming domestic wire", Icon: Building2 },
-  { id: "external", label: "External checking •••• 4471", short: "External bank", sub: "Linked account · ACH pull", Icon: Landmark },
+  { id: "external", label: "Bank transfer", short: "Bank transfer", sub: "Account entry · no external processing", Icon: Landmark },
   { id: "capital", label: "Owner capital contribution", short: "Owner funds", sub: "Founder or equity funds", Icon: ArrowDownLeft },
 ];
 const sourceById = (id: string) => SOURCES.find(s => s.id === id) ?? SOURCES[0];
@@ -150,9 +150,9 @@ export function AnimatedCheck({ tone = "violet" }: { tone?: "violet" | "green" }
 /* ============================================================
    Flow building blocks
    ============================================================ */
-function StageDots({ kind, stage }: { kind: FlowState["kind"]; stage: Stage }) {
-  const order: Stage[] = kind === "deposit" ? ["form", "review", "processing", "success"] : ["review", "processing", "success"];
-  const labels: Record<Stage, string> = { form: "Details", review: "Review", processing: "Processing", success: "Done" };
+export function StageDots({ kind, stage, completionLabel = "Done" }: { kind: FlowState["kind"] | "funding"; stage: Stage; completionLabel?: string }) {
+  const order: Stage[] = kind === "funding" ? ["form", "processing", "success"] : kind === "deposit" ? ["form", "review", "processing", "success"] : ["review", "processing", "success"];
+  const labels: Record<Stage, string> = { form: "Details", review: "Review", processing: "Processing", success: completionLabel };
   const idx = order.indexOf(stage);
   return (
     <ol className="flow-steps" aria-label="Progress">
@@ -167,7 +167,7 @@ function StageDots({ kind, stage }: { kind: FlowState["kind"]; stage: Stage }) {
   );
 }
 
-export function FlowTrack({ from, to, state, progress }: Track & { state: "idle" | "moving" | "done"; progress: number }) {
+export function FlowTrack({ from, to, state, progress, movingIcon }: Track & { state: "idle" | "moving" | "done"; progress: number; movingIcon?: ReactNode }) {
   const reduce = useReducedMotion();
   const moving = state === "moving" && !reduce;
   return (
@@ -187,10 +187,15 @@ export function FlowTrack({ from, to, state, progress }: Track & { state: "idle"
             animate={{ left: ["0%", "100%"], opacity: [0, 1, 1, 0] }}
             transition={{ duration: 1.25, repeat: Infinity, delay: i * 0.4, ease: "easeInOut" }} />
         ))}
-        <motion.span key={state === "done" ? "done" : "go"} className="flow-line-badge" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+        {moving && movingIcon ? <motion.span className="flow-travelling-token"
+          initial={{ left: "0%", opacity: 0, scale: .7 }}
+          animate={{ left: ["0%", "100%"], opacity: [0, 1, 1, 0], scale: [.7, 1, 1, .7] }}
+          transition={{ duration: 1.65, repeat: Infinity, repeatDelay: .2, ease: "easeInOut", times: [0, .15, .85, 1] }}>
+          {movingIcon}
+        </motion.span> : <motion.span key={state === "done" ? "done" : "go"} className="flow-line-badge" initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
           transition={{ type: "spring", stiffness: 500, damping: 24 }}>
           {state === "done" ? <Check size={13} strokeWidth={3} /> : <ArrowRight size={13} />}
-        </motion.span>
+        </motion.span>}
       </div>
       <div className={`flow-node ${state === "done" ? "is-done" : ""}`}>
         <span className="flow-node-icon">
@@ -283,7 +288,7 @@ function DepositForm({ flow, balance, onSource, onContinue, onCancel }: {
 
 function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; balance: number; track: Track; onBack: () => void; onConfirm: () => void }) {
   const amount = flow.kind === "deposit" ? flow.amount : flow.draft.amount;
-  const shown = useCountUp(amount, { from: 0, duration: 650 });
+
   const rows: Row[] =
     flow.kind === "deposit"
       ? [
@@ -302,11 +307,24 @@ function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; 
           { label: "Est. rewards", value: `+${money(flow.draft.demo ? 0 : amount * rewardRate(flow.draft.category))}`, tone: "reward" as const },
           { label: "Balance after", value: money(balance - amount) },
         ];
+  return <FlowReview amount={amount} rows={rows} track={track} onBack={onBack} onConfirm={onConfirm}
+    title={flow.kind === "deposit" ? "Review deposit" : "Review payment"}
+    description={flow.kind === "deposit" ? "Check the details, then confirm to move the funds." : `Make sure everything looks right before sending to ${flow.draft.counterparty}.`}
+    backLabel={flow.kind === "deposit" ? "Back" : "Edit"}
+    confirmLabel={flow.kind === "deposit" ? `Deposit ${money(amount)}` : `Send ${money(amount)}`} />;
+}
+
+/** Shared review screen: no mutation occurs until the explicit confirmation. */
+export function FlowReview({ title, description, amount, rows, track, onBack, onConfirm, backLabel = "Edit", confirmLabel }: {
+  title: string; description: string; amount: number; rows: Row[]; track: Track;
+  onBack: () => void; onConfirm: () => void; backLabel?: string; confirmLabel: string;
+}) {
+  const shown = useCountUp(amount, { from: 0, duration: 650 });
   return (
     <div className="flow-pane">
-      <h2 className="flow-title" id="flow-title">{flow.kind === "deposit" ? "Review deposit" : "Review payment"}</h2>
+      <h2 className="flow-title" id="flow-title">{title}</h2>
       <p className="flow-sub">
-        {flow.kind === "deposit" ? "Check the details, then confirm to move the funds." : `Make sure everything looks right before sending to ${flow.draft.counterparty}.`}
+        {description}
       </p>
       <strong className="flow-amount">{money(shown)}</strong>
       <FlowTrack from={track.from} to={track.to} state="idle" progress={0} />
@@ -318,9 +336,9 @@ function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; 
         ))}
       </div>
       <div className="flow-actions">
-        <button type="button" className="ghost-btn" onClick={onBack}>{flow.kind === "deposit" ? "Back" : "Edit"}</button>
+        <button type="button" className="ghost-btn" onClick={onBack}>{backLabel}</button>
         <button type="button" className="solid-btn flow-confirm" onClick={onConfirm} autoFocus>
-          <Lock size={14} /> {flow.kind === "deposit" ? `Deposit ${money(amount)}` : `Send ${money(amount)}`}
+          <Lock size={14} /> {confirmLabel}
         </button>
       </div>
     </div>
@@ -328,13 +346,22 @@ function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; 
 }
 
 function Processing({ flow, track, onDone }: { flow: FlowState; track: Track; onDone: () => void }) {
-  const reduce = useReducedMotion();
   const steps = useMemo(() => stepsFor(flow), [flow]);
+  return <FlowProcessing title={flow.kind === "deposit" ? "Adding funds" : "Sending payment"}
+    amount={flow.kind === "deposit" ? flow.amount : flow.draft.amount} steps={steps} track={track} onDone={onDone} />;
+}
+
+/** Shared presentation for outgoing payments and incoming account entries. */
+export function FlowProcessing({ title, amount, steps, track, onDone, minimumStepMs = 0, note, awaitingConfirmation = false, centerIcon, movingIcon, showProgressRing = false, waitingTitle = "Waiting for confirmation…", renderTrack }: {
+  title: string; amount: number | string; steps: string[]; track: Track; onDone: () => void; renderTrack?: () => ReactNode;
+  minimumStepMs?: number; note?: string; awaitingConfirmation?: boolean; centerIcon?: ReactNode; movingIcon?: ReactNode; showProgressRing?: boolean; waitingTitle?: string;
+}) {
+  const reduce = useReducedMotion();
   const [index, setIndex] = useState(0);
   const doneRef = useRef(onDone);
   useEffect(() => { doneRef.current = onDone; });
 
-  const stepMs = reduce ? 200 : 780;
+  const stepMs = Math.max(minimumStepMs, reduce ? 200 : 780);
   useEffect(() => {
     if (index >= steps.length) {
       const t = window.setTimeout(() => doneRef.current(), reduce ? 120 : 520);
@@ -344,18 +371,22 @@ function Processing({ flow, track, onDone }: { flow: FlowState; track: Track; on
     return () => window.clearTimeout(t);
   }, [index, steps.length, stepMs, reduce]);
 
-  const amount = flow.kind === "deposit" ? flow.amount : flow.draft.amount;
   const progress = Math.min(1, index / steps.length);
   const finished = index >= steps.length;
 
   return (
     <div className="flow-pane flow-processing" aria-live="polite">
       <div className="flow-processing-head">
-        <span className={`flow-orbit ${finished ? "is-done" : ""}`}><i /><VeyraMark width={20} height={20} /></span>
-        <h2 className="flow-title" id="flow-title">{finished ? "Wrapping up…" : flow.kind === "deposit" ? "Adding funds" : "Sending payment"}</h2>
-        <p className="flow-sub"><b>{money(amount)}</b> · {Math.round(progress * 100)}% complete</p>
+        <span className={`flow-orbit ${finished && !awaitingConfirmation ? "is-done" : ""}`}><i />{centerIcon ?? <VeyraMark width={20} height={20} />}
+          {showProgressRing && <svg className="flow-orbit-progress" viewBox="0 0 104 104" aria-hidden="true">
+            <circle className="flow-orbit-progress-rail" cx="52" cy="52" r="48" />
+            <motion.circle className="flow-orbit-progress-fill" cx="52" cy="52" r="48" initial={{ pathLength: 0 }} animate={{ pathLength: progress }} transition={{ duration: reduce ? 0 : .55, ease }} />
+          </svg>}
+        </span>
+        <h2 className="flow-title" id="flow-title">{finished ? awaitingConfirmation ? waitingTitle : "Wrapping up…" : title}</h2>
+        <p className="flow-sub"><b>{typeof amount === "string" ? amount : money(amount)}</b> · {Math.round(progress * 100)}% {awaitingConfirmation ? "prepared" : "complete"}</p>
       </div>
-      <FlowTrack from={track.from} to={track.to} state={finished ? "done" : "moving"} progress={progress} />
+      {renderTrack ? renderTrack() : <FlowTrack from={track.from} to={track.to} state={finished && !awaitingConfirmation ? "done" : "moving"} progress={progress} movingIcon={movingIcon} />}
       <div className="flow-progress"><motion.i initial={{ scaleX: 0 }} animate={{ scaleX: progress }} transition={{ duration: 0.5, ease }} /></div>
       <ul className="flow-steplist">
         {steps.map((label, i) => {
@@ -374,7 +405,7 @@ function Processing({ flow, track, onDone }: { flow: FlowState; track: Track; on
           );
         })}
       </ul>
-      <p className="flow-secure"><ShieldCheck size={14} /> Bank-grade encryption in transit and at rest</p>
+      <p className="flow-secure"><ShieldCheck size={14} /> {note ?? "Bank-grade encryption in transit and at rest"}</p>
     </div>
   );
 }
@@ -400,8 +431,6 @@ function receiptText(flow: FlowState, r: MoveResult, acct: string) {
 
 function Success({ flow, result, acct, onClose, onAgain }: { flow: FlowState; result: MoveResult; acct: string; onClose: () => void; onAgain: () => void }) {
   const isDeposit = flow.kind === "deposit";
-  const amount = useCountUp(result.amount, { from: 0, duration: 900 });
-  const newBalance = useCountUp(result.balanceAfter, { from: result.balanceBefore, duration: 1500 });
   const counterparty = flow.kind === "deposit" ? sourceById(flow.sourceId).label : flow.draft.counterparty;
   const rows: Row[] = [
     { label: "Reference", value: result.reference },
@@ -415,37 +444,53 @@ function Success({ flow, result, acct, onClose, onAgain }: { flow: FlowState; re
   ];
   const download = () => downloadFile(`veyra-receipt-${result.reference}.txt`, receiptText(flow, result, acct));
 
-  return (
-    <div className="flow-pane flow-success">
-      <Confetti palette={isDeposit ? CONFETTI_GREEN : CONFETTI_VIOLET} />
-      <AnimatedCheck tone={isDeposit ? "green" : "violet"} />
-      <motion.h2 className="flow-title" id="flow-title" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}>
-        {isDeposit ? "Funds added" : "Payment sent"}
-      </motion.h2>
-      <motion.strong className={`flow-amount ${isDeposit ? "is-in" : ""}`} initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.4, type: "spring", stiffness: 260, damping: 20 }}>
-        {isDeposit ? "+" : "−"}{money(amount)}
-      </motion.strong>
-      <motion.p className="flow-sub" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}>
-        {isDeposit ? `Now available in Checking •••• ${acct}` : flow.kind === "send" && flow.draft.demo ? `Payment recorded for ${counterparty}` : `On its way to ${counterparty} · ${flow.kind === "send" ? ETA[flow.draft.method].toLowerCase() : ""}`}
-      </motion.p>
+  return <FlowReceipt isDeposit={isDeposit} value={result.amount} balanceBefore={result.balanceBefore} balanceAfter={result.balanceAfter}
+    title={isDeposit ? "Funds added" : "Payment sent"}
+    subtitle={isDeposit ? `Now available in Checking •••• ${acct}` : flow.kind === "send" && flow.draft.demo ? `Payment recorded for ${counterparty}` : `On its way to ${counterparty} · ${flow.kind === "send" ? ETA[flow.draft.method].toLowerCase() : ""}`}
+    rows={rows} download={download} onAgain={onAgain} onClose={onClose} againLabel={isDeposit ? "Add more" : "Send another"}
+    extra={<>
       {flow.kind === "send" && result.scout > 0 && (
         <motion.div className="scout-found" initial={{ opacity: 0, y: 8, scale: 0.94 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ delay: 0.95, type: "spring", stiffness: 300, damping: 22 }}>
           <Sparkles size={15} /> <span>Scout found <b className="scout-shimmer">{money(result.scout)}</b> in savings on this payment</span>
         </motion.div>
       )}
+    </>} />;
+}
+
+export function FlowReceipt({ isDeposit, value, title, subtitle, rows, download, onAgain, onClose, againLabel, balanceBefore, balanceAfter, extra }: {
+  isDeposit: boolean; value: number; title: string; subtitle: string; rows: Row[];
+  download: () => void; onAgain: () => void; onClose: () => void; againLabel: string;
+  balanceBefore?: number; balanceAfter?: number; extra?: ReactNode;
+}) {
+  const amount = useCountUp(value, { from: 0, duration: 900 });
+  const newBalance = useCountUp(balanceAfter ?? 0, { from: balanceBefore, duration: 1500 });
+  return (
+    <div className="flow-pane flow-success">
+      <Confetti palette={isDeposit ? CONFETTI_GREEN : CONFETTI_VIOLET} />
+      <AnimatedCheck tone={isDeposit ? "green" : "violet"} />
+      <motion.h2 className="flow-title" id="flow-title" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}>
+        {title}
+      </motion.h2>
+      <motion.strong className={`flow-amount ${isDeposit ? "is-in" : ""}`} initial={{ opacity: 0, scale: 0.92 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.4, type: "spring", stiffness: 260, damping: 20 }}>
+        {isDeposit ? "+" : "−"}{money(amount)}
+      </motion.strong>
+      <motion.p className="flow-sub" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }}>
+        {subtitle}
+      </motion.p>
+      {extra}
       <div className="receipt">
         {rows.map((r, i) => (
           <motion.div key={r.label} className={`receipt-row ${r.tone ?? ""}`} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.55 + i * 0.06 }}>
             <span>{r.label}</span><b>{r.value}</b>
           </motion.div>
         ))}
-        <motion.div className="receipt-total" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 + rows.length * 0.06 }}>
+        {balanceAfter !== undefined && <motion.div className="receipt-total" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 + rows.length * 0.06 }}>
           <span>New balance</span><b>{money(newBalance)}</b>
-        </motion.div>
+        </motion.div>}
       </div>
       <div className="flow-actions three">
         <button type="button" className="ghost-btn" onClick={download}><Download size={15} /> Receipt</button>
-        <button type="button" className="ghost-btn" onClick={onAgain}>{isDeposit ? "Add more" : "Send another"}</button>
+        <button type="button" className="ghost-btn" onClick={onAgain}>{againLabel}</button>
         <button type="button" className="solid-btn" onClick={onClose} autoFocus>Done</button>
       </div>
     </div>
@@ -471,15 +516,16 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
   const demo = useDemoPayments();
   const demoPreview = useRef<string | null>(null);
   const resolving = useRef(false);
-  const { account, deposit, sendPayment, refreshAccount } = useAcct();
+  const { user, account, deposit, sendPayment, refreshAccount } = useAcct();
   const toast = useToast();
   const [flow, setFlow] = useState<FlowState | null>(null);
-  const [fundingOpen, setFundingOpen] = useState(false);
+  const [fundingOwner, setFundingOwner] = useState<string | null>(null);
+  useEffect(() => { setFundingOwner(null); }, [user?.id]);
   const [result, setResult] = useState<MoveResult | null>(null);
   const onComplete = useRef<((r: MoveResult) => void) | undefined>(undefined);
   const committed = useRef(false);
 
-  const openDeposit = useCallback((_amount = 5000) => { setFundingOpen(true); }, []);
+  const openDeposit = useCallback((_amount = 5000) => { if (user) setFundingOwner(user.id); }, [user?.id]);
 
   const startSend = useCallback(async (draft: SendDraft, options?: { onComplete?: (r: MoveResult) => void }) => {
     if (!demo.data || demo.error) {
@@ -596,7 +642,7 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
   return (
     <FlowCtx.Provider value={api}>
       {children}
-      {fundingOpen && createPortal(<FundingDialog close={() => setFundingOpen(false)} />, document.body)}
+      {user && fundingOwner === user.id && createPortal(<FundingDialog key={user.id} close={() => setFundingOwner(null)} />, document.body)}
       {createPortal(
         <AnimatePresence>
           {flow && (

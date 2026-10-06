@@ -1,3 +1,5 @@
+import { CRYPTO_ACTIVITIES, CRYPTO_STATUSES } from "../../shared/cryptoNotifications";
+import { buildCryptoEmail } from "./crypto";
 import { buildZelleEmail, type ZelleEvent } from "./zelle";
 /**
  * Veyra transactional email templates.
@@ -14,7 +16,7 @@ import {
   APP_BASE, emailShell, eyebrow, h1, p, amount, pill, details, btn, textLink, note, progress,
 } from "./design";
 
-export type EmailCategory = "security" | "transfers" | "cards" | "invoices" | "scout" | "account";
+export type EmailCategory = "security" | "transfers" | "cards" | "invoices" | "scout" | "account" | "crypto";
 
 export interface EmailTemplate {
   id: string;
@@ -716,7 +718,15 @@ const savingsGoal: EmailTemplate = {
 
 /* ============================================================ REGISTRY */
 
+const cryptoEmails: EmailTemplate[] = CRYPTO_ACTIVITIES.flatMap(activity => CRYPTO_STATUSES.map(status => {
+  const message = buildCryptoEmail({ activity, status, reference: "VYR-8F31A27C", occurredAt: Date.UTC(2026, 9, 6, 14, 30),
+    asset: activity === "buy" ? "USD" : "BTC", quantity: activity === "buy" ? "100.00" : "0.002",
+    ...(activity === "buy" || activity === "swap" ? { toAsset: "ETH", toQuantity: "0.032" } : activity === "sell" ? { toAsset: "USD", toQuantity: "100.00" } : {}),
+    settlement: ["buy", "sell", "swap"].includes(activity) || status === "completed" || status === "confirmed" ? "account" : "request", accountLast4: "4821" }, APP);
+  return { id: `crypto-${activity}-${status}`, name: `Crypto ${activity} · ${status}`, category: "crypto" as const, subject: message.subject, preheader: `Your crypto ${activity} is ${status}.`, html: message.html };
+}));
 export const emailTemplates: EmailTemplate[] = [
+  ...cryptoEmails,
   // Security
   signinAlert,
   passwordReset,
@@ -757,6 +767,7 @@ export const emailCategories: Array<{ id: EmailCategory | "all"; label: string }
   { id: "all", label: "All" },
   { id: "security", label: "Security" },
   { id: "transfers", label: "Transfers" },
+  { id: "crypto", label: "Crypto" },
   { id: "cards", label: "Cards" },
   { id: "invoices", label: "Invoices" },
   { id: "scout", label: "Scout" },

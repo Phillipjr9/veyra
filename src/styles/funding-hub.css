@@ -56,3 +56,76 @@
 .funding-result { padding:14px; border-radius:12px; background:#ede8f8; border:1px solid #dacdec; }
 @media(max-width:600px) { .funding-hub { padding:0 18px 20px; } .funding-hub-header { padding:18px 0 14px; } .funding-hub-header h2 { font-size:22px; } .funding-hub-intro h3 { font-size:19px; } .funding-orbit { width:72px; height:76px; } .funding-choice-grid { grid-template-columns:1fr; } .funding-field-pair { grid-template-columns:1fr; gap:0; } .funding-hub-intro { align-items:flex-start; } .funding-choice { padding:16px 12px; } .funding-choice-copy strong { font-size:14px; } .funding-card-illustration { transform:none; } }
 @media(prefers-reduced-motion:reduce) { .funding-choice { transition:none; } .funding-choice:hover:not(:disabled) { transform:none; } }
+
+/* Add funds deliberately shares Send money's modal, track, steps and receipt. */
+.funding-animation { min-width:0; }
+.funding-animation .flow-amount { font-size:clamp(24px,5vw,30px); overflow-wrap:anywhere; }
+.funding-animation-note,.funding-animation-motion-note { margin:16px 0 0; font-size:11px; line-height:1.6; color:var(--muted); text-align:center; }
+.funding-animation-reference { overflow-wrap:anywhere; font-size:12px; }
+.funding-animation .flow-node strong,.funding-animation .flow-node small { white-space:normal; overflow-wrap:anywhere; }
+.funding-animation .flow-line { align-self:start; margin-top:24px; margin-bottom:0; }
+.funding-flow-modal .flow-actions > * { min-width:0; white-space:normal; }
+@media(max-width:420px) {
+  .funding-flow-modal .flow-body { padding:18px 16px 20px; }
+  .funding-flow-modal .flow-actions.three { grid-template-columns:1fr; }
+  .funding-flow-modal .flow-track { grid-template-columns:minmax(0,1fr) 40px minmax(0,1fr); padding:14px 8px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .funding-animation *, .funding-animation *::before, .funding-animation *::after { animation:none!important; transition:none!important; }
+}
+
+/* Full incoming flow now uses the outgoing payment's compact details/review. */
+.funding-details fieldset { border:0; margin:0; padding:0; min-width:0; }
+.funding-details select,.funding-details > fieldset > input { width:100%; min-width:0; padding:12px 13px; border:1px solid var(--line); border-radius:13px; background:var(--paper); font:inherit; font-size:13px; color:var(--ink); }
+.funding-details select:focus,.funding-details > fieldset > input:focus { outline:2px solid var(--violet); outline-offset:2px; }
+.funding-flow-modal .flow-amount { font-size:clamp(24px,5vw,30px); overflow-wrap:anywhere; }
+.funding-flow-modal .funding-history summary { cursor:pointer; font-size:12px; font-weight:600; color:var(--muted); }
+.funding-flow-modal .funding-history-heading { margin-top:14px; }
+.funding-flow-modal .funding-history-heading h3 { font-size:14px; }
+@media(prefers-reduced-motion:reduce) { .funding-flow-modal .flow-confirm::after { animation:none; } }
+
+.funding-linked-action { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin: 12px 0 18px; padding: 14px; border-radius: 14px; background: var(--violet-tint, #ece7fb); font-size: 12px; }
+.funding-linked-action p { margin: 0; flex: 1 1 180px; line-height: 1.6; }
+.funding-linked-action a { flex-shrink: 0; }
+.direct-deposit-details { margin: 14px 0; padding: 16px; border: 1px solid var(--hairline, #e7e3ec); border-radius: 16px; }
+.direct-deposit-details h3 { margin: 0 0 8px; font-size: 15px; }
+.direct-deposit-details p { font-size: 12px; line-height: 1.6; }
+.direct-deposit-details dl { margin: 0; }
+.direct-deposit-details dl > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid #e7e3ec; font-size: 12px; }
+.direct-deposit-details dt { color: var(--muted, #716e78); }
+.direct-deposit-details dd { margin: 0; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.external-accounts-page { max-width: 880px; margin: 0 auto; }
+.external-accounts-page header { margin: 24px 0; }
+.external-accounts-page h1 { font-size: clamp(24px, 4vw, 32px); }
+.external-account-list { padding: clamp(16px, 3vw, 28px); }
+.external-account-list h2 { font-size: 20px; }
+.external-account-list p { font-size: 13px; line-height: 1.65; }
+.external-account-row { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 18px 0; border-bottom: 1px solid #e7e3ec; }
+.external-account-row > div { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.external-account-row p { margin: 4px 0 0; }
+.external-accounts-page .solid-btn { max-width: 100%; white-space: normal; text-align: center; overflow-wrap: anywhere; }
+.external-accounts-page .funding-safety-note { overflow-wrap: anywhere; }
+.external-accounts-page { min-width: 0; }
+/* Keep review/cancel reachable with expanded bank details and the mobile keyboard.
+   Only the fields scroll; the action row never covers the fields. */
+.funding-flow-modal .flow-body:has(.funding-details) { display: flex; flex-direction: column; overflow: hidden; }
+.funding-flow-modal .funding-details { min-height: 0; max-height: calc(100dvh - 164px); flex: 1 1 auto; }
+.funding-details > fieldset { min-height: 0; flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 2px 3px 8px; }
+.funding-details > .flow-title, .funding-details > .flow-sub, .funding-details > .flow-actions, .funding-details > .funding-animation-note { flex-shrink: 0; }
+.funding-details > .flow-actions { margin-top: 12px; }
+@media (max-height: 560px) { .funding-details > .flow-sub { display: none; } .funding-details > .funding-animation-note { font-size: 10px; line-height: 1.4; margin: 8px 0 0; } }
+
+.funding-hub-header { flex-wrap: wrap; }
+.external-account-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.external-accounts-page .external-account-list { margin-bottom: 20px; }
+.external-account-notice { padding: 16px; background: #e8f2eb; border: 1px solid #c4ddcc; border-radius: 14px; font-size: 13px; line-height: 1.7; }
+.external-account-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; }
+.external-account-form-panel fieldset { margin: 0; padding: 0; min-width: 0; border: 0; }
+.external-account-form-panel label { display: block; margin: 14px 0; font-size: 13px; }
+.external-account-form-panel input:not([type=checkbox]), .external-account-form-panel select { width: 100%; min-width: 0; padding: 12px; font: inherit; border-radius: 12px; border: 1px solid #d9d3df; background: #fffdf9; }
+.external-account-form-panel .external-ownership { display: flex; gap: 10px; align-items: flex-start; line-height: 1.6; font-weight: 400; }
+.external-account-form-panel .external-ownership input { width: 18px; height: 18px; margin-top: 2px; flex: 0 0 18px; }
+.external-review-note { color: #716e78; }
+@media (max-width: 480px) { .external-account-fields { grid-template-columns: minmax(0,1fr); gap: 0; } .external-account-form-panel input:not([type=checkbox]), .external-account-form-panel select { font-size: 16px; } }
+
+.external-add-reference { margin-bottom: 20px; }

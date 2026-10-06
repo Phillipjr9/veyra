@@ -1,3 +1,4 @@
+import { confirmFunding } from "./funding-helpers";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
 import { buildLedgerAnalytics } from "../../shared/ledgerAnalytics";
@@ -23,7 +24,7 @@ async function login(page: Page, email: string) {
 }
 async function fund(request: APIRequestContext, token: string, amount: string) {
   const methods = (await (await request.get("/api/me/funding", { headers: headers(token) })).json()).methods;
-  expect((await request.post("/api/me/deposits", { headers: headers(token), data: { demo: true, methodId: methods[0].id, amount, requestKey: crypto.randomUUID() } })).status()).toBe(201);
+  expect((await request.post("/api/me/deposits", { headers: headers(token), data: { demo: true, methodId: methods.find((method: {kind: string}) => method.kind === "bank").id, amount, requestKey: crypto.randomUUID() } })).status()).toBe(201);
 }
 async function send(request: APIRequestContext, token: string, identifier: string, amount: string, method = "Zelle") {
   const review = await request.post("/api/me/demo-payments/action", { headers: headers(token), data: { action: "preview_transfer", identifier, method, amount, category: "Operations" } });
@@ -51,9 +52,9 @@ for (const type of ["personal", "business"] as const) test(`${type}: funding and
   page.on("framenavigated", frame => { if (frame === page.mainFrame()) reloads++; });
   await page.getByRole("button", { name: "Add funds", exact: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
-  await dialog.getByRole("button", { name: "Debit card", exact: true }).click();
+  await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: "Debit card" });
   await dialog.getByLabel("Amount (USD)", { exact: true }).fill("125.50");
-  await dialog.getByRole("button", { name: "Add funds now", exact: true }).click();
+  await confirmFunding(dialog);
   await expect(dialog.getByRole("status")).toContainText("Funds added");
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(page.locator('[data-flow="in"]')).toHaveText("$125.50");
@@ -166,9 +167,9 @@ test("a slow background snapshot cannot overwrite a newer confirmed funding refr
   try {
     await page.getByRole("button", { name: "Add funds", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
-    await dialog.getByRole("button", { name: "Debit card", exact: true }).click();
+    await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: "Debit card" });
     await dialog.getByLabel("Amount (USD)", { exact: true }).fill("125.50");
-    await dialog.getByRole("button", { name: "Add funds now", exact: true }).click();
+    await confirmFunding(dialog);
     await expect(dialog.getByRole("status")).toContainText("Funds added");
     await expect(page.locator('[data-flow="in"]')).toHaveText("$125.50");
     const oldRead = page.waitForResponse(r => r.url().endsWith("/api/me/state"));

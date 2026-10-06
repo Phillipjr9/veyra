@@ -105,6 +105,9 @@ const BASELINE: Policy[] = [
   { method: "PUT", path: "/api/admin/members/:id/funding", auth: true, perm: "accounts.edit_number" },
   { method: "POST", path: "/api/admin/members/:id/funding/:requestId/review", auth: true, perm: "customers.adjust_balance" },
   { method: "GET", path: "/api/me/funding", auth: true, perm: null },
+  { method: "GET", path: "/api/me/external-accounts", auth: true, perm: null },
+  { method: "POST", path: "/api/me/external-accounts", auth: true, perm: null },
+  { method: "POST", path: "/api/admin/members/:id/external-accounts/:accountId/review", auth: true, perm: "accounts.edit_number" },
   { method: "GET", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
   { method: "POST", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
   { method: "POST", path: "/api/me/crypto-withdrawals/:id/cancel", auth: true, perm: null },
@@ -141,6 +144,12 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/me/invoices/:id/remind", auth: true, perm: null },
   { method: "POST", path: "/api/me/team", auth: true, perm: null },
   { method: "DELETE", path: "/api/me/team/:id", auth: true, perm: null },
+  { method: "GET", path: "/api/me/crypto/capabilities", auth: true, perm: null },
+  { method: "GET", path: "/api/me/crypto/orders", auth: true, perm: null },
+  { method: "GET", path: "/api/me/crypto/orders/:id", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto/quote", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto/confirm", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto/wallet-balance", auth: true, perm: null },
   { method: "GET", path: "/api/me/holdings", auth: true, perm: null },
   { method: "POST", path: "/api/me/holdings/trade", auth: true, perm: null },
   { method: "GET", path: "/api/me/holdings/:asset/candles", auth: true, perm: null },
@@ -449,6 +458,12 @@ for (const route of declared) {
 
     if (label === "anonymous") {
       if (res.status !== 401) problems.push({ route: key, role: label, status: res.status, note: "no token did not get 401" });
+      continue;
+    }
+    // Submitting a member-owned funding reference is intentionally not a staff
+    // action, even for superadmins. Staff use the separately permissioned review.
+    if (key === "POST /api/me/external-accounts" && label !== "member") {
+      if (res.status !== 403) problems.push({ route: key, role: label, status: res.status, note: "staff must not submit an owner account reference" });
       continue;
     }
     if (label === "superadmin") {

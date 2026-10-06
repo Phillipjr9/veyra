@@ -955,6 +955,48 @@ CREATE TABLE demo_account_payment_previews (
 CREATE INDEX idx_demo_account_review_owner ON demo_account_payment_previews(user_id,expires_at);
 `,
   },
+  {
+    version: 22,
+    sql: `
+CREATE TABLE crypto_orders (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ quote_json TEXT NOT NULL, result_json TEXT, reference TEXT UNIQUE,
+ expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_crypto_orders_owner ON crypto_orders(user_id,created_at DESC);
+`,
+  },
+  {
+    version: 23,
+    sql: `
+ALTER TABLE accounts ADD COLUMN receiving_details_configured INTEGER NOT NULL DEFAULT 0;
+UPDATE accounts SET receiving_details_configured=1 WHERE EXISTS (
+ SELECT 1 FROM audit_log WHERE target='user:' || accounts.user_id AND action IN ('account.details','account.bulk_details')
+);
+-- Only a trusted provider adapter may create verified links. No client-supplied
+-- verification flag, full account number, password or access token is stored here.
+CREATE TABLE external_accounts (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), bank_name TEXT NOT NULL,
+ account_name TEXT NOT NULL, last4 TEXT NOT NULL CHECK(length(last4)=4 AND last4 NOT GLOB '*[^0-9]*'),
+ account_type TEXT NOT NULL CHECK(account_type IN ('Checking','Savings')),
+ status TEXT NOT NULL CHECK(status IN ('pending','verified','disconnected')),
+ provider_reference TEXT UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+ CHECK(status != 'verified' OR length(trim(provider_reference)) > 0 AND provider_reference IS NOT NULL)
+);
+CREATE INDEX idx_external_accounts_owner ON external_accounts(user_id,status);
+`,
+  },
+  {
+    version: 24,
+    sql: `
+-- Staff approval is an account-entry reference, NEVER provider authorization.
+ALTER TABLE external_accounts ADD COLUMN verification_kind TEXT NOT NULL DEFAULT 'provider' CHECK(verification_kind IN ('provider','staff_reference'));
+ALTER TABLE external_accounts ADD COLUMN verification_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE external_accounts ADD COLUMN reviewed_by TEXT REFERENCES users(id);
+ALTER TABLE external_accounts ADD COLUMN request_key TEXT;
+CREATE UNIQUE INDEX idx_external_accounts_request ON external_accounts(user_id,request_key);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

@@ -1,3 +1,5 @@
+import { ExternalAccountsPage } from "../../components/ExternalAccounts";
+import { CryptoWorkspace } from "../../components/CryptoWorkspace";
 import { buildLedgerAnalytics, type FlowRange } from "../../lib/dashboardAnalytics";
 import { useDemoPayments } from "../../lib/demoPayments";
 import { DemoModeNotice } from "../../components/DemoPayments";
@@ -10,7 +12,7 @@ import { createPortal } from "react-dom";
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
-  AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Copy, CreditCard,
+  AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Bell, Building2, CalendarClock, Check, Clock, Coins, Copy, CreditCard,
   Download, ExternalLink, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, Menu, MessageSquare, PackageCheck, Pause, PiggyBank, Play, Plus,
   Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, TrendingDown, TrendingUp, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Zap, LineChart, CandlestickChart, Link2,
 } from "lucide-react";
@@ -29,7 +31,7 @@ import { InvoiceDetailModal } from "../../components/InvoiceDetailModal";
 import { Camera } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import {
-  tradeHolding, quoteAge, useHoldings, useCandles, useMarkets, assetIcon,
+  quoteAge, useHoldings, useCandles, useMarkets, assetIcon,
   compactUsd, marketPrice, CANDLE_RANGES, RANGE_LABEL,
   type Holding, type CandleRange, type MarketRow,
 } from "../../lib/holdings";
@@ -117,6 +119,7 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app", label: "Overview", icon: <LayoutDashboard size={18} />, end: true },
       { to: "/app/accounts", label: "Accounts", icon: <PiggyBank size={18} /> },
       { to: "/app/cards", label: "Cards", icon: <CreditCard size={18} /> },
+      { to: "/app/assets", label: "Crypto", icon: <Coins size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Transfers", icon: <Send size={18} /> },
       { to: "/app/invoices", label: "Invoicing", icon: <ReceiptText size={18} /> },
@@ -152,6 +155,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app", label: "Overview", icon: <LayoutDashboard size={18} />, end: true },
       { to: "/app/accounts", label: "Savings goals", icon: <PiggyBank size={18} /> },
       { to: "/app/cards", label: "Cards", icon: <CreditCard size={18} /> },
+      { to: "/app/assets", label: "Crypto", icon: <Coins size={18} /> },
       { to: "/app/markets", label: "Markets", icon: <CandlestickChart size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
@@ -180,10 +184,10 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
 ];
 
 const NOTE_ROUTES: Record<NotificationItem["type"], string> = {
-  scout: "/app/scout", card: "/app/cards", transfer: "/app/transactions", security: "/app/security", invoice: "/app/invoices", info: "/app",
+  crypto: "/app/assets", scout: "/app/scout", card: "/app/cards", transfer: "/app/transactions", security: "/app/security", invoice: "/app/invoices", info: "/app",
 };
 const NOTE_ICONS: Record<NotificationItem["type"], ReactNode> = {
-  scout: <Sparkles size={14} />, card: <CreditCard size={14} />, transfer: <Zap size={14} />, security: <ShieldCheck size={14} />, invoice: <ReceiptText size={14} />, info: <Bell size={14} />,
+  crypto: <ArrowRight size={14} />, scout: <Sparkles size={14} />, card: <CreditCard size={14} />, transfer: <Zap size={14} />, security: <ShieldCheck size={14} />, invoice: <ReceiptText size={14} />, info: <Bell size={14} />,
 };
 
 function PageHeader({ eyebrow, title, children }: { eyebrow: ReactNode; title: ReactNode; children?: ReactNode }) {
@@ -1004,6 +1008,10 @@ export function Overview() {
               <Link to="/app/transactions" className="text-link">View all <ArrowRight size={14} /></Link>
             </div>
             <TxnList txns={account.transactions.slice(0, 6)} onSelect={setSelected} />
+          </motion.section>
+          <motion.section className="panel" {...rise(7)} aria-label="Recent deposits">
+            <div className="panel-head"><h2>Recent deposits</h2><Link to="/app/transactions" className="text-link">View activity <ArrowRight size={14} /></Link></div>
+            <TxnList txns={account.transactions.filter(t => t.category === "Funding" && t.amount > 0).slice(0, 5)} onSelect={setSelected} />
           </motion.section>
         </div>
 
@@ -2308,7 +2316,7 @@ export function MarketsPage() {
                             <div><dt>Volume 24H</dt><dd>{compactUsd(m.volumeUsd)}</dd></div>
                           </dl>
 
-                          {m.tradeable && data?.tradingEnabled && <Link className="solid-btn sm" to={`/app/accounts?buy=${m.code}`}>Buy {m.code}</Link>}
+                          {m.tradeable && data?.tradingEnabled && <Link className="solid-btn sm" to={`/app/assets?action=buy&asset=${encodeURIComponent(m.code)}`}>Buy {m.code}</Link>}
                           {/* Only registry assets have candle history: the route
                               refuses anything it cannot also price in units. */}
                           {!m.tradeable
@@ -2447,6 +2455,7 @@ export function AccountsPage() {
   return (
     <div className="app-page">
       <PageHeader eyebrow={`${user.accountType === "personal" ? "Personal" : "Business"} checking · Savings pockets`} title="Accounts & savings">
+        <Link className="ghost-btn" to="/app/external-accounts"><Landmark size={15} /> External accounts</Link>
         <button type="button" className="solid-btn" onClick={() => setCreateOpen(true)}><Plus size={15} /> New savings pocket</button>
       </PageHeader>
       <div className="account-balance-grid">
@@ -2534,7 +2543,7 @@ function CryptoStat({ index }: { index: number }) {
         <span>Digital assets</span>
         {data && !data.tradingEnabled
           ? <span className="chip chip-glass">View only</span>
-          : <span className="chip chip-glass">{unpricedHeld > 0 ? "Partial" : "Live"}</span>}
+          : <span className="chip chip-glass">{loading ? "Loading" : !data || data.quoteStatus === "unavailable" ? "Unavailable" : data.quoteStatus === "stale" ? "Stale" : unpricedHeld > 0 ? "Partial" : "Current"}</span>}
       </div>
 
       <div className="crypto-stat-body">
@@ -2576,54 +2585,13 @@ function CryptoStat({ index }: { index: number }) {
  * An unpriced asset renders as "Price unavailable", never as $0.00 — a zero is
  * a number people believe.
  */
-export function AssetsPage() { return <div className="app-page"><HoldingsPanel catalog /></div>; }
+export function AssetsPage() { return <CryptoWorkspace />; }
 
 export function HoldingsPanel({ catalog = false }: { catalog?: boolean }) {
-  const toast = useToast();
   const [sending, setSending] = useState<Holding | null>(null);
-  const [revision,setRevision] = useState(0);
-  const { refreshAccount } = useAcct();
+  const [revision, setRevision] = useState(0);
   const { data, loading, reload } = useHoldings();
-  const [trade, setTrade] = useState<{ holding: Holding; side: "buy" | "sell" } | null>(null);
-  const [amount, setAmount] = useState("");
-  const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
-  const [assetParams,setAssetParams] = useSearchParams();
-  const buyAsset=assetParams.get("buy");
-  useEffect(() => {
-    if(!buyAsset || !data) return;
-    const holding=data.holdings.find(h => h.asset === buyAsset);
-    if(holding && data.tradingEnabled && holding.priceUsd) {setTrade({holding,side:"buy"});setAmount("");}
-    else toast({tone:"error",title:"This asset has no current tradeable quote"});
-    const next=new URLSearchParams(assetParams);next.delete("buy");setAssetParams(next,{replace:true});
-  },[buyAsset,data,assetParams,setAssetParams,toast]);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!trade || busy) return;
-    const value = amount.trim();
-    if (!value || Number.parseFloat(value) <= 0) return toast({ tone: "error", title: "Enter an amount above zero" });
-    setBusy(true);
-    try {
-      const result = await tradeHolding(trade.holding.asset, trade.side, value, trade.holding.priceUsd);
-      setTrade(null); setAmount("");
-      toast({
-        tone: "success",
-        title: `${result.side === "buy" ? "Bought" : "Sold"} ${result.quantity} ${result.asset}`,
-        description: `${result.amountUsd} at ${result.priceUsd} per ${result.asset}.`,
-      });
-      // Crypto has its own ledger, but a trade also moves checking money.
-      // Reconcile both snapshots so every balance and transaction view agrees.
-      // A read failure after a successful trade must not claim the trade failed.
-      await Promise.all([reload(), refreshAccount()]).catch(() => {
-        toast({ tone: "info", title: "Trade completed — refresh your balance",
-          description: "We couldn't reload your checking balance. Refresh the page before making another trade." });
-      });
-    } catch (err) {
-      toast({ tone: "error", title: "Trade didn't go through", description: err instanceof Error ? err.message : undefined });
-    } finally { setBusy(false); }
-  };
-
   if (loading || !data) return null;
   const owned = data.holdings.filter(h => h.units !== "0" || (h.reservedUnits && h.reservedUnits !== "0"));
 
@@ -2666,8 +2634,8 @@ export function HoldingsPanel({ catalog = false }: { catalog?: boolean }) {
             <div className="holding-actions">
               {data.tradingEnabled ? (
                 <>
-                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "buy" }); setAmount(""); }} disabled={!holding.priceUsd || data.quoteStatus === "stale"}>Buy</button>
-                  <button type="button" className="ghost-btn sm" onClick={() => { setTrade({ holding, side: "sell" }); setAmount(""); }} disabled={!holding.priceUsd || data.quoteStatus === "stale" || holding.units === "0"}>Sell</button>
+                  <button type="button" className="ghost-btn sm" onClick={() => navigate(`/app/assets?action=buy&asset=${holding.asset}`)} disabled={!holding.priceUsd || data.quoteStatus === "stale"}>Buy</button>
+                  <button type="button" className="ghost-btn sm" onClick={() => navigate(`/app/assets?action=sell&asset=${holding.asset}`)} disabled={!holding.priceUsd || data.quoteStatus === "stale" || holding.units === "0"}>Sell</button>
                   <button type="button" className="ghost-btn sm" disabled={!holding.withdrawalNetwork || holding.units === "0"} title={!holding.withdrawalNetwork ? "Withdrawal network not supported yet" : "Create a pending withdrawal request"} onClick={() => setSending(holding)}>Send</button>
                 </>
               ) : <span className="holding-locked">View only</span>}
@@ -2685,46 +2653,7 @@ export function HoldingsPanel({ catalog = false }: { catalog?: boolean }) {
       {!catalog && <CryptoWithdrawalHistory revision={revision} changed={() => { void reload(); }} />}
       {sending && <CryptoSendDialog holding={sending} close={() => setSending(null)} submitted={() => { void reload(); setRevision(r => r+1); }} />}
 
-      <Modal
-        open={!!trade} onClose={() => { setTrade(null); setAmount(""); }}
-        title={trade ? `${trade.side === "buy" ? "Buy" : "Sell"} ${trade.holding.asset}` : ""}
-        subtitle={trade
-          ? trade.side === "buy"
-            ? `Funded from checking at ${trade.holding.priceUsd} per ${trade.holding.asset}.`
-            : `You hold ${trade.holding.quantity} ${trade.holding.asset}. Proceeds return to checking.`
-          : ""}
-      >
-        <form className="dash-form" onSubmit={submit}>
-          {/* The mark is repeated here on purpose: this is the last screen
-              before money moves, and confirming which asset you're about to
-              trade shouldn't depend on reading three letters. */}
-          {trade && (
-            <div className="trade-asset">
-              <img src={assetIcon(trade.holding.asset)} alt="" aria-hidden="true" width={128} height={128} decoding="async" />
-              <div>
-                <strong>{trade.holding.name}</strong>
-                <small>{trade.holding.priceUsd ? `${trade.holding.priceUsd} per ${trade.holding.asset}` : "No current quote"}</small>
-              </div>
-            </div>
-          )}
-          {/* Buys are entered in dollars and sells in units, so selling a whole
-              position lands on exactly zero instead of leaving rounding dust. */}
-          <label htmlFor="trade-amount">{trade?.side === "buy" ? "Amount to spend" : `Amount of ${trade?.holding.asset ?? ""}`}</label>
-          <div className="amount-input">
-            {trade?.side === "buy" && <span>$</span>}
-            <input autoFocus id="trade-amount" type="number" min="0" step="any" required value={amount}
-              onChange={e => setAmount(e.target.value)} placeholder={trade?.side === "buy" ? "0.00" : "0.00000000"} />
-          </div>
-          {trade?.side === "buy"
-            ? <div className="quick-row">{[25, 50, 100, 250].map(v => <button type="button" key={v} onClick={() => setAmount(String(v))}>{money(v, false)}</button>)}</div>
-            : <div className="quick-row"><button type="button" onClick={() => setAmount(trade?.holding.quantity ?? "")}>Sell all</button></div>}
-          <p className="holding-disclosure">Digital assets are not FDIC insured, are not deposits, and can lose value.</p>
-          <div className="modal-actions">
-            <button type="button" className="ghost-btn" onClick={() => { setTrade(null); setAmount(""); }}>Cancel</button>
-            <button type="submit" className="solid-btn" disabled={busy}>{busy ? "Working…" : trade?.side === "buy" ? "Buy" : "Sell"}</button>
-          </div>
-        </form>
-      </Modal>
+
     </>
   );
 }
@@ -3650,6 +3579,7 @@ export function ClassicApp() {
       <Route element={<DashboardLayout />}>
         <Route index element={<Overview />} />
         <Route path="accounts" element={<AccountsPage />} />
+        <Route path="external-accounts" element={<ExternalAccountsPage />} />
         <Route path="cards" element={<CardsPage />} />
         <Route path="transactions" element={<TransactionsPage />} />
         <Route path="transfers" element={<PaymentsPage />} />

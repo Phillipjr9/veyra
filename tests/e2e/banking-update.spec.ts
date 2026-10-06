@@ -50,7 +50,7 @@ test('admin edits account details and per-member funding; member request waits f
   let state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(0);
   await row.getByRole('button',{name:'Funding',exact:true}).click();await manager.getByRole('button',{name:'Confirm received funds',exact:true}).click();await manager.getByLabel('Evidence / reason').fill('Synthetic independent bank receipt check');await manager.getByRole('button',{name:'Commit review'}).click();await expect(manager.getByText('$75.00 · confirmed',{exact:true})).toBeVisible();
   state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(75);await expect(manager.getByRole('button',{name:'Confirm received funds'})).toHaveCount(0);
-  await funds.getByRole('button',{name:'Refresh funding status'}).click();await expect(funds.getByText('$75.00 · confirmed',{exact:true})).toBeVisible();await funds.getByRole('button',{name:'Close',exact:true}).click();await member.goto('/#/app/accounts');await expect(member.locator('.checking-account-card')).toContainText('$75.00');
+  await funds.getByRole('button',{name:'Refresh funding status'}).click();await expect(funds.getByRole('status')).toContainText('Funds added');await expect(funds.getByRole('status')).toContainText('confirmed');await funds.getByRole('button',{name:'Close',exact:true}).click();await member.goto('/#/app/accounts');await expect(member.locator('.checking-account-card')).toContainText('$75.00');
  } finally {await ctx.close();}
 });
 
@@ -64,9 +64,9 @@ test('personal category is optional, business category required and transaction 
 
 test('catalog is separate from holdings; animated crypto request remains pending and can be cancelled',async({page,request})=>{
  const u=await fixture(request);await request.post(`/api/admin/members/${u.id}/adjust`,{headers:{authorization:`Bearer ${u.admin}`},data:{direction:'credit',amount:100,memo:'Crypto fixture'}});
- await signIn(page,u.email);await page.goto('/#/app/accounts');await expect(page.locator('.holding-card')).toHaveCount(0);await page.getByRole('link',{name:'Browse assets'}).click();await expect(page.locator('.holding-card')).toHaveCount(24);
- const usdc=page.locator('.holding-card').filter({has:page.locator('.holding-code',{hasText:/^USDC$/})});await usdc.getByRole('button',{name:'Buy',exact:true}).click();const buy=page.getByRole('dialog',{name:'Buy USDC',exact:true});await buy.getByLabel('Amount to spend').fill('25');await buy.getByRole('button',{name:'Buy',exact:true}).click();await expect(buy).toBeHidden();
- await page.getByRole('link',{name:'View your holdings'}).click();await expect(page.locator('.holding-card')).toHaveCount(1);await usdc.getByRole('button',{name:'Send',exact:true}).click();const send=page.getByRole('dialog',{name:'Send USDC',exact:true});
+ await signIn(page,u.email);await page.goto('/#/app/accounts');await expect(page.locator('.holding-card')).toHaveCount(0);await page.getByRole('link',{name:'Browse assets'}).click();await expect(page.locator('.cw-asset-row')).toHaveCount(24);
+ const usdc=page.locator('.holding-card').filter({has:page.locator('.holding-code',{hasText:/^USDC$/})});await page.getByRole('article',{name:'USD Coin account holding'}).getByRole('button',{name:'Buy',exact:true}).click();const buy=page.getByRole('dialog',{name:'Buy crypto',exact:true});await buy.getByLabel('Amount to spend (USD)').fill('25');await buy.getByRole('checkbox').check();await buy.getByRole('button',{name:'Review order'}).click();await buy.getByRole('button',{name:'Confirm buy'}).click();await buy.getByRole('button',{name:'Done'}).click();await expect(buy).toBeHidden();
+ await page.goto('/#/app/accounts');await expect(page.locator('.holding-card')).toHaveCount(1);await usdc.getByRole('button',{name:'Send',exact:true}).click();const send=page.getByRole('dialog',{name:'Send USDC',exact:true});
  await send.getByLabel('Destination wallet address').fill('0x1111111111111111111111111111111111111111');await send.getByLabel('Quantity (USDC)').fill('10.123456');
  for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:900});await fits(page);}
  await send.getByRole('button',{name:'Review withdrawal'}).click();await page.setViewportSize({width:320,height:844});await fits(page);
@@ -145,7 +145,7 @@ test('admin configures Zelle and direct deposit while ACH and debit stay inactiv
   expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
   await dialog.getByLabel('Amount (USD)',{exact:true}).fill('25');await dialog.getByRole('button',{name:'Submit funding request',exact:true}).click();await expect(dialog.getByRole('status')).toContainText('pending');
   await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();await dialog.getByRole('button',{name:'Direct deposit',exact:true}).click();
-  await expect(dialog).toContainText('123456789012');await expect(dialog).toContainText('021000021');
+  await dialog.getByRole('button',{name:'Show account number',exact:true}).click();await expect(dialog).toContainText('123456789012');await expect(dialog).toContainText('021000021');
   await dialog.getByLabel('Amount (USD)',{exact:true}).fill('50');await dialog.getByRole('button',{name:'Submit funding request',exact:true}).click();await expect(dialog.getByRole('status')).toContainText('pending');
   const state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(0);
   await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();await dialog.getByRole('button',{name:'Zelle',exact:true}).click();

@@ -13,7 +13,10 @@
 
 export type RecaptchaActionKey = "login" | "register" | "forgotPassword";
 
+export type PreviewLogin = { label: string; email: string; password: string };
+
 export type AuthConfig = {
+  previewLogins: PreviewLogin[];
   addresses: { enabled: boolean; countries: string[] };
   recaptcha: {
     enabled: boolean;
@@ -30,6 +33,7 @@ export type AuthConfig = {
 };
 
 export const AUTH_CONFIG_OFF: AuthConfig = {
+  previewLogins: [],
   addresses: { enabled: false, countries: ["us"] },
   recaptcha: {
     enabled: false,
@@ -58,6 +62,10 @@ export function authConfig(): Promise<AuthConfig> {
       const recaptcha = body?.recaptcha;
       const federated = body?.federated;
       return {
+        previewLogins: Array.isArray(body?.previewLogins) ? body.previewLogins.filter(entry => entry &&
+          typeof entry.label === "string" && entry.label.length <= 32 &&
+          typeof entry.email === "string" && entry.email.length <= 254 &&
+          typeof entry.password === "string" && entry.password.length <= 128).slice(0, 3) : [],
         addresses: body?.addresses?.enabled === true ? { enabled: true, countries: ["us"] } : AUTH_CONFIG_OFF.addresses,
         recaptcha: recaptcha?.enabled && recaptcha.siteKey
           ? {

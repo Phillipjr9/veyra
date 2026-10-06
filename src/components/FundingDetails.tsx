@@ -1,0 +1,58 @@
+import { Link } from "react-router-dom";
+import { useState, type ReactNode } from "react";
+import { ArrowRight } from "lucide-react";
+import { money } from "../lib/store";
+
+export function validFundingAmount(value: string) {
+  return /^\d+(?:\.\d{1,2})?$/.test(value) && Number(value) >= 10 && Number(value) <= 100_000;
+}
+
+/** The same short details → review interaction as an outgoing payment. */
+export function FundingDetails({ methods, selected, amount, note, busy, onMethod, onAmount, onNote, onReview, onCancel, children, linkedAccountCount = 0 }: {
+  children?: ReactNode; linkedAccountCount?: number; methods: { id: string; label: string; unavailable?: boolean }[]; selected: string; amount: string; note: string; busy: boolean;
+  onMethod: (id: string) => void; onAmount: (value: string) => void; onNote: (value: string) => void;
+  onReview: () => void; onCancel: () => void;
+}) {
+  const [attempted, setAttempted] = useState(false);
+  const valid = validFundingAmount(amount);
+  const currentMethod = methods.find(method => method.id === selected);
+  const available = !!currentMethod && !currentMethod.unavailable;
+  const invalid = (attempted || amount !== "") && !valid;
+  return <form className="flow-pane funding-details" noValidate onSubmit={e => {
+    e.preventDefault(); setAttempted(true);
+    if (!busy && available && valid) onReview();
+  }}>
+    <h2 className="flow-title" id="flow-title">Add funds</h2>
+    <p className="flow-sub">Choose a method and amount, then review your deposit.</p>
+    <fieldset disabled={busy}>
+      <label className="flow-label" htmlFor="funding-method">Funding method</label>
+      <select id="funding-method" value={selected} onChange={e => onMethod(e.target.value)}>
+        {!methods.length && <option value="">No funding methods available</option>}
+        {methods.map(method => <option key={method.id} value={method.id}>{method.label}</option>)}
+      </select>
+      <div className="funding-linked-action"><p>{linkedAccountCount ? "Your linked accounts and approved references are available in the dropdown." : "No bank account is available yet. Add an account reference for review, or choose another available method."}</p><Link className="text-link" to="/app/external-accounts" onClick={onCancel}>{linkedAccountCount ? "Manage linked accounts" : "Link an external account"} <ArrowRight size={14} /></Link></div>
+      {children}
+      <label className="flow-label" htmlFor="funding-amount">Amount (USD)</label>
+      <div className={`flow-amount-field ${invalid ? "is-invalid" : ""}`}>
+        <span aria-hidden="true">$</span>
+        <input id="funding-amount" type="number" inputMode="decimal" min="10" max="100000" step="0.01" required placeholder="0.00"
+          value={amount} onChange={e => onAmount(e.target.value)} aria-invalid={invalid} aria-describedby="funding-amount-hint" />
+      </div>
+      <p id="funding-amount-hint" className={invalid ? "flow-field-error" : "flow-field-note"} role={invalid ? "alert" : undefined}>
+        {invalid ? "Enter $10–$100,000 with no more than two decimal places." : "$10–$100,000 per deposit. No fee."}
+      </p>
+      <div className="quick-row">{[250, 1000, 5000].map(value => <button type="button" key={value} className={Number(amount) === value ? "on" : ""} onClick={() => onAmount(String(value))}>{money(value, false)}</button>)}</div>
+      <label className="flow-label" htmlFor="funding-note">Memo (optional)</label>
+      <input id="funding-note" maxLength={500} value={note} onChange={e => onNote(e.target.value)} placeholder="A short note — no passwords or card details" />
+      <div className="flow-rows compact">
+        <div className="flow-row free"><span>Deposit fee</span><b>$0.00</b></div>
+        <div className="flow-row"><span>To</span><b>Your Veyra account</b></div>
+      </div>
+    </fieldset>
+      <div className="flow-actions">
+        <button type="button" className="ghost-btn" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button type="submit" className="solid-btn" disabled={busy || !available}>Review deposit <ArrowRight size={15} /></button>
+      </div>
+    <p className="funding-animation-note">Account entries credit immediately after confirmation. External bank and card processing is not connected.</p>
+  </form>;
+}

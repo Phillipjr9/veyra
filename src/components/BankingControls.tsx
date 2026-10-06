@@ -1,3 +1,5 @@
+import { ExternalAccountReview } from "./ExternalAccountReview";
+import type { ExternalAccount } from "../../shared/externalAccounts";
 import { FUNDING_OPTIONS } from "../../shared/funding";
 import { useBankingDialog } from "./bankingDialog";
 import { useEffect, useState, type FormEvent } from "react";
@@ -39,7 +41,8 @@ export function FundingManager({ userId, name, canEdit, canReview, close }: { us
   const [methods, setMethods] = useState<FundingMethod[]>([]), [requests, setRequests] = useState<FundingRequest[]>([]), [error, setError] = useState(""), [status, setStatus] = useState(""), [busy, setBusy] = useState(false), [loaded, setLoaded] = useState(false);
   const dialog = useBankingDialog(close,busy);
   const [review, setReview] = useState<{ id: string; decision: string } | null>(null), [evidence, setEvidence] = useState("");
-  const load = async () => { const r = await apiGet<{ methods: any[]; requests: FundingRequest[] }>(`/api/admin/members/${userId}/funding`); setMethods(r.methods.map(normalize)); setRequests(r.requests); setLoaded(true); };
+  const [externalAccounts, setExternalAccounts] = useState<ExternalAccount[]>([]);
+  const load = async () => { const r = await apiGet<{ methods: any[]; requests: FundingRequest[]; externalAccounts: ExternalAccount[] }>(`/api/admin/members/${userId}/funding`); setMethods(r.methods.map(normalize)); setRequests(r.requests); setExternalAccounts(r.externalAccounts ?? []); setLoaded(true); };
   useEffect(() => { void load().catch(e => setError(message(e))); }, [userId]);
   const set = (index: number, key: keyof FundingMethod, value: string | boolean) => setMethods(rows => rows.map((m,i) => i === index ? { ...m, [key]: value } : m));
   async function save(e: FormEvent) { e.preventDefault(); if (busy) return; setBusy(true); setError(""); setStatus(""); try { const r = await apiPut<{ methods: any[] }>(`/api/admin/members/${userId}/funding`, { methods }); setMethods(r.methods.map(normalize)); setStatus("Funding methods saved. No money was collected."); } catch (e) { setError(message(e)); } finally { setBusy(false); } }
@@ -61,6 +64,7 @@ export function FundingManager({ userId, name, canEdit, canReview, close }: { us
       <button type="button" className="ghost-btn" disabled={methods.length >= 12} onClick={() => setMethods(rows => [...rows, { label: '',kind:'bank',instructions:'',bankName:'',routingNumber:'',accountNumber:'',recipient:'',recipientContact:'',enabled:true }])}>Add funding method</button>
       <button className="solid-btn">Save funding methods</button>
     </fieldset></form>
+    <ExternalAccountReview userId={userId} accounts={externalAccounts} canReview={canEdit} refreshed={load} blocked={busy} onBusyChange={setBusy} />
     <h3>Funding requests</h3>{!requests.length && <p>No requests submitted.</p>}
     {requests.map(r => <article className="banking-request" key={r.id}><b>{money(r.amount_cents/100)} · {r.status}</b><span>{r.reference} · {new Date(r.created_at).toLocaleString()}</span><p>{r.note}</p><details><summary>Instructions at submission</summary><p>{JSON.parse(r.method_snapshot).label}</p><p>{JSON.parse(r.method_snapshot).instructions}</p></details>{r.evidence && <p>Review note: {r.evidence}</p>}
       {canReview && r.status === 'pending' && <div className="modal-actions"><button type="button" className="ghost-btn" disabled={busy} onClick={() => { setReview({id:r.id,decision:'rejected'});setEvidence(''); }}>Reject</button><button type="button" className="solid-btn" disabled={busy} onClick={() => { setReview({id:r.id,decision:'confirmed'});setEvidence(''); }}>Confirm received funds</button></div>}

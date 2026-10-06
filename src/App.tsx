@@ -1,3 +1,4 @@
+import { ExternalAccountsPage } from "./components/ExternalAccounts";
 import { DemoPaymentsProvider } from "./lib/demoPayments";
 import { AdminMemberPage } from "./pages/AdminMember";
 import { HashRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
@@ -137,6 +138,7 @@ function Shell() {
         >
           <Route index element={<Overview />} />
           <Route path="accounts" element={<AccountsPage />} />
+          <Route path="external-accounts" element={<ExternalAccountsPage />} />
           <Route path="markets" element={<MarketsPage />} />
           <Route path="assets" element={<AssetsPage />} />
           <Route path="cards" element={<CardsPage />} />

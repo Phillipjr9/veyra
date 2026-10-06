@@ -11,7 +11,7 @@
  *   CORS_ORIGIN    — allow a non-proxied browser origin
  */
 import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 // Minimal zero-dependency .env loader (KEY=VALUE lines, # comments).
 (function loadEnv() {
@@ -25,6 +25,8 @@ import { resolve } from "node:path";
   }
 })();
 
+import { previewCryptoEnabled } from "./previewCrypto.js";
+import { seedPreviewCrypto } from "./previewCryptoSeed.js";
 import { createApp } from "./app.js";
 import { describeRecaptcha, recaptchaConfig } from "./recaptcha.js";
 import { describeFederated } from "./federated.js";
@@ -46,6 +48,7 @@ const isProduction = process.env.NODE_ENV === "production";
  *   - Development members are seeded after listen (see below).
  */
 if (!isProduction) {
+  process.env.PREVIEW_LOGIN_SHORTCUTS ??= "1";
   // Honor explicit configuration, including the older switch. Tests that call
   // createApp directly opt in separately; this is only the normal dev entrypoint.
   if (!process.env.ACCOUNT_LEDGER_ENABLED && !process.env.DEMO_PAYMENTS_ENABLED) process.env.ACCOUNT_LEDGER_ENABLED = "1";
@@ -54,7 +57,16 @@ if (!isProduction) {
   process.env.ADMIN_NAME ??= "System Admin";
 }
 
-const { app } = createApp(undefined);
+// Test balances must never share the ordinary or production database.
+const previewDb = resolve(process.cwd(), "server/preview-crypto.db");
+if (isProduction && (process.env.PREVIEW_CRYPTO_DATA === "1" || basename(process.env.DB_PATH ?? "") === "preview-crypto.db")) {
+  throw new Error("Preview crypto data/database cannot be used in production.");
+}
+if (previewCryptoEnabled()) {
+  if (process.env.DB_PATH && resolve(process.env.DB_PATH) !== previewDb) throw new Error("Preview crypto requires the isolated server/preview-crypto.db database.");
+  process.env.DB_PATH = previewDb;
+}
+const { app, db } = createApp(process.env.DB_PATH);
 
 if (process.env.NODE_ENV === "production" && !process.env.TOKEN_SECRET) {
   console.error("Refusing to start: TOKEN_SECRET is required in production.");
@@ -106,7 +118,8 @@ app.listen(PORT, "0.0.0.0", (error?: Error) => {
   // one is seeded on boot: the login page's one-click accounts always exist.
   console.log("Mode: development — seeding demo accounts…");
   void seedDemoAccounts({ baseUrl: `http://127.0.0.1:${PORT}`, log: line => console.log(`  ${line}`) })
-    .then(result => {
+    .then(async result => {
+      await seedPreviewCrypto(db, `http://127.0.0.1:${PORT}`, line => console.log(`  ${line}`));
       console.log(`  ready: ${result.created} created, ${result.seeded} seeded, ${result.skipped} already had data`);
       console.log(`  demo logins: demo.personal@veyra.dev, demo.business@veyra.dev (${DEMO_PASSWORD}), ${result.adminEmail}`);
     })

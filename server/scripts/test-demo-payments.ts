@@ -22,6 +22,8 @@ try{
  const inboxBefore=recentMail.length;
  check('funding requires authentication',(await api('GET','/api/me/funding')).status===401);
  check('deposit requires authentication',(await api('POST','/api/me/deposits',undefined,{})).status===401);
+ db.prepare("INSERT INTO external_accounts(id,user_id,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at) VALUES(?,?,'Linked bank','Personal checking','1234','Checking','verified','fixture-link',1,1)").run('fixture-link',a.id);
+ db.prepare("UPDATE accounts SET receiving_details_configured=1 WHERE user_id=?").run(a.id);
  const sources=(await funding()).methods;check('all eight original methods have mock sources',sources.length===8&&(await funding()).demoMode);
  for(const m of sources){const before=balance(),body={methodId:m.id,amount:'25.01',requestKey:randomUUID(),note:'',demo:true};
   const posted=await deposit(body);check(`${m.kind}: immediately confirmed`,posted.status===201&&posted.json.request.status==='confirmed');

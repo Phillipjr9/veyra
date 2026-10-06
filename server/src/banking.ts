@@ -1,10 +1,13 @@
+import type { ExternalAccount } from "../../shared/externalAccounts.js";
+import { rateLimit } from "./security.js";
+import { sendCryptoNotification } from "./cryptoNotifications.js";
 import { demoPaymentsEnabled } from "./demoPayments.js";
 import { sendZelleNotification } from "./zelleNotifications.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Request, Response } from "express";
-import { createHash, randomUUID } from "node:crypto";
-import { base58, bech32, bech32m } from "@scure/base";
-import { keccak_256 } from "@noble/hashes/sha3";
+import { randomUUID } from "node:crypto";
+import { validWallet } from "../../shared/walletAddress.js";
+export { validWallet } from "../../shared/walletAddress.js";
 import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider } from "../../shared/funding.js";
 import { ASSETS } from "../../shared/catalog.js";
 import { BadInputError, dollarsToCents, getSetting, inTransaction, now, rid } from "./db.js";
@@ -20,37 +23,6 @@ const text = (value: unknown, max: number, required = false) => {
 const requestKey = (body: any) => { const key = body?.requestKey; if (typeof key !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(key)) throw new BadInputError("A request identifier is required."); return key; };
 const ref = () => `VYR-${randomUUID().slice(0, 8).toUpperCase()}`;
 
-export function validWallet(network: string, address: string): boolean {
-  try {
-    if (["Ethereum", "BNB Smart Chain", "Avalanche C-Chain"].includes(network)) {
-      if (!/^0x[\da-fA-F]{40}$/.test(address) || /^0x0{40}$/.test(address)) return false;
-      const body = address.slice(2);
-      if (body === body.toLowerCase() || body === body.toUpperCase()) return true;
-      const hash = Buffer.from(keccak_256(Buffer.from(body.toLowerCase()))).toString("hex");
-      return [...body].every((c, i) => !/[a-fA-F]/.test(c) || (parseInt(hash[i], 16) >= 8 ? c === c.toUpperCase() : c === c.toLowerCase()));
-    }
-    if (network === "Solana") return base58.decode(address).length === 32 && address !== "11111111111111111111111111111111";
-    if (network === "Bitcoin") {
-      if (/^bc1/i.test(address)) {
-        for (const codec of [bech32, bech32m]) {
-          try {
-            const decoded = codec.decode(address as `${string}1${string}`);
-            const version = decoded.words[0], program = codec.fromWords(decoded.words.slice(1));
-            if (decoded.prefix !== "bc" || version > 16) continue;
-            if (version === 0 && codec === bech32 && [20, 32].includes(program.length)) return true;
-            if (version > 0 && codec === bech32m && program.length >= 2 && program.length <= 40) return true;
-          } catch { /* Try the other checksum variant. */ }
-        }
-        return false;
-      }
-      const bytes = Buffer.from(base58.decode(address));
-      if (bytes.length !== 25 || ![0, 5].includes(bytes[0])) return false;
-      const checksum = createHash("sha256").update(createHash("sha256").update(bytes.subarray(0, 21)).digest()).digest().subarray(0, 4);
-      return checksum.equals(bytes.subarray(21));
-    }
-  } catch { return false; }
-  return false;
-}
 
 export function createBanking(db: DatabaseSync, audit: Audit) {
   const member = (id: string) => {
@@ -59,11 +31,26 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
     return row;
   };
   const methods = (id: string) => db.prepare("SELECT * FROM funding_methods WHERE user_id = ? ORDER BY updated_at DESC").all(id);
-  const mockMethods = (id: string) => FUNDING_OPTIONS.map(option => ({
-    id: `demo_${id}_${option.kind}`, user_id: id, label: option.label, kind: option.kind,
-    instructions: "Add funds directly to your account balance. External bank and card processing is not connected.",
-    bank_name: "", routing_number: "", account_number: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0, demo: true, ledgerOnly: true,
-  }));
+  const externalColumns = "id,bank_name,account_name,last4,account_type,status,verification_kind,verification_note,created_at";
+  const externalAccounts = (id: string) => db.prepare(`SELECT ${externalColumns} FROM external_accounts WHERE user_id=? ORDER BY created_at DESC`).all(id) as ExternalAccount[];
+  const linkedAccounts = (id: string) => externalAccounts(id).filter(account => account.status === "verified");
+  const directDeposit = (id: string) => {
+    const account = db.prepare("SELECT a.*,u.name FROM accounts a JOIN users u ON u.id=a.user_id WHERE a.user_id=? AND a.receiving_details_configured=1").get(id) as any;
+    if (account) return { bank_name: account.bank_name, routing_number: account.routing_number, account_number: account.account_number, account_type: account.bank_account_type, recipient: account.name };
+    const configured = db.prepare("SELECT * FROM funding_methods WHERE user_id=? AND kind='direct_deposit' AND enabled=1 AND bank_name!='' AND routing_number!='' AND account_number!='' ORDER BY updated_at DESC LIMIT 1").get(id) as any;
+    return configured ? { bank_name: configured.bank_name, routing_number: configured.routing_number, account_number: configured.account_number, account_type: "", recipient: configured.recipient } : null;
+  };
+  const accountMethods = (id: string) => FUNDING_OPTIONS.flatMap(option => {
+    const receiving = option.kind === "direct_deposit" ? directDeposit(id) : null;
+    const base = { id: `demo_${id}_${option.kind}`, user_id: id, label: option.label, kind: option.kind,
+      instructions: "Add funds directly to your account balance. External bank and card processing is not connected.",
+      bank_name: "", routing_number: "", account_number: "", account_type: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0, demo: true, ledgerOnly: true,
+      linkedAccountId: "", unavailable: option.kind === "direct_deposit" && !receiving, ...receiving };
+    if (option.kind !== "ach") return [base];
+    const linked = linkedAccounts(id);
+    return linked.length ? linked.map(account => ({ ...base, id: `linked_${id}_${account.id}`, linkedAccountId: account.id,
+      label: `${account.bank_name} ${account.account_type} •••• ${account.last4}${account.verification_kind === "staff_reference" ? " · Account reference" : " · ACH"}` })) : [{ ...base, unavailable: true }];
+  });
   const fundingRequests = (id: string) => db.prepare("SELECT * FROM funding_requests WHERE user_id = ? ORDER BY (status='pending') DESC, created_at DESC LIMIT 100").all(id);
   const withdrawOut = (row: any) => ({ ...row, quantity: formatUnitsTrimmed(BigInt(row.units), assetByCode(db, row.asset)!.decimals) });
   return {
@@ -89,18 +76,64 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
         }
         if (b.accountType === "personal" && user.account_type !== "personal" && db.prepare("SELECT 1 FROM team_members WHERE user_id = ? AND role != 'Owner' AND status IN ('active','invited')").get(id)) throw new BadInputError("Remove active teammates and pending invitations before converting to personal.");
         if (db.prepare("SELECT 1 FROM accounts WHERE account_number = ? AND user_id != ?").get(number, id)) throw new BadInputError("That account number is already assigned.");
-        db.prepare("UPDATE accounts SET account_number=?,routing_number=?,bank_name=?,bank_account_type=?,updated_at=? WHERE user_id=?").run(number, routing, bank, b.bankAccountType, now(), id);
+        db.prepare("UPDATE accounts SET account_number=?,routing_number=?,bank_name=?,bank_account_type=?,receiving_details_configured=1,updated_at=? WHERE user_id=?").run(number, routing, bank, b.bankAccountType, now(), id);
         db.prepare("UPDATE users SET account_type=?,business=? WHERE id=?").run(b.accountType, business, id);
         audit(req, "account.details", "Financial", `user:${id}`, reason, JSON.stringify({ accountNumber: before.account_number, routingNumber: before.routing_number, bankName: before.bank_name, bankAccountType: before.bank_account_type, accountType: user.account_type, business: user.business }), JSON.stringify({ accountNumber: number, routingNumber: routing, bankName: bank, bankAccountType: b.bankAccountType, accountType: b.accountType, business }));
       });
       res.json({ ok: true });
     },
+    externalAccountsGet(req: Request, res: Response) {
+      res.json({ accounts: linkedAccounts(req.user!.id), requests: externalAccounts(req.user!.id).filter(account => account.status !== "verified"), linkingAvailable: false,
+        referenceRequestsAvailable: req.user!.role === "user" && !req.user!.loginId && req.user!.status === "active" });
+    },
+    requestExternalAccount(req: Request, res: Response) {
+      if (req.user!.role !== "user" || req.user!.loginId || req.user!.status !== "active") return void res.status(403).json({ error: "Only an active account owner can submit a funding reference." });
+      const body = req.body ?? {}, id = req.user!.id, key = requestKey(body);
+      if (Object.keys(body).some(field => !["bankName","accountName","last4","accountType","ownershipConfirmed","requestKey"].includes(field))) throw new BadInputError("Only a bank name, display name, type and last four digits are accepted. Never submit bank credentials or a full account number.");
+      const bank = text(body.bankName,120,true), name = text(body.accountName,120,true), last4 = text(body.last4,4,true);
+      if (!/^\d{4}$/.test(last4) || !["Checking","Savings"].includes(body.accountType) || body.ownershipConfirmed !== true) throw new BadInputError("Confirm ownership and provide the account type and exactly four final digits.");
+      const result = inTransaction(db, () => {
+        const prior = db.prepare("SELECT * FROM external_accounts WHERE user_id=? AND request_key=?").get(id,key) as any;
+        if (prior) {
+          if (prior.bank_name !== bank || prior.account_name !== name || prior.last4 !== last4 || prior.account_type !== body.accountType) throw new BadInputError("This request identifier was already used for different details.");
+          return { id: prior.id, replayed: true };
+        }
+        if (!rateLimit(`bank-reference:${id}`,10,3600000)) throw new BadInputError("Too many account-reference requests. Try again later.");
+        if (externalAccounts(id).length >= 25) throw new BadInputError("Contact support to manage your existing account references before adding more.");
+        if (db.prepare("SELECT 1 FROM external_accounts WHERE user_id=? AND bank_name=? COLLATE NOCASE AND last4=? AND account_type=? AND status IN ('pending','verified')").get(id,bank,last4,body.accountType)) throw new BadInputError("An account with this bank, type and ending is already listed. Review its existing status.");
+        const accountId = rid("external"), at = now();
+        db.prepare("INSERT INTO external_accounts(id,user_id,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at,verification_kind,request_key) VALUES(?,?,?,?,?,?,'pending',NULL,?,?,'staff_reference',?)").run(accountId,id,bank,name,last4,body.accountType,at,at,key);
+        return { id: accountId, replayed: false };
+      });
+      res.status(result.replayed ? 200 : 201).json({ account: externalAccounts(id).find(account => account.id === result.id), replayed: result.replayed });
+    },
+    reviewExternalAccount(req: Request, res: Response) {
+      const id = String(req.params.id); member(id);
+      const body = req.body ?? {}, note = text(body.note,500,true);
+      if (Object.keys(body).some(field => !["decision","note","ownershipVerified"].includes(field)) || !["approve","reject"].includes(body.decision) || note.length < 15) throw new BadInputError("Choose an approval or rejection and include a review note of at least 15 characters.");
+      if (body.decision === "approve" && body.ownershipVerified !== true) throw new BadInputError("Independently verify ownership before approving an account reference.");
+      const status = body.decision === "approve" ? "verified" : "disconnected";
+      inTransaction(db, () => {
+        const row = db.prepare("SELECT * FROM external_accounts WHERE id=? AND user_id=? AND verification_kind='staff_reference'").get(String(req.params.accountId),id) as any;
+        if (!row) throw new BadInputError("Account reference not found for this member.");
+        if (row.status === status && row.verification_note === note) return;
+        if (row.status !== "pending") throw new BadInputError("This account reference was already reviewed. Refresh its status.");
+        const at = now();
+        // Legacy column stores a non-secret attestation ID here, not a bank token.
+        // Live payment adapters must require verification_kind='provider'.
+        db.prepare("UPDATE external_accounts SET status=?,verification_note=?,reviewed_by=?,provider_reference=?,updated_at=? WHERE id=?").run(status,note,req.user!.id,status === "verified" ? `staff-reference:${row.id}` : null,at,row.id);
+        audit(req,"external_account.review","Financial",`user:${id}`,`Account reference ${row.id}: ${body.decision}. ${note}`,JSON.stringify({status:row.status}),JSON.stringify({status,scope:"account reference only; no bank connection or debit authorization"}));
+        db.prepare("INSERT INTO notifications(id,user_id,type,title,detail,read,created_at) VALUES(?,?,'info',?,?,0,?)").run(rid("note"),id,status === "verified" ? "Bank account reference approved" : "Bank account reference needs attention",`${row.bank_name} •••• ${row.last4}. ${note} Open Accounts → External accounts. This is not a bank connection or debit authorization.`,at);
+      });
+      res.json({ accounts: externalAccounts(id) });
+    },
     fundingGet(req: Request, res: Response) {
-      res.json({ immediateFunding: demoPaymentsEnabled(), demoMode: demoPaymentsEnabled(), methods: demoPaymentsEnabled() ? mockMethods(req.user!.id) : methods(req.user!.id).filter((r: any) => r.enabled), requests: fundingRequests(req.user!.id) });
+      res.json({ immediateFunding: demoPaymentsEnabled(), demoMode: demoPaymentsEnabled(), methods: demoPaymentsEnabled() ? accountMethods(req.user!.id) : methods(req.user!.id).filter((r: any) => r.enabled),
+        linkedAccounts: linkedAccounts(req.user!.id), directDeposit: directDeposit(req.user!.id), requests: fundingRequests(req.user!.id) });
     },
     adminFundingGet(req: Request, res: Response) {
       const id = String(req.params.id); member(id);
-      res.json({ methods: methods(id), requests: fundingRequests(id) });
+      res.json({ methods: methods(id), requests: fundingRequests(id), externalAccounts: externalAccounts(id) });
     },
     fundingSave(req: Request, res: Response) {
       const id = String(req.params.id); member(id);
@@ -143,14 +176,14 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
         if (!["string", "number"].includes(typeof req.body.amount) || !/^\d+(\.\d{1,2})?$/.test(String(req.body.amount))) throw new BadInputError("Enter a dollar amount with at most two decimals.");
         const amount = dollarsToCents(req.body.amount), id = req.user!.id, key = requestKey(req.body), note = text(req.body.note ?? "", 500);
         if (amount < 1000 || amount > 10000000) throw new BadInputError("Add between $10 and $100,000.");
-        const m = mockMethods(id).find(method => method.id === req.body.methodId);
-        if (!m) throw new BadInputError("Choose one of your funding methods.");
         const request = inTransaction(db, () => {
           const prior = db.prepare("SELECT * FROM funding_requests WHERE user_id=? AND request_key=?").get(id, key) as any;
           if (prior) {
-            if (prior.amount_cents !== amount || prior.method_id !== m.id || prior.note !== note || !JSON.parse(prior.method_snapshot).demo) throw new BadInputError("This request identifier was already used for different details.");
+            if (prior.amount_cents !== amount || prior.method_id !== req.body.methodId || prior.note !== note || !JSON.parse(prior.method_snapshot).demo) throw new BadInputError("This request identifier was already used for different details.");
             return prior;
           }
+          const m = accountMethods(id).find(method => method.id === req.body.methodId);
+          if (!m || m.unavailable) throw new BadInputError("Choose an available funding method. Bank funding requires a verified linked account; Direct Deposit requires configured receiving details.");
           const a = db.prepare("SELECT * FROM accounts WHERE user_id=?").get(id) as any;
           if (!a || !Number.isSafeInteger(a.balance_cents + amount) || a.balance_cents + amount > 1000000000) throw new BadInputError("Account cannot accept this credit (maximum balance $10,000,000).");
           // Disabled internal fixture: turning demo mode off never exposes it as a live method.
@@ -225,7 +258,8 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       if ((req.body.amount.split(".")[1] ?? "").length > asset.decimals) throw new BadInputError(`Use no more than ${asset.decimals} decimal places.`);
       let units: bigint; try { units = parseUnits(req.body.amount,asset.decimals); } catch { throw new BadInputError("Invalid asset precision."); }
       if (units <= 0n) throw new BadInputError("Quantity must be greater than zero.");
-      const request = inTransaction(db, () => {
+      let request: any;
+      try { request = inTransaction(db, () => {
         const prior = db.prepare("SELECT * FROM crypto_withdrawals WHERE user_id=? AND request_key=?").get(id,key) as any;
         if (prior) { if (prior.asset !== asset.code || prior.units !== units.toString() || prior.network !== spec.network || prior.address !== address) throw new BadInputError("Request identifier already used with different details."); return prior; }
         if ((db.prepare("SELECT COUNT(*) AS n FROM crypto_withdrawals WHERE user_id=? AND status='pending'").get(id) as {n:number}).n >= 20) throw new BadInputError("Resolve existing withdrawal requests before adding more.");
@@ -236,18 +270,29 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
         db.prepare("INSERT INTO crypto_withdrawals(id,user_id,asset,units,network,address,reference,request_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(requestId,id,asset.code,units.toString(),spec.network,address,ref(),key,now());
         return db.prepare("SELECT * FROM crypto_withdrawals WHERE id=?").get(requestId);
       });
-      res.status(201).json({ withdrawal: withdrawOut(request), message: "Pending request only. No transaction has been broadcast; network fees and execution are not confirmed." });
+      } catch (error) {
+        if (error instanceof BadInputError) sendCryptoNotification(db, id, { activity: "withdrawal", status: "failed", reference: key, occurredAt: now(),
+          asset: asset.code, quantity: formatUnitsTrimmed(units, asset.decimals), network: spec.network, settlement: "request" });
+        throw error;
+      }
+      const recorded = withdrawOut(request);
+      if (recorded.status === "pending") sendCryptoNotification(db, id, { activity: "withdrawal", status: "pending", reference: recorded.reference, occurredAt: recorded.created_at,
+        asset: recorded.asset, quantity: recorded.quantity, network: recorded.network, settlement: "request" });
+      res.status(201).json({ withdrawal: recorded, message: "Pending request only. No transaction has been broadcast; network fees and execution are not confirmed." });
     },
     cancelWithdrawal(req: Request, res: Response) {
       if (req.user!.loginId) return void res.status(403).json({ error: "Only the account owner can cancel." });
-      inTransaction(db, () => {
+      const cancelled = inTransaction(db, () => {
         const r = db.prepare("SELECT * FROM crypto_withdrawals WHERE id=? AND user_id=?").get(String(req.params.id),req.user!.id) as any;
         if (!r) throw new BadInputError("Withdrawal not found.");
-        if (r.status !== "pending") return;
+        if (r.status !== "pending") return null;
         const holding = db.prepare("SELECT units FROM holdings WHERE user_id=? AND asset=?").get(req.user!.id,r.asset) as any;
         db.prepare("UPDATE holdings SET units=?,updated_at=? WHERE user_id=? AND asset=?").run((BigInt(holding.units)+BigInt(r.units)).toString(),now(),req.user!.id,r.asset);
         db.prepare("UPDATE crypto_withdrawals SET status='cancelled',cancelled_at=? WHERE id=?").run(now(),r.id);
+        return withdrawOut(r);
       });
+      if (cancelled) sendCryptoNotification(db, req.user!.id, { activity: "withdrawal", status: "cancelled", reference: cancelled.reference, occurredAt: now(),
+        asset: cancelled.asset, quantity: cancelled.quantity, network: cancelled.network, settlement: "request" });
       res.json({ ok: true });
     },
   };

@@ -1,3 +1,7 @@
+import { sendCryptoNotification } from "./cryptoNotifications.js";
+import { previewCryptoEnabled, PREVIEW_CRYPTO_NOTICE } from "./previewCrypto.js";
+import { createPreviewAccess } from "./previewAccess.js";
+import { createCryptoWorkspace } from "./cryptoWorkspace.js";
 import { readLedgerAnalytics } from "./ledgerAnalytics.js";
 import { createDemoPayments, demoPaymentsEnabled } from "./demoPayments.js";
 import { createBulkAccounts } from "./bulkAccounts.js";
@@ -73,6 +77,7 @@ export function teamAllows(method: string, path: string, role: TeamRole): boolea
   if (!path.startsWith("/api/me/")) return false;
   if (TEAM_NEVER.test(path)) return false;
   if (method === "GET" || method === "HEAD") return true;
+  if (method === "POST" && path === "/api/me/crypto/wallet-balance") return true; // Read-only RPC adapter, no financial mutation.
   if (TEAM_ALL_WRITE.test(path)) return true;
   if (role === "Bookkeeper") return false;
   if (TEAM_MEMBER_WRITE.test(path)) return true;
@@ -435,8 +440,10 @@ export function createApp(dbPath?: string) {
    * the API can never disagree: turning the gate on does not need a rebuild,
    * and a stale bundle cannot start withholding tokens the server now demands.
    */
+  const previewAccess = createPreviewAccess(db);
   app.get("/api/auth/config", wrap((_req, res) => {
-    res.json({ recaptcha: publicRecaptchaConfig(), federated: publicFederatedConfig(), addresses: addressConfig() });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ recaptcha: publicRecaptchaConfig(), federated: publicFederatedConfig(), addresses: addressConfig(), previewLogins: previewAccess() });
   }));
 
   // Signup address lookup is intentionally public, but bounded and server-keyed.
@@ -1032,6 +1039,9 @@ export function createApp(dbPath?: string) {
     if (demoPaymentsEnabled()) return void res.status(400).json({ error: "Review the payment before confirming it." });
     next();
   };
+  app.post("/api/me/external-accounts", requireAuth, requireApproved, wrap(banking.requestExternalAccount));
+  app.post("/api/admin/members/:id/external-accounts/:accountId/review", requireAuth, requirePerm("accounts.edit_number"), wrap(banking.reviewExternalAccount));
+  app.get("/api/me/external-accounts", requireAuth, wrap(banking.externalAccountsGet));
   app.get("/api/me/funding", requireAuth, wrap(banking.fundingGet));
   app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
   app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
@@ -1128,6 +1138,14 @@ export function createApp(dbPath?: string) {
   // server/src/assets.ts for why trading is gated, and server/src/money.ts for
   // why every quantity below is a bigint of base units rather than a number.
 
+  const cryptoWorkspace = createCryptoWorkspace(db, audit);
+  app.get("/api/me/crypto/capabilities", requireAuth, wrap(cryptoWorkspace.capabilities));
+  app.get("/api/me/crypto/orders", requireAuth, wrap(cryptoWorkspace.history));
+  app.get("/api/me/crypto/orders/:id", requireAuth, wrap(cryptoWorkspace.order));
+  app.post("/api/me/crypto/quote", requireAuth, requireApproved, wrap(cryptoWorkspace.quote));
+  app.post("/api/me/crypto/confirm", requireAuth, wrap(cryptoWorkspace.confirm));
+  app.post("/api/me/crypto/wallet-balance", requireAuth, wrap(cryptoWorkspace.walletBalance));
+
   app.get("/api/me/holdings", requireAuth, wrap(async (req, res) => {
     const assets = listAssets(db);
     const quotes = await loadPrices();
@@ -1169,13 +1187,14 @@ export function createApp(dbPath?: string) {
 
     res.json({
       holdings,
+      previewData: previewCryptoEnabled(),
       // `partial` tells the client that at least one held asset could not be
       // priced, so the total understates reality and must be labelled.
       totalUsd: centsToDecimal(totalCents),
       quoteStatus: quotes.size === 0 ? "unavailable" : [...quotes.values()].every(q => quoteIsFresh(q.fetchedAt)) ? "current" : "stale",
       partial: !priced,
       tradingEnabled: tradingEnabled(),
-      disclosure: "Digital assets are not FDIC insured and can lose value.",
+      disclosure: previewCryptoEnabled() ? PREVIEW_CRYPTO_NOTICE : "Digital assets are not FDIC insured and can lose value.",
     });
   }));
 
@@ -1218,8 +1237,9 @@ export function createApp(dbPath?: string) {
       return void res.status(400).json({ error: "Invalid amount." });
     }
 
+    let event: { reference: string; at: number };
     try {
-      inTransaction(db, () => {
+      event = inTransaction(db, () => {
         const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?")
           .get(req.user!.id) as { id: number; balance_cents: number } | undefined;
         if (!account) throw new BadInputError("No account found.");
@@ -1257,17 +1277,15 @@ export function createApp(dbPath?: string) {
           `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} at ${centsToDecimal(Number(quote.cents))}/${asset.code}`,
           at, personOf(req.user!),
         );
+        return { reference, at };
       });
     } catch (err) {
       return void fail(res, err, "Trade failed.");
     }
 
-    notify(
-      req.user!.id,
-      "transaction",
-      side === "buy" ? "Digital asset purchased" : "Digital asset sold",
-      `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} for ${centsToDecimal(cents)}.`,
-    );
+    sendCryptoNotification(db, req.user!.id, { activity: side, status: "completed", reference: event.reference, occurredAt: event.at,
+      asset: side === "buy" ? "USD" : asset.code, quantity: side === "buy" ? centsToDecimal(cents) : formatUnitsTrimmed(units, asset.decimals),
+      toAsset: side === "buy" ? asset.code : "USD", toQuantity: side === "buy" ? formatUnitsTrimmed(units, asset.decimals) : centsToDecimal(cents), settlement: "account" });
     res.status(201).json({
       ok: true,
       asset: asset.code,
@@ -1315,10 +1333,11 @@ export function createApp(dbPath?: string) {
 
     res.json({
       markets: rows,
+      previewData: previewCryptoEnabled(),
       quoteStatus: !fetchedAt ? "unavailable" : quoteIsFresh(fetchedAt) ? "current" : "stale",
       quotedAt: fetchedAt || null,
       tradingEnabled: tradingEnabled(),
-      disclosure: "Market data is indicative. Digital assets are not FDIC insured and can lose value.",
+      disclosure: previewCryptoEnabled() ? PREVIEW_CRYPTO_NOTICE : "Market data is indicative. Digital assets are not FDIC insured and can lose value.",
     });
   }));
 
@@ -1339,7 +1358,7 @@ export function createApp(dbPath?: string) {
     if (!candles) {
       return void res.status(503).json({ error: `No price history for ${asset.code}.`, code: "crypto_no_history" });
     }
-    res.json({ asset: asset.code, range, candles });
+    res.json({ asset: asset.code, range, candles, previewData: previewCryptoEnabled() });
   }));
 
   app.get("/api/me/notifications", requireAuth, wrap((req, res) => {

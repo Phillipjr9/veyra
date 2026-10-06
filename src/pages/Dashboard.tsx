@@ -814,6 +814,10 @@ function BusinessOverview() {
         <div className="panel-head"><div><span className="business-panel-kicker">Live ledger</span><h2>Recent business activity</h2><span className="panel-sub">Select a transaction to inspect its details.</span></div><Link to="/app/transactions" className="text-link">View all activity <ArrowRight size={14} /></Link></div>
         <TxnList txns={account.transactions.slice(0, 6)} onSelect={setSelected} />
       </motion.section>
+      <motion.section className="panel business-activity-panel" {...rise(10)} aria-label="Recent deposits">
+        <div className="panel-head"><h2>Recent deposits</h2><Link to="/app/transactions" className="text-link">View activity <ArrowRight size={14} /></Link></div>
+        <TxnList txns={account.transactions.filter(t => t.category === "Funding" && t.amount > 0).slice(0, 5)} onSelect={setSelected} />
+      </motion.section>
       <TxnDrawer txn={selected} onClose={() => setSelected(null)} />
     </div>
   );
@@ -1942,6 +1946,7 @@ export function AccountsPage() {
   return (
     <div className="app-page">
       <PageHeader eyebrow={`${user.accountType === "personal" ? "Personal" : "Business"} checking · Savings pockets`} title="Accounts & savings">
+        <Link className="ghost-btn" to="/app/external-accounts"><Landmark size={15} /> External accounts</Link>
         <button type="button" className="solid-btn" onClick={() => setCreateOpen(true)}><Plus size={15} /> New savings pocket</button>
       </PageHeader>
       <div className="account-balance-grid">

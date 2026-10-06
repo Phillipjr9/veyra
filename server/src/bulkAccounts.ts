@@ -67,7 +67,7 @@ export function createBulkAccounts(db: DatabaseSync, audit: Audit) {
         const current = owners(snapshot.rows.map(r => r.userId));
         if (JSON.stringify(current) !== JSON.stringify(snapshot.rows)) throw new BadInputError("An account changed after this review. Nothing was updated. Start a fresh review.");
         const keys = Object.keys(snapshot.patch) as Array<keyof Patch>;
-        const update = db.prepare(`UPDATE accounts SET ${keys.map(k => `${fields[k]}=?`).join(',')},updated_at=? WHERE user_id=?`);
+        const update = db.prepare(`UPDATE accounts SET ${keys.map(k => `${fields[k]}=?`).join(',')},receiving_details_configured=1,updated_at=? WHERE user_id=?`);
         const appliedAt = now(); let changedCount = 0;
         for (const row of current) {
           if (!changes(row,snapshot.patch)) continue;

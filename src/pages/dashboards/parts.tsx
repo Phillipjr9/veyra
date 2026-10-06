@@ -18,6 +18,7 @@ export type NavItem = { to: string; label: string; icon: ReactNode; end?: boolea
 export type NavGroup = { title: string; items: NavItem[] };
 
 const NOTE_ICONS: Record<NotificationItem["type"], ReactNode> = {
+  crypto: <TrendingUp size={14} />,
   scout: <Sparkles size={14} />,
   card: <CreditCard size={14} />,
   transfer: <TrendingUp size={14} />,
@@ -27,6 +28,7 @@ const NOTE_ICONS: Record<NotificationItem["type"], ReactNode> = {
 };
 
 export const NOTE_ROUTES: Record<NotificationItem["type"], string> = {
+  crypto: "/app/assets",
   scout: "/app/scout",
   card: "/app/cards",
   transfer: "/app/transactions",
