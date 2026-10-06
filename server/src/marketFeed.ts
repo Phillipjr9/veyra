@@ -44,17 +44,43 @@ function requestConfig(rawUrl: string): { url: URL; headers: Record<string, stri
   return { url, headers };
 }
 
+const SAFE_NETWORK_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT",
+  "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "CERT_HAS_EXPIRED", "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+/** Only allowlisted error codes cross the transport boundary; no raw causes. */
+function networkCode(error: unknown): string | undefined {
+  for (let depth = 0; depth < 4 && error && typeof error === "object"; depth++) {
+    const value = error as { code?: unknown; cause?: unknown };
+    if (typeof value.code === "string" && SAFE_NETWORK_CODES.has(value.code)) return value.code;
+    error = value.cause;
+  }
+  return undefined;
+}
+
+export class MarketFeedError extends Error {
+  constructor(message: string, readonly networkCode?: string, readonly httpStatus?: number) {
+    super(message);
+    this.name = "MarketFeedError";
+  }
+}
+
 export async function fetchMarketFeed(rawUrl: string, signal: AbortSignal): Promise<unknown> {
   const { url, headers } = requestConfig(rawUrl);
   let response: Response;
   try {
     // Custom authentication headers must never follow a redirect to another host.
     response = await fetch(url, { signal, headers, redirect: "error" });
-  } catch {
-    throw new Error(signal.aborted ? "Market feed request timed out" : "Market feed request failed");
+  } catch (error) {
+    const code = networkCode(error);
+    const message = signal.aborted ? "Market feed request timed out" : "Market feed request failed";
+    throw new MarketFeedError(`${message}${code ? ` (${code})` : ""}`, code);
   }
-  if (!response.ok) throw new Error(`Market feed returned HTTP ${response.status}`);
-  try { return await response.json(); } catch { throw new Error("Market feed returned invalid JSON"); }
+  if (!response.ok) throw new MarketFeedError(`Market feed returned HTTP ${response.status}`, undefined, response.status);
+  try { return await response.json(); } catch { throw new MarketFeedError("Market feed returned invalid JSON"); }
 }
 
 /** Safe for logs: no key, URL query, response body or raw transport errors. */
@@ -62,7 +88,7 @@ export function describeMarketFeed(): string {
   try {
     const { url, headers } = requestConfig(marketFeedUrl());
     const authenticated = !!(headers["x-cg-demo-api-key"] || headers["x-cg-pro-api-key"]);
-    return `${url.host} · ${authenticated ? "authenticated" : "unauthenticated"}`;
+    return `${url.host} · ${authenticated ? "API key configured (connection not verified)" : "no API key attached"}`;
   } catch {
     return "invalid server configuration";
   }

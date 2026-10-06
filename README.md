@@ -608,6 +608,29 @@ Check the provider's current plan allowance before reducing the cache interval.
 Data access does not connect bank rails, custody, or external trade execution.
 Run `npm run test:market-feed` for isolated authentication and failure-path tests.
 
+Run `npm run check:market-feed` **on the API host** to verify the actual feed.
+It loads local `.env` if present (host environment values take precedence), makes
+one markets request and one Bitcoin chart request, validates their data, and
+exits nonzero if either fails. It never touches balances or uses generated data.
+It reports only safe status/error codes, not keys, URLs or provider error bodies.
+This consumes two provider requests; do not use it as a frequent health poll.
+
+- `ECONNRESET` before an HTTP response means the connection was reset; it is not
+  evidence that the API key is invalid. Check outbound HTTPS access to
+  `api.coingecko.com:443` (or `pro-api.coingecko.com:443` for a Pro plan) with the
+  hosting provider. An app cannot fix an upstream network policy.
+- HTTP `401`/`403`: check the key, matching plan/origin and provider access rules.
+- HTTP `429`: check rate limits and quota; do not solve this with rapid retries.
+- Certificate errors: configure the host's trusted CA chain; never disable TLS
+  verification or expose the key through browser-side requests.
+
+Startup says **key configured, connection not verified** until an actual request
+is checked; it does not imply that the provider has accepted the credential.
+Runtime secrets must be provisioned separately on every host or replacement
+sandbox. A Git-ignored `.env` is not deployed by a Git push, and sandbox resets
+may remove it. The real-market check is intentionally separate from offline tests.
+
+
 Tests never touch the network — they point `CRYPTO_PRICES_URL` and
 `CRYPTO_OHLC_URL` at a local stub, so the real fetch, cache, timeout and
 staleness logic all still run. For local work without egress,
