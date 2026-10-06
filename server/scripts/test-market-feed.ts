@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { fetchMarketFeed, marketFeedUrl, candleFeedUrl, describeMarketFeed } from "../src/marketFeed.js";
+import { fetchMarketFeed, marketFeedUrl, candleFeedUrl, describeMarketFeed, MarketFeedError } from "../src/marketFeed.js";
+import { checkMarketFeed } from "../src/marketFeedCheck.js";
 import { loadMarkets, loadCandles, resetPrices, tradableQuote, describePrices } from "../src/prices.js";
 
 // Artificial credentials only. No requests to CoinGecko and no real secrets.
@@ -48,7 +49,7 @@ try {
   check("free-key authentication covers both market prices and candles", markets.markets.length === 1 && candles?.[0].c === 10500 && seen.length === 2 && seen.every(r => r.headers.get("x-cg-demo-api-key") === KEY && !r.headers.has("x-cg-pro-api-key")));
   check("keys never enter URLs or returned market/chart data", seen.every(r => !r.url.href.includes(KEY)) && !JSON.stringify({ markets, candles }).includes(KEY));
   check("all requests reject redirects", seen.every(r => r.redirect === "error"));
-  check("diagnostics show authentication, not the key", describePrices().includes("authenticated") && !describePrices().includes(KEY));
+  check("configuration does not claim verified authentication", describePrices().includes("connection not verified") && !describePrices().includes(KEY));
   await loadMarkets(); await loadCandles("BTC", "7d");
   check("authenticated results retain market/chart caching", seen.length === 2);
 
@@ -108,6 +109,36 @@ try {
   check("failed chart refresh retains last-known history", JSON.stringify(await loadCandles("BTC", "1d")) === JSON.stringify(goodCandles));
   Date.now = realNow;
   check("failure logs never contain credentials or provider response bodies", warnings.length > 0 && warnings.every(line => !line.includes(KEY) && !line.includes("Provider response")));
+
+  configure({ COINGECKO_API_KEY: KEY });
+  check("readiness probe validates both actual endpoint shapes", (await checkMarketFeed()).every(result => result.ok && result.records === 1));
+  globalThis.fetch = async () => Response.json({ privateDetail: KEY });
+  const malformed = await checkMarketFeed();
+  check("HTTP success with malformed data is not readiness", malformed.every(result => !result.ok) && !JSON.stringify(malformed).includes(KEY));
+  globalThis.fetch = async () => Response.json({ privateDetail: KEY }, { status: 401 });
+  const rejected = await checkMarketFeed();
+  check("readiness probe reports provider rejection without its body", rejected.every(result => !result.ok && result.httpStatus === 401) && !JSON.stringify(rejected).includes(KEY));
+  globalThis.fetch = async () => { throw new Error(KEY, { cause: { code: "ECONNRESET" } }); };
+  const reset = await checkMarketFeed();
+  check("readiness probe distinguishes network failure from HTTP rejection", reset.every(result => result.networkCode === "ECONNRESET" && !result.httpStatus) && !JSON.stringify(reset).includes(KEY));
+  process.env.CRYPTO_PRICES_URL = `invalid-${KEY}`;
+  process.env.CRYPTO_OHLC_URL = `invalid-${KEY}`;
+  const invalid = await checkMarketFeed();
+  check("readiness probe never echoes invalid configuration", invalid.every(result => !result.ok && result.reason === "Invalid feed configuration") && !JSON.stringify(invalid).includes(KEY));
+  configure({ COINGECKO_API_KEY: KEY });
+  for (const code of ["ECONNRESET", "ENOTFOUND", "CERT_HAS_EXPIRED", KEY]) {
+    globalThis.fetch = async () => { throw new Error(KEY, { cause: { code, message: KEY } }); };
+    await assert.rejects(fetchMarketFeed(marketFeedUrl(), signal()), error =>
+      error instanceof MarketFeedError && error.networkCode === (code === KEY ? undefined : code) &&
+      !error.message.includes(KEY) && !("cause" in error));
+    check("network diagnostics only retain allowlisted error codes", true);
+  }
+  for (const code of [401, 403, 429, 500]) {
+    globalThis.fetch = async () => Response.json({ privateDetail: KEY }, { status: code });
+    await assert.rejects(fetchMarketFeed(marketFeedUrl(), signal()), error =>
+      error instanceof MarketFeedError && error.httpStatus === code && !error.message.includes(KEY));
+    check(`HTTP ${code} is distinguishable from a network failure without exposing its body`, true);
+  }
 
   // Exercise native fetch redirect handling against a disposable local server.
   globalThis.fetch = realFetch;
