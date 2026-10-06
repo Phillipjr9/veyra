@@ -8,6 +8,7 @@ import { createBulkAccounts } from "./bulkAccounts.js";
 import { sendZelleNotification } from "./zelleNotifications.js";
 import { ASSETS } from "../../shared/catalog.js";
 import { createBanking } from "./banking.js";
+import { createStripeRails, StripeError } from "./stripe.js";
 /**
  * Veyra backend API — Express + SQLite.
  *
@@ -68,7 +69,7 @@ export type TeamRole = "Admin" | "Member" | "Bookkeeper";
  * passkeys, device sessions and two-step sign-in) are never available to
  * teammates.
  */
-const TEAM_NEVER = /^\/api\/me\/(profile|kyc|passkeys|sessions|security)(\/|$)/;
+const TEAM_NEVER = /^\/api\/me\/(profile|kyc|passkeys|sessions|security|rails)(\/|$)/;
 const TEAM_ALL_WRITE = /^\/api\/me\/(notifications|support)(\/|$)/;
 const TEAM_MEMBER_WRITE = /^\/api\/me\/(transfers|deposits|holdings\/trade|cards|invoices|payees|scheduled|pockets|budgets|disputes|scout\/apply|perks)(\/|$)/;
 const TEAM_ADMIN_WRITE = /^\/api\/me\/(team|preferences|rewards\/redeem)(\/|$)/;
@@ -132,22 +133,56 @@ export function createApp(dbPath?: string) {
   seed(db);
 
   const app = express();
+  const stripeRails = createStripeRails(db);
   app.disable("x-powered-by");
+  // Stripe signs the exact bytes it sends. This route MUST precede express.json
+  // so the signature is checked against the unparsed payload. It is unauthenticated
+  // by design; the Stripe signature is its credential.
+  app.post("/api/webhooks/stripe", express.raw({ type: "application/json", limit: "1mb" }), stripeRails.webhook);
   // Every /api response is per-session and may be read on a shared computer:
   // an ETag/304 lets the browser replay one member's cached body after another
   // member signs in, so responses are never stored and never revalidated.
   app.disable("etag");
+  // A proxy is trusted only when the deployment says the process is not directly
+  // internet-facing. This makes req.ip useful for rate limits without accepting
+  // attacker-controlled X-Forwarded-For headers on a directly exposed server.
+  app.set("trust proxy", process.env.TRUST_PROXY === "1" ? 1 : false);
   app.use(express.json({ limit: "256kb" }));
-  app.use((_req, res, next) => {
+  const corsOrigins = (process.env.CORS_ORIGIN ?? "").split(",").map(origin => origin.trim().replace(/\/$/, "")).filter(Boolean);
+  const production = process.env.NODE_ENV === "production";
+  app.use((req, res, next) => {
+    const origin = String(req.header("origin") ?? "").replace(/\/$/, "");
+    const host = req.get("host");
+    const requestOrigin = host ? `${req.protocol}://${host}`.replace(/\/$/, "") : "";
+    // Same-origin requests are always safe; a browser only gets CORS permission
+    // for an explicitly configured secondary origin. Development retains its
+    // open preview behavior, while production never emits a wildcard.
+    const sameOrigin = Boolean(origin && requestOrigin && origin === requestOrigin);
+    const wildcardDev = !production && (corsOrigins.includes("*") || !corsOrigins.length);
+    const allowedCrossOrigin = Boolean(origin && (wildcardDev || corsOrigins.includes(origin)));
+    if (origin && !sameOrigin && !allowedCrossOrigin) {
+      if (req.method === "OPTIONS") return void res.status(403).json({ error: "Origin is not allowed." });
+      return void res.status(403).json({ error: "Origin is not allowed." });
+    }
+
     res.set({
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
-      "Access-Control-Allow-Origin": process.env.CORS_ORIGIN ?? "*",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Veyra-Token, X-Veyra-Device",
-      "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+      // The app uses hash routing, so no user input belongs in a path that can
+      // drive navigation. This also prevents hostile <base> elements if an XSS
+      // is ever found elsewhere.
+      "Content-Security-Policy": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; font-src 'self' data: https:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-inline' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://apis.google.com; connect-src 'self' https://www.google.com https://www.recaptcha.net https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.googleapis.com; frame-src https://www.google.com https://www.recaptcha.net;",
     });
-    if (_req.method === "OPTIONS") return res.sendStatus(204);
+    if (production) res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    if (origin && (sameOrigin || allowedCrossOrigin)) {
+      res.set("Vary", "Origin");
+      res.set("Access-Control-Allow-Origin", wildcardDev ? "*" : origin);
+      res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Veyra-Token, X-Veyra-Device");
+      res.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    }
+    if (req.method === "OPTIONS") return void res.sendStatus(204);
     next();
   });
 
@@ -1042,6 +1077,49 @@ export function createApp(dbPath?: string) {
   app.post("/api/me/external-accounts", requireAuth, requireApproved, wrap(banking.requestExternalAccount));
   app.post("/api/admin/members/:id/external-accounts/:accountId/review", requireAuth, requirePerm("accounts.edit_number"), wrap(banking.reviewExternalAccount));
   app.get("/api/me/external-accounts", requireAuth, wrap(banking.externalAccountsGet));
+
+  // Live banking stays inside the existing account experience. Only an
+  // approved account owner may start a Stripe Connect / Treasury ceremony;
+  // teammates cannot create a financial account, view an onboarding link, or
+  // obtain an embedded-component client secret for the owner.
+  const stripeOwner = (req: Request, res: Response): AuthedUser | null => {
+    if (req.user!.role !== "user" || req.user!.loginId) {
+      res.status(403).json({ error: "Only the approved account owner can manage live banking rails." });
+      return null;
+    }
+    return req.user!;
+  };
+  const stripeFailure = (res: Response, error: unknown): boolean => {
+    if (error instanceof StripeError) {
+      res.status(error.status).json({ error: error.message, code: error.code });
+      return true;
+    }
+    return false;
+  };
+  app.get("/api/me/rails", requireAuth, wrap((req, res) => {
+    res.json({ rails: stripeRails.status(req.user!.id) });
+  }));
+  app.post("/api/me/rails/stripe/onboarding", requireAuth, requireApproved, wrap(async (req, res) => {
+    const user = stripeOwner(req, res); if (!user) return;
+    try { res.json(await stripeRails.onboarding(user)); }
+    catch (error) { if (!stripeFailure(res, error)) throw error; }
+  }));
+  app.post("/api/me/rails/stripe/financial-account", requireAuth, requireApproved, wrap(async (req, res) => {
+    const user = stripeOwner(req, res); if (!user) return;
+    try { res.json(await stripeRails.provisionFinancialAccount(user)); }
+    catch (error) { if (!stripeFailure(res, error)) throw error; }
+  }));
+  app.post("/api/me/rails/stripe/refresh", requireAuth, requireApproved, wrap(async (req, res) => {
+    const user = stripeOwner(req, res); if (!user) return;
+    try { res.json(await stripeRails.refresh(user.id)); }
+    catch (error) { if (!stripeFailure(res, error)) throw error; }
+  }));
+  app.post("/api/me/rails/stripe/account-session", requireAuth, requireApproved, wrap(async (req, res) => {
+    const user = stripeOwner(req, res); if (!user) return;
+    try { res.json(await stripeRails.accountSession(user.id)); }
+    catch (error) { if (!stripeFailure(res, error)) throw error; }
+  }));
+
   app.get("/api/me/funding", requireAuth, wrap(banking.fundingGet));
   app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
   app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
@@ -1086,6 +1164,9 @@ export function createApp(dbPath?: string) {
         if (cardId) {
           const card = db.prepare("SELECT * FROM cards WHERE id = ? AND user_id = ?").get(cardId, req.user!.id) as Record<string, unknown> | undefined;
           if (!card) throw new RouteError(404, "Card not found.");
+          if (typeof card.provider_card_id === "string" && card.provider_card_id) {
+            throw new RouteError(409, "This is a live Stripe Issuing card. Card purchases settle through Stripe authorizations and cannot be simulated as a local transfer.");
+          }
           if (card.frozen === 1) throw new RouteError(403, "This card is frozen. Unfreeze it before spending.");
           const controls = JSON.parse(String(card.controls_json ?? "{}")) as { online?: boolean };
           if (controls.online === false) throw new RouteError(403, "Online payments are turned off for this card.");
@@ -1630,13 +1711,46 @@ export function createApp(dbPath?: string) {
   const cardRow = (id: string, userId: string) =>
     db.prepare("SELECT * FROM cards WHERE id = ? AND user_id = ?").get(id, userId) as Record<string, unknown> | undefined;
 
-  app.post("/api/me/cards", requireAuth, requireApproved, wrap((req, res) => {
+  app.post("/api/me/cards", requireAuth, requireApproved, wrap(async (req, res) => {
     const label = String(req.body?.label ?? "").trim();
     const type = req.body?.type === "physical" ? "physical" : "virtual";
     const limit = dollarsToCents(req.body?.limit ?? 0);
     const cardholder = String(req.body?.cardholder ?? req.user!.name);
     if (!label) return void res.status(400).json({ error: "A label is required." });
     if (limit <= 0) return void res.status(400).json({ error: "A monthly limit is required." });
+
+    const rail = stripeRails.status(req.user!.id);
+    // Production never creates an invented card. Once Stripe rails are
+    // configured, every new card is an Issuing card or the request fails with
+    // a clear onboarding state — no local PAN/CVV stand-in can leak into live
+    // operations. Development keeps the existing fixture path below.
+    if (rail.configured) {
+      const owner = stripeOwner(req, res); if (!owner) return;
+      try {
+        const issued = await stripeRails.issueCard(owner, { label, type });
+        const id = rid("card");
+        const controls = { online: true, contactless: true, atm: type === "physical", international: false, magstripe: type === "physical" };
+        const shipping = type === "physical" ? { status: "processing", provider: "stripe", orderedAt: now() } : { status: "not_applicable" };
+        const masked = `•••• •••• •••• ${issued.last4}`;
+        db.prepare(
+          `INSERT INTO cards (id,user_id,label,last4,full_number,expiry,cvv,type,cardholder,merchant_lock,category_lock,
+             limit_cents,spent_cents,single_txn_limit_cents,daily_atm_limit_cents,pin,frozen,wallet_status,controls_json,shipping_json,created_at,provider_card_id,provider_cardholder_id,provider_status)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,0,'not_added',?,?,?,?,?,?)`,
+        ).run(id, req.user!.id, label, issued.last4, masked, issued.expiry, "", type, cardholder,
+          typeof req.body?.merchantLock === "string" && req.body.merchantLock.trim() ? req.body.merchantLock.trim() : null, null,
+          limit, Math.min(limit, 500_000), type === "physical" ? 100_000 : 0, "", JSON.stringify(controls), JSON.stringify(shipping), now(),
+          issued.providerCardId, issued.providerCardholderId, issued.status);
+        notify(req.user!.id, "card", `${type === "virtual" ? "Virtual" : "Physical"} card issued`, `${label} •••• ${issued.last4} is managed through Stripe Issuing.`);
+        return void res.status(201).json({ card: { id, last4: issued.last4, fullNumber: masked, exp: issued.expiry, cvv: "•••", providerStatus: issued.status } });
+      } catch (error) {
+        if (stripeFailure(res, error)) return;
+        throw error;
+      }
+    }
+    if (process.env.NODE_ENV === "production") {
+      return void res.status(503).json({ error: "Card issuing is not configured. Complete Stripe Treasury and Issuing setup before issuing a live card.", code: "rails_unavailable" });
+    }
+
     const id = rid("card");
     const nums = cardNumbers();
     const controls = { online: true, contactless: true, atm: type === "physical", international: false, magstripe: type === "physical" };
@@ -1655,11 +1769,32 @@ export function createApp(dbPath?: string) {
     res.status(201).json({ card: { id, last4: nums.last4, fullNumber: nums.fullNumber, exp: nums.exp, cvv: nums.cvv } });
   }));
 
-  app.patch("/api/me/cards/:id", requireAuth, requireApproved, wrap((req, res) => {
+  app.patch("/api/me/cards/:id", requireAuth, requireApproved, wrap(async (req, res) => {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
     const patch = req.body ?? {};
+    const providerCardId = typeof card.provider_card_id === "string" && card.provider_card_id ? card.provider_card_id : "";
+    if (providerCardId) {
+      const providerControlChange = patch.limit != null || patch.singleTransactionLimit != null || patch.dailyAtmLimit != null ||
+        patch.pin != null || patch.walletStatus != null || "merchantLock" in patch || "categoryLock" in patch || patch.controls;
+      if (providerControlChange) return void res.status(409).json({ error: "Live card spending controls must be changed in the Stripe card-management component until Veyra's provider-control sync is enabled.", code: "provider_controls_pending" });
+      if (typeof patch.frozen === "boolean") {
+        try {
+          const provider = await stripeRails.setCardFrozen(req.user!.id, providerCardId, patch.frozen);
+          db.prepare("UPDATE cards SET frozen=?, provider_status=? WHERE id=? AND user_id=?").run(patch.frozen ? 1 : 0, provider.status, id, req.user!.id);
+          return void res.json({ ok: true, providerStatus: provider.status });
+        } catch (error) {
+          if (stripeFailure(res, error)) return;
+          throw error;
+        }
+      }
+      if (typeof patch.label === "string" && patch.label.trim()) {
+        db.prepare("UPDATE cards SET label=? WHERE id=? AND user_id=?").run(patch.label.trim(), id, req.user!.id);
+        return void res.json({ ok: true });
+      }
+      return void res.status(400).json({ error: "Nothing to update." });
+    }
     const sets: string[] = [];
     const vals: Array<string | number> = [];
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v * 100) : null);
@@ -1681,15 +1816,28 @@ export function createApp(dbPath?: string) {
     res.json({ ok: true });
   }));
 
-  app.delete("/api/me/cards/:id", requireAuth, requireApproved, wrap((req, res) => {
+  app.delete("/api/me/cards/:id", requireAuth, requireApproved, wrap(async (req, res) => {
     const id = String(req.params.id);
-    const info = db.prepare("DELETE FROM cards WHERE id = ? AND user_id = ?").run(id, req.user!.id);
-    if (info.changes === 0) return void res.status(404).json({ error: "Card not found." });
+    const card = cardRow(id, req.user!.id);
+    if (!card) return void res.status(404).json({ error: "Card not found." });
+    const providerCardId = typeof card.provider_card_id === "string" && card.provider_card_id ? card.provider_card_id : "";
+    if (providerCardId) {
+      try { await stripeRails.setCardFrozen(req.user!.id, providerCardId, true); }
+      catch (error) { if (stripeFailure(res, error)) return; throw error; }
+    }
+    db.prepare("DELETE FROM cards WHERE id = ? AND user_id = ?").run(id, req.user!.id);
     res.json({ ok: true });
   }));
 
-  app.post("/api/me/cards/freeze-all", requireAuth, requireApproved, wrap((req, res) => {
-    db.prepare("UPDATE cards SET frozen = 1 WHERE user_id = ?").run(req.user!.id);
+  app.post("/api/me/cards/freeze-all", requireAuth, requireApproved, wrap(async (req, res) => {
+    const providerCards = db.prepare("SELECT provider_card_id FROM cards WHERE user_id=? AND provider_card_id IS NOT NULL AND provider_card_id != '' AND frozen=0").all(req.user!.id) as Array<{ provider_card_id: string }>;
+    try {
+      // No local success until each remote card is actually inactive. A partial
+      // provider outage leaves the remaining rows visible for a retry instead
+      // of claiming every live card was frozen.
+      for (const card of providerCards) await stripeRails.setCardFrozen(req.user!.id, card.provider_card_id, true);
+    } catch (error) { if (stripeFailure(res, error)) return; throw error; }
+    db.prepare("UPDATE cards SET frozen = 1, provider_status=CASE WHEN provider_card_id IS NOT NULL AND provider_card_id != '' THEN 'inactive' ELSE provider_status END WHERE user_id = ?").run(req.user!.id);
     notify(req.user!.id, "security", "All cards frozen", "New card purchases will be declined until you unfreeze a card.");
     res.json({ ok: true });
   }));
@@ -1698,6 +1846,9 @@ export function createApp(dbPath?: string) {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
+    if (typeof card.provider_card_id === "string" && card.provider_card_id) {
+      return void res.status(409).json({ error: "Request replacement through the Stripe card-management component so the live card is replaced and shipped by the provider.", code: "provider_replacement_pending" });
+    }
     const reason = String(req.body?.reason ?? "Replacement requested");
     const newId = rid("card");
     const nums = cardNumbers();
@@ -1722,6 +1873,7 @@ export function createApp(dbPath?: string) {
     const id = String(req.params.id);
     const card = cardRow(id, req.user!.id);
     if (!card) return void res.status(404).json({ error: "Card not found." });
+    if (typeof card.provider_card_id === "string" && card.provider_card_id) return void res.status(409).json({ error: "Live card shipping is updated by Stripe webhook events, not simulated from this screen.", code: "provider_shipping_pending" });
     if (card.type !== "physical") return void res.status(400).json({ error: "Virtual cards have no shipment." });
     const order = ["processing", "printing", "shipped", "in_transit", "delivered"] as const;
     const shipping = JSON.parse(String(card.shipping_json ?? "{}"));

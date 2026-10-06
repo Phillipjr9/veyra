@@ -70,6 +70,8 @@ export function buildMemberState(db: DatabaseSync, userId: string, currentTokenI
     controls: JSON.parse(String(c.controls_json ?? "{}")),
     shipping: JSON.parse(String(c.shipping_json ?? "{}")),
     walletStatus: c.wallet_status,
+    /** Opaque status from Stripe Issuing; its presence means no PAN/CVV/PIN is stored by Veyra. */
+    providerStatus: s(c.provider_status),
     createdAt: c.created_at as number,
   }));
 

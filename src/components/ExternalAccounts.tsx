@@ -8,19 +8,38 @@ import "../styles/funding-hub.css";
 export type { ExternalAccount } from "../../shared/externalAccounts";
 const blank = { bankName: "", accountName: "", last4: "", accountType: "Checking", ownershipConfirmed: false };
 type Snapshot = { accounts: ExternalAccount[]; requests: ExternalAccount[]; referenceRequestsAvailable: boolean; linkingAvailable: boolean };
+type Rails = {
+  provider: "stripe"; configured: boolean; live: boolean; status: "unavailable" | "not_started" | "onboarding" | "provisioning" | "pending" | "active" | "restricted" | "closed";
+  connected: boolean; accountReady: boolean; features: { active: string[]; pending: string[]; restricted: string[] };
+  receiving: { bankName?: string; routingNumber?: string; accountNumberLast4?: string; supportedNetworks?: string[] } | null; updatedAt?: number;
+};
+
+const railCopy: Record<Rails["status"], { title: string; detail: string }> = {
+  unavailable: { title: "Live bank connection unavailable", detail: "Live account linking is not configured for this environment. Your saved references remain separate from a bank connection." },
+  not_started: { title: "Set up your live bank connection", detail: "Complete secure Stripe verification to enable provider-backed bank linking, ACH, wire, and card features as they are approved for your account." },
+  onboarding: { title: "Verification in progress", detail: "Stripe still needs information to activate your connected account. Continue the secure verification flow to proceed." },
+  provisioning: { title: "Preparing your financial account", detail: "Your Stripe account is verified. We are waiting for the requested financial-account capabilities to become available." },
+  pending: { title: "Bank rails are activating", detail: "Stripe has received the financial-account request. Some features activate asynchronously; refresh this status after you receive confirmation." },
+  active: { title: "Live bank connection active", detail: "Your Stripe financial account is open. Available ACH, wire, and card capabilities appear below as Stripe activates them." },
+  restricted: { title: "Live bank connection restricted", detail: "Stripe has restricted one or more requested features. Review the verification requirements or contact support before moving money." },
+  closed: { title: "Live bank connection closed", detail: "Your Stripe financial account is no longer open. Contact support before attempting another bank transfer." },
+};
 
 export function ExternalAccountsPage() {
   const { openDeposit } = useMoneyFlow();
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState("");
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [rails, setRails] = useState<Rails | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState("");
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState(blank), [busy, setBusy] = useState(false), [uncertain, setUncertain] = useState(false), [notice, setNotice] = useState("");
+  const [form, setForm] = useState(blank), [busy, setBusy] = useState(false), [railBusy, setRailBusy] = useState(false), [uncertain, setUncertain] = useState(false), [notice, setNotice] = useState("");
   const key = useRef(crypto.randomUUID()), active = useRef(true), submitting = useRef(false), sequence = useRef(0);
   const load = useCallback(async () => {
     const version = ++sequence.current;
     setLoading(true);
     try {
-      const data = await apiGet<Snapshot>("/api/me/external-accounts");
-      if (active.current && version === sequence.current) { setSnapshot(data); setError(""); }
+      const [data, railStatus] = await Promise.all([
+        apiGet<Snapshot>("/api/me/external-accounts"),
+        apiGet<{ rails: Rails }>("/api/me/rails"),
+      ]);
+      if (active.current && version === sequence.current) { setSnapshot(data); setRails(railStatus.rails); setError(""); }
     } catch (e) { if (active.current && version === sequence.current) setError(e instanceof Error ? e.message : "Account information is unavailable."); }
     finally { if (active.current && version === sequence.current) setLoading(false); }
   }, []);
@@ -43,6 +62,31 @@ export function ExternalAccountsPage() {
       setError(e instanceof Error ? e.message : "We could not confirm the request. Retry the same request to avoid duplicates.");
     } finally { submitting.current = false; if (active.current) setBusy(false); }
   }
+  async function beginStripeOnboarding() {
+    setRailBusy(true); setError("");
+    try {
+      const result = await apiPost<{ url: string }>("/api/me/rails/stripe/onboarding");
+      // Stripe hosts the collection flow; credentials and documents never pass
+      // through Veyra's browser forms or API. Replace the page rather than
+      // opening a popup, which is friendlier to mobile and strict popup rules.
+      window.location.assign(result.url);
+    } catch (e) { if (active.current) setError(e instanceof Error ? e.message : "We could not start secure verification."); }
+    finally { if (active.current) setRailBusy(false); }
+  }
+  async function activateFinancialAccount() {
+    setRailBusy(true); setError("");
+    try {
+      await apiPost("/api/me/rails/stripe/financial-account");
+      if (active.current) { setNotice("Your Stripe financial account request was received. Some capabilities activate asynchronously."); await load(); }
+    } catch (e) { if (active.current) setError(e instanceof Error ? e.message : "We could not activate your financial account."); }
+    finally { if (active.current) setRailBusy(false); }
+  }
+  async function refreshRails() {
+    setRailBusy(true); setError("");
+    try { await apiPost("/api/me/rails/stripe/refresh"); if (active.current) await load(); }
+    catch (e) { if (active.current) setError(e instanceof Error ? e.message : "We could not refresh the Stripe connection."); }
+    finally { if (active.current) setRailBusy(false); }
+  }
   const accounts = snapshot?.accounts ?? [], requests = snapshot?.requests ?? [];
   const showForm = formOpen || (!accounts.length && !requests.length);
   const card = (account: ExternalAccount) => <article className="external-account-row" key={account.id} aria-label={`${account.bank_name} ending ${account.last4}`}>
@@ -55,13 +99,25 @@ export function ExternalAccountsPage() {
     {error && <p className="banking-error" role="alert">{error}</p>}
     {notice && <p className="external-account-notice" role="status">{notice}</p>}
     {loading && !snapshot && <p role="status">Loading linked accounts…</p>}
-    <div className="external-account-toolbar"><button className="ghost-btn" disabled={loading || busy} onClick={() => void load()}><RefreshCw size={15} />{loading ? "Refreshing…" : "Refresh account status"}</button>{accounts.length > 0 && <button className="solid-btn" onClick={() => openDeposit()} disabled={busy}>Continue to Add funds <ArrowRight size={15} /></button>}</div>
+    <div className="external-account-toolbar"><button className="ghost-btn" disabled={loading || busy || railBusy} onClick={() => void load()}><RefreshCw size={15} />{loading ? "Refreshing…" : "Refresh account status"}</button>{accounts.length > 0 && <button className="solid-btn" onClick={() => openDeposit()} disabled={busy || railBusy}>Continue to Add funds <ArrowRight size={15} /></button>}</div>
+    {rails?.configured && <section className="panel external-account-list funding-activation-note" aria-live="polite">
+      <ShieldCheck size={20} /><div><span className="cw-eyebrow">{rails.live ? "LIVE" : "STRIPE TEST MODE"} · STRIPE FINANCIAL ACCOUNTS</span><h2>{railCopy[rails.status].title}</h2><p>{railCopy[rails.status].detail}</p>
+      {rails.receiving?.accountNumberLast4 && <p className="external-review-note">Receiving details issued by Stripe: {rails.receiving.bankName || "Bank account"} · •••• {rails.receiving.accountNumberLast4}{rails.receiving.supportedNetworks?.length ? ` · ${rails.receiving.supportedNetworks.join(" / ").toUpperCase()}` : ""}</p>}
+      {rails.features.active.length > 0 && <p className="external-review-note">Active: {rails.features.active.map(feature => feature.replace(/_/g, " ")).join(" · ")}</p>}
+      {rails.features.pending.length > 0 && <p className="external-review-note">Pending: {rails.features.pending.map(feature => feature.replace(/_/g, " ")).join(" · ")}</p>}
+      {rails.features.restricted.length > 0 && <p className="banking-error">Restricted: {rails.features.restricted.map(feature => feature.replace(/_/g, " ")).join(" · ")}</p>}
+      <div className="external-account-toolbar">
+        {(rails.status === "not_started" || rails.status === "onboarding" || rails.status === "restricted") && <button type="button" className="solid-btn" disabled={railBusy} onClick={() => void beginStripeOnboarding()}>{railBusy ? "Opening Stripe…" : rails.status === "not_started" ? "Start secure verification" : "Continue secure verification"}<ArrowRight size={15} /></button>}
+        {(rails.status === "provisioning" || rails.status === "onboarding") && <button type="button" className="ghost-btn" disabled={railBusy} onClick={() => void activateFinancialAccount()}>{railBusy ? "Checking Stripe…" : "Activate financial account"}</button>}
+        {rails.connected && <button type="button" className="ghost-btn" disabled={railBusy} onClick={() => void refreshRails()}><RefreshCw size={15} />{railBusy ? "Refreshing Stripe…" : "Refresh Stripe status"}</button>}
+      </div></div>
+    </section>}
     {snapshot && <>
       <section className="panel external-account-list" aria-label="Available bank accounts">
         <h2>{accounts.length ? "Your linked accounts & approved references" : "Link an external account"}</h2>
         {accounts.map(card)}
         {!accounts.length && <p>No verified external accounts or approved references are available yet. Save an account reference below to begin staff review.</p>}
-        <div className="funding-activation-note"><ShieldCheck size={20} /><strong>Account references and bank connections are different</strong><p>A saved reference records your bank name and last four digits for review. Staff approval enables internal account entries only. Live bank linking, ownership checks through a provider and ACH debits are not connected.</p></div>
+        <div className="funding-activation-note"><ShieldCheck size={20} /><strong>Account references and bank connections are different</strong><p>A saved reference records your bank name and last four digits for review. Staff approval enables internal account entries only. {rails?.configured ? "For provider-backed bank linking and ownership verification, use the secure Stripe connection above — never enter a full account number here." : "Live bank linking, ownership checks through a provider and ACH debits are not connected in this environment."}</p></div>
       </section>
       {snapshot.referenceRequestsAvailable && !showForm && <button type="button" className="ghost-btn external-add-reference" onClick={() => setFormOpen(true)}>Add another account reference <ArrowRight size={14} /></button>}
       {snapshot.referenceRequestsAvailable && showForm ? <section className="panel external-account-list external-account-form-panel">

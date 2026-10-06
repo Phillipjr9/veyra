@@ -997,6 +997,74 @@ ALTER TABLE external_accounts ADD COLUMN request_key TEXT;
 CREATE UNIQUE INDEX idx_external_accounts_request ON external_accounts(user_id,request_key);
 `,
   },
+  {
+    version: 25,
+    sql: `
+-- Stripe Connect / Treasury mapping. Provider credentials, external-account
+-- numbers, Issuing PANs, CVVs, client secrets and raw webhook bodies are never
+-- stored here. Stripe remains the source of truth for regulated rail objects.
+CREATE TABLE stripe_rails (
+  user_id                   TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  connected_account_id      TEXT UNIQUE,
+  financial_account_id      TEXT UNIQUE,
+  status                    TEXT NOT NULL DEFAULT 'not_started' CHECK(status IN ('not_started','onboarding','provisioning','pending','active','restricted','closed')),
+  active_features_json      TEXT NOT NULL DEFAULT '[]',
+  pending_features_json     TEXT NOT NULL DEFAULT '[]',
+  restricted_features_json  TEXT NOT NULL DEFAULT '[]',
+  financial_address_json    TEXT NOT NULL DEFAULT '{}',
+  requirements_json         TEXT NOT NULL DEFAULT '{}',
+  livemode                  INTEGER NOT NULL DEFAULT 0,
+  created_at                INTEGER NOT NULL,
+  updated_at                INTEGER NOT NULL
+);
+CREATE INDEX idx_stripe_rails_connected ON stripe_rails(connected_account_id);
+CREATE INDEX idx_stripe_rails_financial ON stripe_rails(financial_account_id);
+
+-- A receipt-level webhook journal gives exactly-once processing even when
+-- Stripe retries delivery. SHA-256 proves which payload was received without
+-- retaining personally identifying raw event data in Veyra's database.
+CREATE TABLE stripe_events (
+  id              TEXT PRIMARY KEY,
+  type            TEXT NOT NULL,
+  object_id       TEXT NOT NULL DEFAULT '',
+  created_at      INTEGER NOT NULL,
+  received_at     INTEGER NOT NULL,
+  processed_at    INTEGER,
+  livemode        INTEGER NOT NULL DEFAULT 0,
+  payload_sha256  TEXT NOT NULL,
+  status          TEXT NOT NULL CHECK(status IN ('received','processed','failed')),
+  error_code      TEXT
+);
+CREATE INDEX idx_stripe_events_object ON stripe_events(object_id,received_at DESC);
+CREATE INDEX idx_stripe_events_status ON stripe_events(status,received_at);
+
+-- Future ACH, wire and Issuing mutations take an immutable Veyra operation ID
+-- and an idempotency key before they can call Stripe. The provider object is
+-- reconciled only from a signed webhook, never from a browser claim.
+CREATE TABLE stripe_operations (
+  id                   TEXT PRIMARY KEY,
+  user_id              TEXT NOT NULL REFERENCES users(id),
+  kind                 TEXT NOT NULL,
+  provider_object_id   TEXT UNIQUE,
+  amount_cents         INTEGER,
+  currency             TEXT NOT NULL DEFAULT 'usd',
+  status               TEXT NOT NULL DEFAULT 'created',
+  idempotency_key      TEXT NOT NULL UNIQUE,
+  metadata_json        TEXT NOT NULL DEFAULT '{}',
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL
+);
+CREATE INDEX idx_stripe_operations_owner ON stripe_operations(user_id,created_at DESC);
+
+-- Existing demo cards retain their old display fields. Any card issued by a
+-- provider is addressed by opaque Stripe IDs; live PAN/CVV data must never
+-- enter this database.
+ALTER TABLE cards ADD COLUMN provider_card_id TEXT;
+ALTER TABLE cards ADD COLUMN provider_cardholder_id TEXT;
+ALTER TABLE cards ADD COLUMN provider_status TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_cards_provider_card ON cards(provider_card_id) WHERE provider_card_id IS NOT NULL;
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

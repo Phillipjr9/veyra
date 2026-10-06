@@ -50,11 +50,15 @@ const rawRoutes = [...source.matchAll(ROUTE_RE)];
  * Every route must match exactly one entry; an unmatched route fails the audit
  * so new surface has to be classified deliberately.
  */
-type Policy = { method: string; path: string; auth: boolean; /** One permission, or any of several. */ perm: string | string[] | null };
+type Policy = { method: string; path: string; auth: boolean; /** One permission, or any of several. */ perm: string | string[] | null; /** Authenticated account owner only; staff must be refused. */ memberOnly?: boolean };
 const BASELINE: Policy[] = [
   { method: "GET", path: "/api/me/demo-payments", auth: true, perm: null },
   { method: "POST", path: "/api/me/demo-payments/action", auth: true, perm: null },
   // Public surface: reachable without a session.
+  // Stripe calls this with a signed raw payload rather than a bearer token; the
+  // route verifies Stripe-Signature inside its handler and may return 503 until
+  // an endpoint secret is provisioned.
+  { method: "POST", path: "/api/webhooks/stripe", auth: false, perm: null },
   { method: "GET", path: "/api/health", auth: false, perm: null },
   // Advertises the demo credentials the login page offers with one click. Public
   // by design (a signed-out visitor is who it's for) and empty in production —
@@ -107,6 +111,14 @@ const BASELINE: Policy[] = [
   { method: "GET", path: "/api/me/funding", auth: true, perm: null },
   { method: "GET", path: "/api/me/external-accounts", auth: true, perm: null },
   { method: "POST", path: "/api/me/external-accounts", auth: true, perm: null },
+  // Stripe provider state itself is safe for an authenticated account surface;
+  // starting onboarding, provisioning a financial account, refreshing it, or
+  // minting an embedded-component client secret are owner-only capabilities.
+  { method: "GET", path: "/api/me/rails", auth: true, perm: null },
+  { method: "POST", path: "/api/me/rails/stripe/onboarding", auth: true, perm: null, memberOnly: true },
+  { method: "POST", path: "/api/me/rails/stripe/financial-account", auth: true, perm: null, memberOnly: true },
+  { method: "POST", path: "/api/me/rails/stripe/refresh", auth: true, perm: null, memberOnly: true },
+  { method: "POST", path: "/api/me/rails/stripe/account-session", auth: true, perm: null, memberOnly: true },
   { method: "POST", path: "/api/admin/members/:id/external-accounts/:accountId/review", auth: true, perm: "accounts.edit_number" },
   { method: "GET", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
   { method: "POST", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
@@ -227,7 +239,7 @@ const samePath = (a: string, b: string) => a === b || (a.includes(":") && new Re
 const baselineFor = (method: string, path: string) =>
   BASELINE.find(p => p.method === method && samePath(p.path, path) && String(p.path).includes(":") === path.includes(":") );
 
-type Declared = { method: string; path: string; auth: boolean; perm: string | null; public: boolean; expects: string[]; contractProblems: string[] };
+type Declared = { method: string; path: string; auth: boolean; perm: string | null; public: boolean; memberOnly: boolean; expects: string[]; contractProblems: string[] };
 const declared: Declared[] = rawRoutes.map((match, index) => {
   const method = match[1];
   const path = match[2];
@@ -269,6 +281,7 @@ const declared: Declared[] = rawRoutes.map((match, index) => {
     perm: declaredPerms.join(" | ") || null,
     // Expectations follow the contract, not the implementation.
     public: policy ? !policy.auth : !declaredAuth,
+    memberOnly: Boolean(policy?.memberOnly),
     expects: policy ? (Array.isArray(policy.perm) ? policy.perm : [policy.perm]).filter((p): p is string => Boolean(p)) : [],
     contractProblems,
   };
@@ -458,6 +471,10 @@ for (const route of declared) {
 
     if (label === "anonymous") {
       if (res.status !== 401) problems.push({ route: key, role: label, status: res.status, note: "no token did not get 401" });
+      continue;
+    }
+    if (route.memberOnly && label !== "member") {
+      if (res.status !== 403) problems.push({ route: key, role: label, status: res.status, note: "only an account owner may use this rail-management route" });
       continue;
     }
     // Submitting a member-owned funding reference is intentionally not a staff
