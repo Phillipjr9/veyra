@@ -9,6 +9,7 @@ import { createApp } from "../src/app.js";
 import { applicationFor } from "./fixtures.js";
 import { createPriceFixture } from "./price-fixture.js";
 import { inTransaction, openDb, rid } from "../src/db.js";
+import { quoteFee } from "../../shared/fees.js";
 import { enforceTeamSpend, TeamSpendingError, teamSpendByActor, teamSpendWindow } from "../src/teamSpending.js";
 
 process.env.NODE_ENV = "development";
@@ -25,7 +26,7 @@ await new Promise<void>(resolve => prices.listen(0, "127.0.0.1", resolve));
 process.env.CRYPTO_PRICES_URL = `http://127.0.0.1:${(prices.address() as { port: number }).port}/prices`;
 const { app, db } = createApp(join(temp, "controls.db"));
 const server = createServer(app);
-await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+await new Promise<void>(resolve => server.listen(0, "0.0.0.0", resolve));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 const api = async (method: string, path: string, token?: string, body?: unknown) => {
   const res = await fetch(base + path, {
@@ -49,6 +50,7 @@ try {
   check("fixture account funded by authorized staff", (await api("POST", `/api/admin/members/${ownerId}/adjust`, admin, { direction: "credit", amount: 10000, memo: "Test fixture" })).status === 200);
   const state = async () => (await api("GET", "/api/me/state", owner)).json.account;
   const spend = (token: string, amount: number, extra = {}) => api("POST", "/api/me/transfers", token, { amount, counterparty: "Test vendor", method: "ACH", category: "Operations", ...extra });
+  const transferFee = (amount: number) => quoteFee("transfer", Math.round(amount * 100)).feeCents / 100;
   const invite = async (name: string, role: "Admin" | "Member" | "Bookkeeper", cap: number) => {
     const sent = await api("POST", "/api/me/team", owner, { name, email: `${name.toLowerCase()}@veyra.test`, role, monthlyLimit: cap });
     assert.equal(sent.status, 201, JSON.stringify(sent.json));
@@ -73,7 +75,7 @@ try {
   for (const enabled of [true, false]) {
     await api("PUT", "/api/me/preferences", owner, { key: "scoutAuto", value: enabled });
     const before = await state(); const paid = await spend(owner, 5);
-    check("monitoring preference never generates a savings credit", paid.status === 201 && paid.json.result.scout === 0 && paid.json.result.balanceAfter === before.balance - 5 && (await state()).scoutSaved === before.scoutSaved);
+    check("monitoring preference never generates a savings credit", paid.status === 201 && paid.json.result.scout === 0 && paid.json.result.balanceAfter === before.balance - 5 - transferFee(5) && (await state()).scoutSaved === before.scoutSaved);
   }
 
   const capZero = await spend(zero.token, .01);
@@ -106,7 +108,7 @@ try {
   const beforeRace = await state();
   const race = await Promise.all(Array.from({ length: 12 }, () => spend(ben.token, 10)));
   check("concurrent requests cannot exceed the available monthly allowance", race.filter(r => r.status === 201).length === 5 && race.filter(r => r.status === 403).length === 7);
-  check("race writes exactly five debits and $50 of spend", (await state()).balance === beforeRace.balance - 50 && (await state()).transactions.length === beforeRace.transactions.length + 5 && (await usage(ben.memberId)).monthlySpent === 50);
+  check("race writes exactly five debits and $50 of spend", (await state()).balance === beforeRace.balance - 50 - 5 * transferFee(10) && (await state()).transactions.length === beforeRace.transactions.length + 5 && (await usage(ben.memberId)).monthlySpent === 50);
   check("different teammates do not consume each other's cap", (await usage(ada.memberId)).monthlySpent === 100);
   const anotherLogin = await api("POST", "/api/auth/login", undefined, { email: "ben@veyra.test", password: "teammate-controls-password" });
   check("a fresh session cannot reset usage", (await spend(anotherLogin.json.token, 1)).status === 403);

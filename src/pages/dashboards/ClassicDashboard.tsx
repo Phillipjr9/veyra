@@ -1,9 +1,9 @@
 import { ExternalAccountsPage } from "../../components/ExternalAccounts";
 import { CryptoWorkspace } from "../../components/CryptoWorkspace";
+import { SavingsActivityPanel } from "../../components/SavingsActivityPanel";
 import { buildLedgerAnalytics, type FlowRange } from "../../lib/dashboardAnalytics";
 import { useDemoPayments } from "../../lib/demoPayments";
 import { DemoModeNotice } from "../../components/DemoPayments";
-import { CryptoSendDialog, CryptoWithdrawalHistory } from "../../components/CryptoSend";
 import { downloadTransactionReceipt } from "../../lib/receipts";
 import { PLANS, PLAN_NOTICE } from "../../../shared/catalog";
 import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
@@ -33,7 +33,7 @@ import { useAuth } from "../../lib/auth";
 import {
   quoteAge, useHoldings, useCandles, useMarkets, assetIcon,
   compactUsd, marketPrice, CANDLE_RANGES, RANGE_LABEL,
-  type Holding, type CandleRange, type MarketRow,
+  type CandleRange, type MarketRow,
 } from "../../lib/holdings";
 import { CandleChart } from "../../components/CandleChart";
 import { BackButton } from "../../components/BackButton";
@@ -42,6 +42,7 @@ import {
   categories, copyText, longDate, money, rewardRate, shortDate, useAcct,
   type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type NotificationItem, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
 } from "../../lib/store";
+import { quoteFee } from "../../../shared/fees";
 import { SuspensionBanner } from "./parts";
 
 /* ============================================================
@@ -401,6 +402,7 @@ function TxnList({ txns, onSelect }: { txns: Txn[]; onSelect: (t: Txn) => void }
             <span className="txn-val">
               <strong className={t.amount > 0 ? "in" : ""}>{t.amount > 0 ? "+" : "−"}{money(Math.abs(t.amount))}</strong>
               {t.reward > 0 && <small>+{money(t.reward)} back</small>}
+              {(t.fee ?? 0) > 0 && <small>Fee {money(t.fee ?? 0)}</small>}
             </span>
           </motion.button>
         ))}
@@ -429,6 +431,7 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
         ...(card ? [["Card", `${card.label} •••• ${card.last4}`] as [string, string]] : []),
         ["Reference", txn.reference ?? "—"],
         ...(txn.note ? [["Memo", txn.note] as [string, string]] : []),
+        ...((txn.fee ?? 0) > 0 ? [["Fee", money(txn.fee ?? 0)] as [string, string]] : []),
         ...(txn.reward > 0 ? [["Rewards earned", `+${money(txn.reward)}`] as [string, string]] : []),
         ...(txn.scout ? [["Scout savings", `+${money(txn.scout)}`] as [string, string]] : []),
       ]
@@ -1488,6 +1491,7 @@ export function TransactionsPage() {
   const inflow = cleared.filter(t => t.amount > 0).reduce((s, t) => s + Math.round(t.amount * 100), 0) / 100;
   const outflow = cleared.filter(t => t.amount < 0).reduce((s, t) => s + Math.round(Math.abs(t.amount) * 100), 0) / 100;
   const rewards = cleared.reduce((s, t) => s + Math.round(t.reward * 100), 0) / 100;
+  const fees = cleared.reduce((s, t) => s + Math.round((t.fee ?? 0) * 100), 0) / 100;
 
   const onExport = () => {
     const count = exportCSV(filtered);
@@ -1516,11 +1520,12 @@ export function TransactionsPage() {
         <div><span>Cleared money in</span><AnimatedMoney value={inflow} className="strip-value in" cents /></div>
         <div><span>Cleared money out</span><AnimatedMoney value={outflow} className="strip-value" cents /></div>
         <div><span>Rewards earned</span><AnimatedMoney value={rewards} className="strip-value violet-text" cents /></div>
+        <div><span>Fees paid</span><AnimatedMoney value={fees} className="strip-value" cents /></div>
       </div>
 
       <section className="panel table-panel">
         <div className="txn-table-head">
-          <span>Merchant</span><span>Category</span><span>Date</span><span>Status</span><span className="ta-r">Rewards</span><span className="ta-r">Amount</span>
+          <span>Merchant</span><span>Category</span><span>Date</span><span>Status</span><span className="ta-r">Rewards</span><span className="ta-r">Fee</span><span className="ta-r">Amount</span>
         </div>
         <div className="txn-table-body">
           <AnimatePresence>
@@ -1538,6 +1543,7 @@ export function TransactionsPage() {
                 <span className="tcol-date">{shortDate(t.date)}</span>
                 <span className="tcol-status"><span className={`status-pill ${t.status === "cleared" ? "cleared" : t.status === "failed" ? "overdue" : "open"}`}><span className="dot" /> {t.status === "cleared" ? "Cleared" : t.status === "failed" ? "Failed" : "Pending"}</span></span>
                 <span className="tcol-reward">{t.reward > 0 ? `+${money(t.reward)}` : "—"}</span>
+                <span className="tcol-fee">{(t.fee ?? 0) > 0 ? money(t.fee ?? 0) : "—"}</span>
                 <strong className={`tcol-amt ${t.amount > 0 ? "in" : ""}`}>{t.amount > 0 ? "+" : "−"}{money(Math.abs(t.amount))}</strong>
               </motion.button>
             ))}
@@ -1595,6 +1601,7 @@ function LegacyPaymentsPage() {
   }
 
   const value = Number.parseFloat(amount) || 0;
+  const transferFee = quoteFee("transfer", Math.round(value * 100));
   const bank = account.bankDetails;
   const recentOut = account.transactions.filter(t => t.amount < 0 && t.method && t.method !== "Card").slice(0, 5);
 
@@ -1645,7 +1652,7 @@ function LegacyPaymentsPage() {
       <div className="pay-layout">
         <motion.form className="panel dash-form" onSubmit={submit} noValidate {...rise(0)}>
           <h2>Send money</h2>
-          <p className="form-intro">Domestic ACH and wires are always free. You'll review everything before anything is sent.</p>
+          <p className="form-intro">Outgoing transfers include a 0.5% fee (minimum $0.10, maximum $10.00). You'll review everything before anything is sent.</p>
 
           <span className="field-label">Transfer type</span>
           <Segmented
@@ -1670,11 +1677,11 @@ function LegacyPaymentsPage() {
             <motion.p key={method} className="method-note" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
               {method === "Zelle" ? (
                 <>
-                  <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Uses signup email or phone · account ledger only · $0 fee" : "Send to US mobile # or email · Typically arrives in minutes · $0 fee"}
+                  <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Uses signup email or phone · account ledger only · 0.5% transfer fee" : "Send to US mobile # or email · Typically arrives in minutes · 0.5% transfer fee"}
                 </>
               ) : (
                 <>
-                  <Clock size={13} /> {isDemo ? "Account transfer" : `Arrives ${ETA[method].toLowerCase()}`} · $0 fee
+                  <Clock size={13} /> {isDemo ? "Account transfer" : `Arrives ${ETA[method].toLowerCase()}`} · 0.5% transfer fee
                 </>
               )}
             </motion.p>
@@ -1732,9 +1739,9 @@ function LegacyPaymentsPage() {
           <input id="pay-note" maxLength={60} placeholder="Invoice number or a short note" value={note} onChange={e => setNote(e.target.value)} />
 
           <div className="fee-lines">
-            <div className="fee-line"><span>Transfer fee</span><strong className="free">$0.00</strong></div>
+            <div className="fee-line"><span>Transfer fee</span><strong className={transferFee.feeCents > 0 ? "" : "free"}>{transferFee.feeCents > 0 ? `${money(transferFee.feeCents / 100)} · ${transferFee.rateBps / 100}%` : "$0.00"}</strong></div>
             <div className="fee-line"><span>Estimated rewards</span><strong>+{money(value * rewardRate(category))}</strong></div>
-            <div className="fee-line"><span>Balance after</span><strong>{money(Math.max(account.balance - value, 0))}</strong></div>
+            <div className="fee-line"><span>Balance after</span><strong>{money(Math.max(account.balance - value - transferFee.feeCents / 100, 0))}</strong></div>
           </div>
 
           <AnimatePresence>
@@ -2193,7 +2200,6 @@ export function MarketsPage() {
           <RefreshCw size={15} /> Refresh
         </button>
       </PageHeader>
-
       <div className="market-toolbar">
         <label className="market-search">
           <Search size={15} />
@@ -2491,7 +2497,7 @@ export function AccountsPage() {
         {!account.savingsPockets.length && <EmptyState icon={<PiggyBank size={18} />} title="No savings pockets" text="Create one for a goal, reserve or rainy day." />}
       </div>
 
-      <HoldingsPanel />
+      <SavingsActivityPanel transactions={account.transactions} />
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New savings pocket" subtitle="Name a goal and set a target. You can move money after it is created.">
         <form className="dash-form" onSubmit={create}>
@@ -2526,7 +2532,7 @@ function CryptoStat({ index }: { index: number }) {
   const { data, loading } = useHoldings();
   const reduce = useReducedMotion();
 
-  const held = data?.holdings.filter(h => h.units !== "0" || (h.reservedUnits && h.reservedUnits !== "0")) ?? [];
+  const held = data?.holdings.filter(h => h.units !== "0") ?? [];
   const unpricedHeld = held.filter(h => h.valueUsd === null).length;
   const everythingDark = held.length > 0 && unpricedHeld === held.length;
 
@@ -2567,96 +2573,16 @@ function CryptoStat({ index }: { index: number }) {
       </div>
 
       <p className="stat-note">{note}</p>
-      <Link to="/app/accounts" className="stat-link crypto-link">Manage assets <ArrowRight size={13} /></Link>
+      <Link to="/app/assets" className="stat-link crypto-link">Manage assets <ArrowRight size={13} /></Link>
     </motion.div>
   );
 }
 
 /* ============================================================
-   Digital assets
+   Crypto workspace
    ============================================================ */
-/**
- * Holdings sit below savings pockets, visually separated, and never roll into
- * the "Total across Veyra" figure above. That separation is the whole point:
- * a checking balance is money the bank owes you, while a holding is a quantity
- * whose worth is a market quote that was true a minute ago. Merging them would
- * produce a single confident number that is wrong between every two ticks.
- *
- * An unpriced asset renders as "Price unavailable", never as $0.00 — a zero is
- * a number people believe.
- */
+/** Keep digital asset holdings and actions on their dedicated Crypto route. */
 export function AssetsPage() { return <CryptoWorkspace />; }
-
-export function HoldingsPanel({ catalog = false }: { catalog?: boolean }) {
-  const [sending, setSending] = useState<Holding | null>(null);
-  const [revision, setRevision] = useState(0);
-  const { data, loading, reload } = useHoldings();
-  const navigate = useNavigate();
-  if (loading || !data) return null;
-  const owned = data.holdings.filter(h => h.units !== "0" || (h.reservedUnits && h.reservedUnits !== "0"));
-
-  return (
-    <>
-      <div className="savings-head holdings-head">
-        <div><h2>{catalog ? "Digital asset catalog" : "Your digital assets"}</h2><p>Held separately from your deposit account. {data.disclosure}</p></div>
-        <Link className="ghost-btn sm" to={catalog ? "/app/accounts" : "/app/assets"}>{catalog ? "View your holdings" : "Browse assets"}</Link>
-      </div>
-
-      {data.quoteStatus === "stale" && <p className="holdings-warning">Prices are stale. Refresh the feed before buying or selling.</p>}
-      {data.partial && (
-        <p className="holdings-warning"><AlertTriangle size={14} /> A price feed is unavailable, so the total below is incomplete.</p>
-      )}
-
-      {!catalog && !owned.length && <p>No assets held yet. Browse assets to explore the catalog.</p>}
-      <div className="holdings-grid">
-        {(catalog ? data.holdings : owned).map((holding, index) => (
-          <motion.article key={holding.asset} className="holding-card"
-            initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * .04, duration: .35, ease }}>
-            <div className="holding-top">
-              <span className="holding-mark">
-                <img src={assetIcon(holding.asset)} alt="" aria-hidden="true" width={128} height={128} loading="lazy" decoding="async" />
-              </span>
-              <div className="holding-id">
-                <span className="holding-code">{holding.asset}</span>
-                <strong className="holding-name">{holding.name}</strong>
-              </div>
-              <span className={`chip ${holding.kind === "stablecoin" ? "chip-green" : ""}`}>{holding.kind === "stablecoin" ? "Stablecoin" : "Crypto"}</span>
-            </div>
-            <div className="holding-value">
-              {holding.valueUsd === null
-                ? <span className="holding-unpriced">Price unavailable</span>
-                : <b>${holding.valueUsd}</b>}<small>{holding.totalQuantity ?? holding.quantity} {holding.asset}</small>
-            </div>
-            <div className="holding-price">
-              {holding.priceUsd ? <>{holding.priceUsd} per {holding.asset} <em>{quoteAge(holding.quotedAt)}</em></> : <>No current quote</>}
-            </div>
-            <p className="holding-price">Available: {holding.quantity} {holding.asset}{holding.reservedUnits && holding.reservedUnits !== "0" ? ` · ${holding.reservedQuantity} reserved (pending)` : ""}</p>
-            <div className="holding-actions">
-              {data.tradingEnabled ? (
-                <>
-                  <button type="button" className="ghost-btn sm" onClick={() => navigate(`/app/assets?action=buy&asset=${holding.asset}`)} disabled={!holding.priceUsd || data.quoteStatus === "stale"}>Buy</button>
-                  <button type="button" className="ghost-btn sm" onClick={() => navigate(`/app/assets?action=sell&asset=${holding.asset}`)} disabled={!holding.priceUsd || data.quoteStatus === "stale" || holding.units === "0"}>Sell</button>
-                  <button type="button" className="ghost-btn sm" disabled={!holding.withdrawalNetwork || holding.units === "0"} title={!holding.withdrawalNetwork ? "Withdrawal network not supported yet" : "Create a pending withdrawal request"} onClick={() => setSending(holding)}>Send</button>
-                </>
-              ) : <span className="holding-locked">View only</span>}
-              <button
-                type="button" className="ghost-btn sm holding-chart-btn"
-                onClick={() => navigate(`/app/markets?asset=${holding.asset}`)}
-              >
-                <LineChart size={13} /> Chart
-              </button>
-            </div>
-          </motion.article>
-        ))}
-      </div>
-
-      {!catalog && <CryptoWithdrawalHistory revision={revision} changed={() => { void reload(); }} />}
-      {sending && <CryptoSendDialog holding={sending} close={() => setSending(null)} submitted={() => { void reload(); setRevision(r => r+1); }} />}
-
-
-    </>
-  );
-}
 
 /* ============================================================
    Bills & recurring payments

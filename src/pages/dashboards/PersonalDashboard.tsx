@@ -233,6 +233,7 @@ export function PersonalOverview() {
                   <span className={`p-feed-amount ${t.amount > 0 ? "in" : ""}`}>
                     {t.amount > 0 ? "+" : "−"}{money(Math.abs(t.amount))}
                     {t.reward > 0 && <small>+{money(t.reward)} back</small>}
+                    {(t.fee ?? 0) > 0 && <small>Fee {money(t.fee ?? 0)}</small>}
                   </span>
                 </motion.div>
               )) : <p className="p-empty">Nothing here yet — your purchases will show up as you spend.</p>}

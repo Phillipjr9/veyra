@@ -9,9 +9,10 @@ import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate, useOutlet, useSearchParams } from "react-router-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CashFlowExplorer } from "../components/DashboardIntelligence";
+import { SavingsActivityPanel } from "../components/SavingsActivityPanel";
 import {
   ArrowDownLeft, ArrowRight, ArrowUpRight, Award, BadgeCheck, BarChart3, Building2, CalendarClock, CandlestickChart, Check, Clock, Copy, CreditCard,
-  Download, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, MessageSquare, PackageCheck, Pause, PiggyBank, Play, Plus,
+  Download, Eye, EyeOff, FileText, Gift, Globe2, KeyRound, Landmark, LayoutDashboard, Lock, LogOut, Mail, MapPin, MessageSquare, PackageCheck, Pause, PiggyBank, Play, Plus, Coins,
   Radio, ReceiptText, RefreshCw, Search, Send, Settings as SettingsIcon, TrendingUp, ShieldAlert, ShieldCheck, ShoppingBag, Smartphone, Snowflake, Sparkles, Trash2, Truck, Upload, UserPlus, UserRound, Users, WalletCards, X, Link2,
 } from "lucide-react";
 import { AnimatedMoney, AnimatedNumber, VirtualCard, ease } from "../components/common";
@@ -27,8 +28,6 @@ import { InvoiceDetailModal } from "../components/InvoiceDetailModal";
 import { NotificationsMenu, NOTE_ROUTES, SuspensionBanner } from "./dashboards/parts";
 import { PersonalChrome, PersonalOverview } from "./dashboards/PersonalDashboard";
 import { BusinessChrome } from "./dashboards/BusinessDashboard";
-// Keep member capabilities shared while retaining each dashboard's own chrome.
-import { HoldingsPanel } from "./dashboards/ClassicDashboard";
 import { Camera } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { lockScroll } from "../lib/scrollLock";
@@ -36,6 +35,7 @@ import {
   categories, copyText, longDate, money, rewardRate, shortDate, useAcct,
   type Card, type CardControls, type Dispute, type Invoice, type KycRequirement, type Perk, type SavingsPocket, type ShippingStatus, type TeamMember, type Txn,
 } from "../lib/store";
+import { quoteFee } from "../../shared/fees";
 
 /* ============================================================
    Helpers
@@ -84,6 +84,7 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app", label: "Overview", icon: <LayoutDashboard size={18} />, end: true },
       { to: "/app/accounts", label: "Accounts", icon: <PiggyBank size={18} /> },
       { to: "/app/cards", label: "Cards", icon: <CreditCard size={18} /> },
+      { to: "/app/assets", label: "Crypto", icon: <Coins size={18} /> },
       { to: "/app/markets", label: "Markets", icon: <CandlestickChart size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Transfers", icon: <Send size={18} /> },
@@ -296,6 +297,7 @@ function TxnList({ txns, onSelect }: { txns: Txn[]; onSelect: (t: Txn) => void }
             <span className="txn-val">
               <strong className={t.amount > 0 ? "in" : ""}>{t.amount > 0 ? "+" : "−"}{money(Math.abs(t.amount))}</strong>
               {t.reward > 0 && <small>+{money(t.reward)} back</small>}
+              {(t.fee ?? 0) > 0 && <small>Fee {money(t.fee ?? 0)}</small>}
             </span>
           </motion.button>
         ))}
@@ -324,6 +326,7 @@ function TxnDrawer({ txn, onClose }: { txn: Txn | null; onClose: () => void }) {
         ...(card ? [["Card", `${card.label} •••• ${card.last4}`] as [string, string]] : []),
         ["Reference", txn.reference ?? "—"],
         ...(txn.note ? [["Memo", txn.note] as [string, string]] : []),
+        ...((txn.fee ?? 0) > 0 ? [["Fee", money(txn.fee ?? 0)] as [string, string]] : []),
         ...(txn.reward > 0 ? [["Rewards earned", `+${money(txn.reward)}`] as [string, string]] : []),
         ...(txn.scout ? [["Scout savings", `+${money(txn.scout)}`] as [string, string]] : []),
       ]
@@ -1241,6 +1244,7 @@ export function TransactionsPage() {
   const inflow = cleared.filter(t => t.amount > 0).reduce((s, t) => s + Math.round(t.amount * 100), 0) / 100;
   const outflow = cleared.filter(t => t.amount < 0).reduce((s, t) => s + Math.round(Math.abs(t.amount) * 100), 0) / 100;
   const rewards = cleared.reduce((s, t) => s + Math.round(t.reward * 100), 0) / 100;
+  const fees = cleared.reduce((s, t) => s + Math.round((t.fee ?? 0) * 100), 0) / 100;
 
   const onExport = () => {
     const count = exportCSV(filtered);
@@ -1269,11 +1273,12 @@ export function TransactionsPage() {
         <div><span>Cleared money in</span><AnimatedMoney value={inflow} className="strip-value in" cents /></div>
         <div><span>Cleared money out</span><AnimatedMoney value={outflow} className="strip-value" cents /></div>
         <div><span>Rewards earned</span><AnimatedMoney value={rewards} className="strip-value violet-text" cents /></div>
+        <div><span>Fees paid</span><AnimatedMoney value={fees} className="strip-value" cents /></div>
       </div>
 
       <section className="panel table-panel">
         <div className="txn-table-head">
-          <span>Merchant</span><span>Category</span><span>Date</span><span>Status</span><span className="ta-r">Rewards</span><span className="ta-r">Amount</span>
+          <span>Merchant</span><span>Category</span><span>Date</span><span>Status</span><span className="ta-r">Rewards</span><span className="ta-r">Fee</span><span className="ta-r">Amount</span>
         </div>
         <div className="txn-table-body">
           <AnimatePresence>
@@ -1291,6 +1296,7 @@ export function TransactionsPage() {
                 <span className="tcol-date">{shortDate(t.date)}</span>
                 <span className="tcol-status"><span className={`status-pill ${t.status === "cleared" ? "cleared" : t.status === "failed" ? "overdue" : "open"}`}><span className="dot" /> {t.status === "cleared" ? "Cleared" : t.status === "failed" ? "Failed" : "Pending"}</span></span>
                 <span className="tcol-reward">{t.reward > 0 ? `+${money(t.reward)}` : "—"}</span>
+                <span className="tcol-fee">{(t.fee ?? 0) > 0 ? money(t.fee ?? 0) : "—"}</span>
                 <strong className={`tcol-amt ${t.amount > 0 ? "in" : ""}`}>{t.amount > 0 ? "+" : "−"}{money(Math.abs(t.amount))}</strong>
               </motion.button>
             ))}
@@ -1348,6 +1354,7 @@ function LegacyPaymentsPage() {
   }
 
   const value = Number.parseFloat(amount) || 0;
+  const transferFee = quoteFee("transfer", Math.round(value * 100));
   const bank = account.bankDetails;
   const recentOut = account.transactions.filter(t => t.amount < 0 && t.method && t.method !== "Card").slice(0, 5);
 
@@ -1398,7 +1405,7 @@ function LegacyPaymentsPage() {
       <div className="pay-layout">
         <motion.form className="panel dash-form" onSubmit={submit} noValidate {...rise(0)}>
           <h2>Send money</h2>
-          <p className="form-intro">Domestic ACH and wires are always free. You'll review everything before anything is sent.</p>
+          <p className="form-intro">Outgoing transfers include a 0.5% fee (minimum $0.10, maximum $10.00). You'll review everything before anything is sent.</p>
 
           <span className="field-label">Transfer type</span>
           <Segmented
@@ -1423,11 +1430,11 @@ function LegacyPaymentsPage() {
             <motion.p key={method} className="method-note" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
               {method === "Zelle" ? (
                 <>
-                  <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Uses signup email or phone · account ledger only · $0 fee" : "Send to US mobile # or email · Typically arrives in minutes · $0 fee"}
+                  <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Uses signup email or phone · account ledger only · 0.5% transfer fee" : "Send to US mobile # or email · Typically arrives in minutes · 0.5% transfer fee"}
                 </>
               ) : (
                 <>
-                  <Clock size={13} /> {isDemo ? "Account transfer" : `Arrives ${ETA[method].toLowerCase()}`} · $0 fee
+                  <Clock size={13} /> {isDemo ? "Account transfer" : `Arrives ${ETA[method].toLowerCase()}`} · 0.5% transfer fee
                 </>
               )}
             </motion.p>
@@ -1485,9 +1492,9 @@ function LegacyPaymentsPage() {
           <input id="pay-note" maxLength={60} placeholder="Invoice number or a short note" value={note} onChange={e => setNote(e.target.value)} />
 
           <div className="fee-lines">
-            <div className="fee-line"><span>Transfer fee</span><strong className="free">$0.00</strong></div>
+            <div className="fee-line"><span>Transfer fee</span><strong className={transferFee.feeCents > 0 ? "" : "free"}>{transferFee.feeCents > 0 ? `${money(transferFee.feeCents / 100)} · ${transferFee.rateBps / 100}%` : "$0.00"}</strong></div>
             <div className="fee-line"><span>Estimated rewards</span><strong>+{money(value * rewardRate(category))}</strong></div>
-            <div className="fee-line"><span>Balance after</span><strong>{money(Math.max(account.balance - value, 0))}</strong></div>
+            <div className="fee-line"><span>Balance after</span><strong>{money(Math.max(account.balance - value - transferFee.feeCents / 100, 0))}</strong></div>
           </div>
 
           <AnimatePresence>
@@ -1982,7 +1989,7 @@ export function AccountsPage() {
         {!account.savingsPockets.length && <EmptyState icon={<PiggyBank size={18} />} title="No savings pockets" text="Create one for a goal, reserve or rainy day." />}
       </div>
 
-      <HoldingsPanel />
+      <SavingsActivityPanel transactions={account.transactions} />
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New savings pocket" subtitle="Name a goal and set a target. You can move money after it is created.">
         <form className="dash-form" onSubmit={create}>

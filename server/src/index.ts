@@ -11,6 +11,7 @@
  *   CORS_ORIGIN    — allow a non-proxied browser origin
  */
 import { readFileSync, existsSync } from "node:fs";
+import { createServer } from "node:http";
 import { basename, resolve } from "node:path";
 
 // Minimal zero-dependency .env loader (KEY=VALUE lines, # comments).
@@ -64,7 +65,7 @@ if (!isProduction) {
   process.env.ADMIN_NAME ??= "System Admin";
 }
 
-// Test balances must never share the ordinary or production database.
+// Preview balances must never share the ordinary or production database.
 const previewDb = resolve(process.cwd(), "server/preview-crypto.db");
 if (isProduction && (process.env.PREVIEW_CRYPTO_DATA === "1" || basename(process.env.DB_PATH ?? "") === "preview-crypto.db")) {
   throw new Error("Preview crypto data/database cannot be used in production.");
@@ -99,14 +100,14 @@ if (isProduction && !recaptchaConfig().enabled) {
   console.warn("  Set RECAPTCHA_SITE_KEY + RECAPTCHA_SECRET_KEY (classic v3), or + RECAPTCHA_PROJECT_ID/RECAPTCHA_API_KEY (Enterprise).");
 }
 
-app.listen(PORT, "0.0.0.0", (error?: Error) => {
-  // Express 5 passes bind failures to this callback. Never announce readiness
-  // or seed against another process that already owns the requested port.
-  if (error) {
-    console.error(`Veyra API could not bind port ${PORT}: ${error.message}`);
-    process.exitCode = 1;
-    return;
-  }
+const server = createServer(app);
+server.on("error", (error: NodeJS.ErrnoException) => {
+  // Never announce readiness or seed against another process that already owns the requested port.
+  console.error(`Veyra API could not bind port ${PORT}: ${error.message}`);
+  process.exitCode = 1;
+});
+server.listen(PORT, "0.0.0.0");
+server.on("listening", () => {
   console.log(`Veyra API listening on http://0.0.0.0:${PORT}`);
   console.log(describeRecaptcha());
   console.log(describeFederated());

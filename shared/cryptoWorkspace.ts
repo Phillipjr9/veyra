@@ -7,7 +7,7 @@ export type CryptoQuote = {
   id: string; action: CryptoAction; fromAsset: string; toAsset: string;
   fromUnits: string; toUnits: string; fromQuantity: string; toQuantity: string;
   fromDecimals: number; toDecimals: number; fromPriceCents: string; toPriceCents: string;
-  notionalUsd: string; feeUsd: string; createdAt: number; expiresAt: number;
+  notionalUsd: string; feeUsd: string; feeCents?: string; createdAt: number; expiresAt: number;
   settlement: "account";
 };
 export type CryptoReceipt = CryptoQuote & { reference: string; completedAt: number; status: "completed"; transactionHash: null };
@@ -16,6 +16,8 @@ export type CryptoCapabilities = {
   accountTrading: boolean; canOperate: boolean; withdrawals: boolean;
   networks: WalletNetwork[];
   custody: false; onchainSend: false; onchainSwap: false; cashOnramp: false; cashOfframp: false;
+  /** Development-only direct-wallet send on Ethereum Sepolia; never mainnet. */
+  sepoliaTestnetSend: boolean;
   solanaBalance: boolean;
 };
 

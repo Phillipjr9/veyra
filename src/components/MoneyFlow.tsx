@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { AlertCircle, ArrowDownLeft, ArrowRight, Building2, Check, Download, Landmark, Lock, ShieldCheck, Sparkles, X, Zap } from "lucide-react";
 import { downloadFile, longDate, money, rewardRate, useAcct, type MoveResult } from "../lib/store";
+import { quoteFee } from "../../shared/fees";
 import { useToast } from "./Toast";
 import { ease, useCountUp } from "./common";
 import { VeyraMark } from "./VeyraMark";
@@ -224,7 +225,7 @@ function DepositForm({ flow, balance, onSource, onContinue, onCancel }: {
   return (
     <form className="flow-pane" onSubmit={e => { e.preventDefault(); if (valid) onContinue(Math.round(amount * 100) / 100); }}>
       <h2 className="flow-title" id="flow-title">Add funds</h2>
-      <p className="flow-sub">Move money into your Veyra checking account. Deposits are always free.</p>
+      <p className="flow-sub">Move money into your Veyra checking account. Card-funded deposits show any fee before you confirm.</p>
       <span className="flow-label">From</span>
       <div className="source-list" role="radiogroup" aria-label="Deposit source">
         {SOURCES.map(s => {
@@ -289,23 +290,27 @@ function DepositForm({ flow, balance, onSource, onContinue, onCancel }: {
 function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; balance: number; track: Track; onBack: () => void; onConfirm: () => void }) {
   const amount = flow.kind === "deposit" ? flow.amount : flow.draft.amount;
 
+  const amountCents = Math.round(amount * 100);
+  const depositFee = quoteFee("deposit", amountCents);
+  const sendFee = quoteFee("transfer", amountCents);
+  const fee = flow.kind === "deposit" ? depositFee.feeCents / 100 : sendFee.feeCents / 100;
   const rows: Row[] =
     flow.kind === "deposit"
       ? [
           { label: "From", value: sourceById(flow.sourceId).label },
           { label: "To", value: `${track.to.label} ${track.to.sub}` },
           { label: "Available", value: "Instantly" },
-          { label: "Fee", value: "Free", tone: "free" },
-          { label: "Balance after", value: money(balance + amount) },
+          { label: "Fee", value: fee > 0 ? money(fee) : "Free", tone: fee > 0 ? undefined : "free" },
+          { label: "Balance after", value: money(balance + amount - fee) },
         ]
       : [
           { label: "Method", value: flow.draft.method },
           { label: "Arrives", value: flow.draft.demo ? "Account ledger only" : ETA[flow.draft.method] },
           { label: "Category", value: flow.draft.category || "Not selected" },
           ...(flow.draft.note ? [{ label: "Memo", value: flow.draft.note }] : []),
-          { label: "Fee", value: "$0.00 · Free", tone: "free" as const },
+          { label: "Fee", value: fee > 0 ? `${money(fee)} · ${sendFee.rateBps / 100}%` : "$0.00 · Free", tone: fee > 0 ? undefined : "free" as const },
           { label: "Est. rewards", value: `+${money(flow.draft.demo ? 0 : amount * rewardRate(flow.draft.category))}`, tone: "reward" as const },
-          { label: "Balance after", value: money(balance - amount) },
+          { label: "Balance after", value: money(balance - amount - fee) },
         ];
   return <FlowReview amount={amount} rows={rows} track={track} onBack={onBack} onConfirm={onConfirm}
     title={flow.kind === "deposit" ? "Review deposit" : "Review payment"}
@@ -425,7 +430,7 @@ function receiptText(flow: FlowState, r: MoveResult, acct: string) {
   if (flow.kind === "send") {
     lines.push(`${pad("Category")}${flow.draft.category}`, `${pad("Memo")}${flow.draft.note ?? "—"}`, `${pad("Rewards earned")}${money(r.reward)}`, `${pad("Scout savings")}${money(r.scout)}`);
   }
-  lines.push(`${pad("Fee")}$0.00`, `${pad("New balance")}${money(r.balanceAfter)}`, "", "Keep this receipt for your records.");
+  lines.push(`${pad("Fee")}${(r.fee ?? 0).toFixed(2)}`, `${pad("New balance")}${money(r.balanceAfter)}`, "", "Keep this receipt for your records.");
   return lines.join("\n");
 }
 
@@ -438,7 +443,7 @@ function Success({ flow, result, acct, onClose, onAgain }: { flow: FlowState; re
     { label: isDeposit ? "From" : "To", value: counterparty },
     { label: "Method", value: flow.kind === "deposit" ? "ACH deposit" : flow.draft.method },
     { label: isDeposit ? "Available" : "Arrives", value: flow.kind === "deposit" ? "Now" : flow.draft.demo ? "Account ledger only" : ETA[flow.draft.method] },
-    { label: "Fee", value: "$0.00", tone: "free" },
+    { label: "Fee", value: (result.fee ?? 0) > 0 ? money(result.fee ?? 0) : "$0.00", tone: (result.fee ?? 0) > 0 ? undefined : "free" },
     ...(flow.kind === "send" ? [{ label: "Rewards earned", value: `+${money(result.reward)}`, tone: "reward" as const }] : []),
     ...(flow.kind === "send" && result.scout > 0 ? [{ label: "Scout savings", value: `+${money(result.scout)}`, tone: "scout" as const }] : []),
   ];

@@ -74,13 +74,10 @@ try {
   const beforeWithdraw = notes().length;
   const recorded = await api("POST", "/api/me/crypto-withdrawals", a.token, withdrawal); assert.equal(recorded.status, 201);
   await api("POST", "/api/me/crypto-withdrawals", a.token, withdrawal);
-  check("pending withdrawal creates one honest reservation notification", notes().length === beforeWithdraw + 1 && notes().some(n => n.title === "Crypto withdrawal pending" && n.detail.includes("no blockchain transaction has been broadcast")));
-  const cancel = `/api/me/crypto-withdrawals/${recorded.body.withdrawal.id}/cancel`;
-  await api("POST", cancel, a.token); await api("POST", cancel, a.token);
-  check("cancellation notification is emitted once", notes().length === beforeWithdraw + 2 && notes().some(n => n.title === "Crypto withdrawal cancelled"));
+  check("a withdrawal request creates one honest recorded notification", notes().length === beforeWithdraw + 1 && notes().some(n => n.title === "Crypto withdrawal recorded" && n.detail.includes("no blockchain transaction has been broadcast")));
   const failed = { ...withdrawal, amount: "999999", requestKey: randomUUID() };
   await api("POST", "/api/me/crypto-withdrawals", a.token, failed); await api("POST", "/api/me/crypto-withdrawals", a.token, failed);
-  check("insufficient withdrawal notifies failure without fake success", notes().length === beforeWithdraw + 3 && notes().some(n => n.title === "Crypto withdrawal failed"));
+  check("insufficient withdrawal notifies failure without fake success", notes().length === beforeWithdraw + 2 && notes().some(n => n.title === "Crypto withdrawal failed"));
   check("crypto notifications remain owner-scoped", !(await api("GET", "/api/me/notifications", b.token)).body.notifications.some((n: any) => n.type === "crypto"));
   for (const activity of CRYPTO_ACTIVITIES) for (const status of CRYPTO_STATUSES) {
     const data: CryptoNotification = { activity, status, asset: "BTC", quantity: "0.001", reference: "<script>alert(1)</script>", occurredAt: Date.now(), settlement: "account" };

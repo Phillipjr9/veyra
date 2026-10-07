@@ -5,6 +5,7 @@ import { createApp } from '../src/app.js';
 import { applicationFor } from './fixtures.js';
 import { recentMail } from '../src/mail.js';
 import { normalizeDemoPhone } from '../src/demoPayments.js';
+import { quoteFee } from '../../shared/fees.js';
 process.env.NODE_ENV='development';process.env.DEMO_PAYMENTS_ENABLED='1';process.env.MAIL_PROVIDER='off';process.env.RECAPTCHA_SITE_KEY='';process.env.FIREBASE_PROJECT_ID='';
 process.env.ADMIN_EMAIL='immediate-admin@veyra.test';process.env.ADMIN_PASSWORD='Immediate-Admin-Test-2026!';
 const {app,db}=createApp(':memory:');const server=createServer(app);await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
@@ -23,12 +24,14 @@ try{
  check('funding requires authentication',(await api('GET','/api/me/funding')).status===401);
  check('deposit requires authentication',(await api('POST','/api/me/deposits',undefined,{})).status===401);
  db.prepare("INSERT INTO external_accounts(id,user_id,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at) VALUES(?,?,'Linked bank','Personal checking','1234','Checking','verified','fixture-link',1,1)").run('fixture-link',a.id);
+ db.prepare("INSERT INTO external_accounts(id,user_id,kind,bank_name,account_name,last4,account_type,card_brand,card_exp_month,card_exp_year,billing_address_json,status,provider_reference,created_at,updated_at,verification_kind,verification_note,request_key) VALUES('fixture-card',?,'card','Visa','Alice debit card','4242','Checking','Visa',12,2030,'{}','verified','card-token:fixture-card',1,1,'card_token','fixture card reference',NULL)").run(a.id);
  db.prepare("UPDATE accounts SET receiving_details_configured=1 WHERE user_id=?").run(a.id);
  const sources=(await funding()).methods;check('all eight original methods have mock sources',sources.length===8&&(await funding()).demoMode);
  for(const m of sources){const before=balance(),body={methodId:m.id,amount:'25.01',requestKey:randomUUID(),note:'',demo:true};
-  const posted=await deposit(body);check(`${m.kind}: immediately confirmed`,posted.status===201&&posted.json.request.status==='confirmed');
-  check(`${m.kind}: credits normal account immediately`,balance()===before+2501);
-  await Promise.all([deposit(body),deposit(body)]);check(`${m.kind}: retries never double-credit`,balance()===before+2501);
+  const depositFee=quoteFee(m.kind==='card'?'card_deposit':'deposit',2501).feeCents, credit=2501-depositFee;
+  const posted=await deposit(body);check(`${m.kind}: immediately confirmed`,posted.status===201&&posted.json.request.status==='confirmed'&&posted.json.fee===(depositFee/100).toFixed(2));
+  check(`${m.kind}: credits normal account immediately`,balance()===before+credit);
+  await Promise.all([deposit(body),deposit(body)]);check(`${m.kind}: retries never double-credit`,balance()===before+credit);
   check(`${m.kind}: one cleared ledger record`,(db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE reference=?').get(posted.json.request.reference) as any).n===1);
   check(`${m.kind}: changed replay refused`,(await deposit({...body,amount:'26.01'})).status===400);
  }
@@ -52,7 +55,7 @@ try{
  const p=await preview();check('recipient resolves before sending',p.status===200&&p.json.preview.name==='Bob');
  const before=balance(),recipientBefore=balance(b.id),confirm={action:'confirm_transfer',id:p.json.preview.id,decision:'completed'};
  check('review has no debit',balance()===before);check('other user cannot confirm',(await action(confirm,b.token)).status===400);
- const paid=await action(confirm);await action(confirm);check('payment debits funded account once',paid.status===200&&balance()===before-1025);check('recipient account credited once',balance(b.id)===recipientBefore+1025);check('receipt reflects normal account',paid.json.result.balanceAfter===balance()/100);
+ const paid=await action(confirm);await action(confirm);const transferFee=quoteFee('transfer',1025).feeCents;check('payment debits funded account once',paid.status===200&&balance()===before-1025-transferFee);check('recipient account credited once',balance(b.id)===recipientBefore+1025);check('receipt reflects normal account',paid.json.result.balanceAfter===balance()/100&&paid.json.result.fee===transferFee/100);
  check('phone resolves recipient',(await preview('5550101012')).json.preview.name==='Bob');check('international phone normalized',normalizeDemoPhone(c.phone)==='+2348031234567');check('self payment refused',(await preview(a.email)).status===400);
  db.prepare('UPDATE users SET phone=? WHERE id=?').run(b.phone,c.id);check('ambiguous phone refused',(await preview(b.phone)).status===400);db.prepare('UPDATE users SET phone=? WHERE id=?').run(c.phone,c.id);
  const stale=await preview();db.prepare("UPDATE users SET email='changed@veyra.test' WHERE id=?").run(b.id);check('recipient rechecked at commit',(await action({...confirm,id:stale.json.preview.id})).status===400);db.prepare('UPDATE users SET email=? WHERE id=?').run(b.email,b.id);

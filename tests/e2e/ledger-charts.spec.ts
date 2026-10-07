@@ -2,6 +2,7 @@ import { confirmFunding } from "./funding-helpers";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
 import { buildLedgerAnalytics } from "../../shared/ledgerAnalytics";
+import { quoteFee } from "../../shared/fees";
 
 test.skip((process.env.ACCOUNT_LEDGER_ENABLED || process.env.DEMO_PAYMENTS_ENABLED) !== "1", "Live chart changes use explicit demo funding, never real payment rails.");
 const password = "Ledger-Charts-2026!";
@@ -62,6 +63,13 @@ for (const type of ["personal", "business"] as const) test(`${type}: funding and
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(page.locator('[data-flow="out"]')).toHaveText("$31.25");
   await expect(page.locator('[data-flow="net"]')).toHaveText("+$94.25");
+  // Cash-flow charts intentionally plot cleared principal; fees live on the
+  // ledger rows, so assert the card deposit and transfer fees explicitly.
+  const ledger = (await (await request.get("/api/me/state", { headers: headers(user.token) })).json()).account;
+  const fundingFee = ledger.transactions.find((row: { category?: string; amount: number; fee?: number }) => row.category === "Funding" && row.amount > 0)?.fee ?? 0;
+  const sendFee = ledger.transactions.find((row: { amount: number; fee?: number }) => row.amount < 0)?.fee ?? 0;
+  expect(Math.round(fundingFee * 100)).toBe(quoteFee("card_deposit", 12550).feeCents);
+  expect(Math.round(sendFee * 100)).toBe(quoteFee("transfer", 3125).feeCents);
   await expect(page.getByRole("button", { name: "90D", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Bar chart", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect(reloads).toBe(0);

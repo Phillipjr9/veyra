@@ -19,16 +19,16 @@ process.env.MAIL_PROVIDER = "off";
 let checks = 0;
 function check(label: string, value: unknown) { assert.ok(value, label); checks++; console.log(`✓ ${label}`); }
 resetPrices();
-check("all 24 catalog assets have explicit sample quotes", (await loadPrices()).size === 24);
-check("sample markets include charts and statistics", (await loadMarkets()).markets.every(row => (row.sparkline?.length ?? 0) > 1 && row.volumeCents !== null));
-for (const code of ["BTC", "ETH", "SOL", "USDC"]) check(`${code} has usable sample candles`, (await loadCandles(code, "7d"))?.length === 64);
+check("all 24 catalog assets have explicit generated quotes", (await loadPrices()).size === 24);
+check("generated markets include charts and statistics", (await loadMarkets()).markets.every(row => (row.sparkline?.length ?? 0) > 1 && row.volumeCents !== null));
+for (const code of ["BTC", "ETH", "SOL", "USDC"]) check(`${code} has usable generated candles`, (await loadCandles(code, "7d"))?.length === 64);
 process.env.CRYPTO_PRICES_TTL_MS = "1";
 const before = (await loadMarkets()).fetchedAt;
 await new Promise(resolve => setTimeout(resolve, 10));
-check("sample prices refresh after cache expiry rather than getting stuck", (await loadMarkets()).fetchedAt > before);
+check("generated prices refresh after cache expiry rather than getting stuck", (await loadMarkets()).fetchedAt > before);
 delete process.env.CRYPTO_PRICES_TTL_MS;
 process.env.NODE_ENV = "production";
-check("production disables sample data even when requested", !previewCryptoEnabled());
+check("production disables preview data even when requested", !previewCryptoEnabled());
 assert.throws(() => previewMarketRows()); checks++;
 for (const extra of [{ PREVIEW_CRYPTO_DATA: "1", DB_PATH: "" }, { PREVIEW_CRYPTO_DATA: "0", DB_PATH: "server/preview-crypto.db" }]) {
   const result = spawnSync(process.execPath, ["--import", "tsx", "server/src/index.ts"], { env: { ...process.env, ...extra, NODE_ENV: "production" }, timeout: 10000, encoding: "utf8" });
@@ -60,9 +60,9 @@ try {
   const read = async <T>(path: string) => { const r = await fetch(url + path, { headers }); assert.equal(r.status, 200); return r.json() as Promise<T>; };
   type Holdings = { previewData: boolean; totalUsd: string; holdings: { asset: string; quantity: string }[] };
   const holdings = await read<Holdings>("/api/me/holdings");
-  check("personal crypto value is $3,000 with sample-data metadata", holdings.previewData && holdings.totalUsd === "3000.00");
+  check("personal crypto value is $3,000 with preview metadata", holdings.previewData && holdings.totalUsd === "3000.00");
   const markets = await read<{ previewData: boolean; markets: unknown[]; disclosure: string }>("/api/me/markets");
-  check("markets endpoint marks all 24 rows as sample data", markets.previewData && markets.markets.length === 24 && markets.disclosure.includes("not live"));
+  check("markets endpoint keeps preview metadata with standard disclosure", markets.previewData && markets.markets.length === 24 && !/test data|not live/i.test(markets.disclosure));
   const candles = await read<{ previewData: boolean; candles: unknown[] }>("/api/me/holdings/BTC/candles?range=7d");
   check("candle endpoint labels generated history", candles.previewData && candles.candles.length === 64);
   const sell = await fetch(`${url}/api/me/crypto/quote`, { method: "POST", headers, body: JSON.stringify({ action: "sell", fromAsset: "USDC", toAsset: "USD", amount: "10" }) });
@@ -74,11 +74,11 @@ try {
   check("sold USDC remains 490 units", (await read<Holdings>("/api/me/holdings")).holdings.find((h: { asset: string }) => h.asset === "USDC")?.quantity === "490");
   const pending = await fetch(`${url}/api/me/crypto/quote`, { method: "POST", headers, body: JSON.stringify({ action: "buy", fromAsset: "USD", toAsset: "USDC", amount: "10" }) });
   const pendingBody = await pending.json() as { quote: { id: string; previewData: boolean } };
-  check("reviewed quotes retain their test-price provenance", pendingBody.quote.previewData);
+  check("reviewed quotes retain their preview-price provenance", pendingBody.quote.previewData);
   const beforeSourceSwitch = snapshots();
   process.env.PREVIEW_CRYPTO_DATA = "0";
   const blocked = await fetch(`${url}/api/me/crypto/confirm`, { method: "POST", headers, body: JSON.stringify({ quoteId: pendingBody.quote.id }) });
-  check("test quotes cannot execute after preview mode is disabled", blocked.status === 400 && beforeSourceSwitch === snapshots());
+  check("preview quotes cannot execute after preview mode is disabled", blocked.status === 400 && beforeSourceSwitch === snapshots());
   await seedPreviewCrypto(db, url);
   check("disabled preview seed cannot mutate accounts", beforeSourceSwitch === snapshots());
   console.log(`\n${checks} preview crypto checks passed.`);

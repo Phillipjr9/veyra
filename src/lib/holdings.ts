@@ -17,8 +17,6 @@ export type Holding = {
   decimals: number;
   /** Integer base units as a decimal string. Not safe as a number. */
   units: string;
-  reservedUnits?: string;
-  reservedQuantity?: string;
   totalQuantity?: string;
   withdrawalNetwork?: string | null;
   /** Human quantity, trailing zeros trimmed — "0.25", not "0.250000000000000000". */
@@ -52,12 +50,9 @@ export type TradeResult = {
 };
 
 export async function fetchHoldings(): Promise<HoldingsResponse> {
-  const data = await apiGet<HoldingsResponse>("/api/me/holdings");
-  // Generated server fixtures are never shown as current market prices in the
-  // customer UI. Preserve owned quantities, but mark all valuations unavailable.
-  if (!data.previewData) return data;
-  return { ...data, disclosure: "Current market quotes are unavailable. Digital assets are not deposits or FDIC insured.", quoteStatus: "unavailable", partial: true, tradingEnabled: false, totalUsd: "0.00",
-    holdings: data.holdings.map(holding => ({ ...holding, priceUsd: null, valueUsd: null, quotedAt: null })) };
+  // Generated holdings are rendered in development so the whole product can be
+  // exercised. Generated prices never stand in for a live feed that failed.
+  return apiGet<HoldingsResponse>("/api/me/holdings");
 }
 
 /**
@@ -115,7 +110,8 @@ export const RANGE_LABEL: Record<CandleRange, string> = {
 
 export async function fetchCandles(asset: string, range: CandleRange) {
   const data = await apiGet<{ previewData?: boolean; asset: string; range: CandleRange; candles: Candle[] }>(`/api/me/holdings/${encodeURIComponent(asset)}/candles?range=${range}`);
-  if (data.previewData) throw new Error("Current market history is unavailable.");
+  // Generated history is drawn only in development. It is never a fallback for
+  // a live feed that failed.
   return data;
 }
 
@@ -180,8 +176,10 @@ export type MarketsResponse = {
 };
 
 export async function fetchMarkets(): Promise<MarketsResponse> {
-  const data = await apiGet<MarketsResponse>("/api/me/markets");
-  return data.previewData ? { ...data, disclosure: "Current market quotes are unavailable. Digital assets are not deposits or FDIC insured.", markets: [], quotedAt: null, quoteStatus: "unavailable", tradingEnabled: false } : data;
+  // Generated markets are listed in development and may be traded against so
+  // the buy, sell and swap flows can be exercised end to end. Never a fallback
+  // for live data.
+  return apiGet<MarketsResponse>("/api/me/markets");
 }
 
 export function useMarkets() {

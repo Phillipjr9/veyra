@@ -4,10 +4,11 @@ import { randomUUID } from "node:crypto";
 import type { Request, Response } from "express";
 import type { DatabaseSync } from "node:sqlite";
 import { assetByCode, tradingEnabled } from "./assets.js";
-import { BadInputError, centsToDecimal, getSetting, inTransaction } from "./db.js";
+import { BadInputError, centsToDecimal, dollarsToCents, getSetting, inTransaction } from "./db.js";
 import { formatUnitsTrimmed, parseUnits } from "./money.js";
 import { loadPrices, quoteIsFresh, quoteValidUntil } from "./prices.js";
 import { rateLimit } from "./security.js";
+import { applyFee, quoteFee } from "../../shared/fees.js";
 import { WALLET_NETWORKS, type CryptoCapabilities, type CryptoQuote, type CryptoReceipt } from "../../shared/cryptoWorkspace.js";
 import { solanaBalance } from "./web3Providers.js";
 
@@ -38,19 +39,26 @@ export function createCryptoWorkspace(db: DatabaseSync, audit: Audit) {
     status: row.result_json ? "completed" : row.expires_at <= Date.now() ? "expired" : "quoted",
     receipt: row.result_json ? JSON.parse(row.result_json) as CryptoReceipt : null });
   const holding = (id: string, asset: string) => BigInt(String(db.prepare("SELECT units FROM holdings WHERE user_id=? AND asset=?").get(id, asset)?.units ?? "0"));
-  function checkBalances(id: string, q: CryptoQuote) {
+  function checkBalances(id: string, q: CryptoQuote, feeCents: number) {
     const cash = db.prepare("SELECT id,balance_cents FROM accounts WHERE user_id=?").get(id) as { id: number; balance_cents: number } | undefined;
     if (!cash) fail("Account unavailable.");
     const available = q.fromAsset === "USD" ? BigInt(cash.balance_cents) : holding(id, q.fromAsset);
-    if (available < BigInt(q.fromUnits)) fail(`Insufficient available ${q.fromAsset}. Reserved units cannot be used.`);
-    if (q.toAsset === "USD" && (!Number.isSafeInteger(cash.balance_cents + Number(q.toUnits)) || cash.balance_cents + Number(q.toUnits) > 1_000_000_000)) fail("The account balance limit would be exceeded.");
+    const required = q.fromAsset === "USD" ? BigInt(q.fromUnits) + BigInt(feeCents) : BigInt(q.fromUnits);
+    if (available < required) fail(`Insufficient available ${q.fromAsset}. Reserved units cannot be used.`);
+    if (q.action === "swap" && cash.balance_cents < feeCents) fail("Insufficient checking balance for the swap fee.");
+    if (q.toAsset === "USD") {
+      const netCredit = applyFee(Number(q.toUnits), feeCents);
+      if (!Number.isSafeInteger(cash.balance_cents + netCredit) || cash.balance_cents + netCredit > 1_000_000_000) fail("The account balance limit would be exceeded.");
+    }
     return cash;
   }
   return {
     capabilities(req: Request, res: Response) {
       const enabled = tradingEnabled() && getSetting(db, "payment_rails") !== "halted";
       const capabilities: CryptoCapabilities = { accountTrading: enabled, canOperate: eligible(req), withdrawals: enabled && eligible(req), networks: WALLET_NETWORKS,
-        custody: false, onchainSend: false, onchainSwap: false, cashOnramp: false, cashOfframp: false, solanaBalance: !!process.env.SOLANA_RPC_URL?.trim() };
+        custody: false, onchainSend: false, onchainSwap: false, cashOnramp: false, cashOfframp: false,
+        sepoliaTestnetSend: process.env.NODE_ENV !== "production" && process.env.CRYPTO_TESTNET_SEND === "1",
+        solanaBalance: !!process.env.SOLANA_RPC_URL?.trim() };
       res.json(capabilities);
     },
     async quote(req: Request, res: Response) {
@@ -79,11 +87,12 @@ export function createCryptoWorkspace(db: DatabaseSync, audit: Audit) {
       // One rational conversion; no intermediate float or USD-cent rounding for swaps.
       const toUnits = fromUnits * source.cents * (10n ** BigInt(to.decimals)) / ((10n ** BigInt(from.decimals)) * target.cents);
       if (toUnits <= 0n) fail("This amount is too small to receive any of the selected asset.");
+      const fee = quoteFee(action === "buy" ? "crypto_buy" : action === "sell" ? "crypto_sell" : "crypto_swap", Number(cents));
       const q: CryptoQuote = { previewData: previewCryptoEnabled(), id: randomUUID(), action, fromAsset, toAsset, fromUnits: fromUnits.toString(), toUnits: toUnits.toString(),
         fromQuantity: formatUnitsTrimmed(fromUnits, from.decimals), toQuantity: formatUnitsTrimmed(toUnits, to.decimals), fromDecimals: from.decimals, toDecimals: to.decimals,
-        fromPriceCents: source.cents.toString(), toPriceCents: target.cents.toString(), notionalUsd: centsToDecimal(Number(cents)), feeUsd: "0.00",
+        fromPriceCents: source.cents.toString(), toPriceCents: target.cents.toString(), notionalUsd: centsToDecimal(Number(cents)), feeUsd: centsToDecimal(fee.feeCents), feeCents: fee.feeCents.toString(),
         createdAt: at, expiresAt: Math.min(at + 60_000, quoteValidUntil(source.fetchedAt), quoteValidUntil(target.fetchedAt)), settlement: "account" };
-      checkBalances(req.user!.id, q);
+      checkBalances(req.user!.id, q, fee.feeCents);
       // Expired, unexecuted reviews are not financial history. Bound their storage.
       db.prepare("DELETE FROM crypto_orders WHERE user_id=? AND result_json IS NULL AND expires_at<?").run(req.user!.id, at - 86_400_000);
       db.prepare("INSERT INTO crypto_orders(id,user_id,quote_json,expires_at,created_at) VALUES(?,?,?,?,?)").run(q.id, req.user!.id, JSON.stringify(q), q.expiresAt, at);
@@ -105,16 +114,22 @@ export function createCryptoWorkspace(db: DatabaseSync, audit: Audit) {
         for (const [code, decimals] of [[q.fromAsset, q.fromDecimals], [q.toAsset, q.toDecimals]] as const) {
           if (code !== "USD" && assetByCode(db, code)?.decimals !== decimals) fail("The asset configuration changed. Request a new quote.");
         }
-        const id = req.user!.id, cash = checkBalances(id, q), at = Date.now(), reference = `VYR-${randomUUID().toUpperCase()}`;
+        const notionalCents = dollarsToCents(q.notionalUsd);
+        const expectedFee = quoteFee(q.action === "buy" ? "crypto_buy" : q.action === "sell" ? "crypto_sell" : "crypto_swap", notionalCents);
+        const feeCents = Number(q.feeCents ?? expectedFee.feeCents);
+        if (feeCents !== expectedFee.feeCents) fail("The reviewed fee changed. Request a fresh quote and review it again.");
+        const id = req.user!.id, cash = checkBalances(id, q, feeCents), at = Date.now(), reference = `VYR-${randomUUID().toUpperCase()}`;
         const setHolding = db.prepare("INSERT INTO holdings(user_id,asset,units,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id,asset) DO UPDATE SET units=excluded.units,updated_at=excluded.updated_at");
         if (q.fromAsset !== "USD") setHolding.run(id, q.fromAsset, (holding(id, q.fromAsset) - BigInt(q.fromUnits)).toString(), at);
         if (q.toAsset !== "USD") setHolding.run(id, q.toAsset, (holding(id, q.toAsset) + BigInt(q.toUnits)).toString(), at);
-        const delta = q.fromAsset === "USD" ? -Number(q.fromUnits) : q.toAsset === "USD" ? Number(q.toUnits) : 0;
+        const principal = q.fromAsset === "USD" ? -Number(q.fromUnits) : q.toAsset === "USD" ? Number(q.toUnits) : 0;
+        const delta = applyFee(principal, feeCents);
         if (delta) {
           db.prepare("UPDATE accounts SET balance_cents=balance_cents+?,updated_at=? WHERE id=?").run(delta, at, cash.id);
-          db.prepare(`INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,status,reference,note,created_at,performed_by)
-            VALUES(?,?,?,?,'Investing','Internal',?,'cleared',?,?,?,?)`).run(randomUUID(), cash.id, id, `${q.action === "buy" ? "Bought" : "Sold"} ${q.action === "buy" ? q.toAsset : q.fromAsset}`, delta, reference,
-              `${q.fromQuantity} ${q.fromAsset} → ${q.toQuantity} ${q.toAsset}. Account order; no external execution.`, at, id);
+          const merchant = q.action === "buy" ? `Bought ${q.toAsset}` : q.action === "sell" ? `Sold ${q.fromAsset}` : `Swapped ${q.fromAsset} → ${q.toAsset}`;
+          db.prepare(`INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,fee_cents,status,reference,note,created_at,performed_by)
+            VALUES(?,?,?,?,'Investing','Internal',?,?,'cleared',?,?,?,?)`).run(randomUUID(), cash.id, id, merchant, principal, feeCents, reference,
+              `${q.fromQuantity} ${q.fromAsset} → ${q.toQuantity} ${q.toAsset}. Account order; no external execution.${feeCents ? ` Fee ${centsToDecimal(feeCents)}.` : ""}`, at, id);
         }
         const movement = db.prepare("INSERT INTO holding_transactions(id,user_id,asset,side,units,usd_cents,price_cents,reference,created_at) VALUES(?,?,?,?,?,?,?,?,?)");
         if (q.fromAsset !== "USD") movement.run(randomUUID(), id, q.fromAsset, "sell", q.fromUnits, q.action === "swap" ? 0 : Number(q.toUnits), q.fromPriceCents, reference, at);

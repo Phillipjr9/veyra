@@ -5,8 +5,10 @@ import { createApp, teamAllows } from "../src/app.js";
 import { applicationFor } from "./fixtures.js";
 import { createPriceFixture } from "./price-fixture.js";
 import { resetPrices } from "../src/prices.js";
+import { quoteFee } from "../../shared/fees.js";
 import { setSetting } from "../src/db.js";
 import { displayUnits } from "../../shared/cryptoWorkspace.js";
+import { formatEthWei, parseEthToWei } from "../../src/lib/ethereumTestnet.js";
 import { validWallet } from "../../shared/walletAddress.js";
 
 process.env.NODE_ENV = "development";
@@ -16,6 +18,7 @@ process.env.ADMIN_PASSWORD = "Crypto-test-password!";
 process.env.RECAPTCHA_SITE_KEY = "";
 process.env.FIREBASE_PROJECT_ID = "";
 process.env.CRYPTO_TRADING_ENABLED = "1";
+process.env.CRYPTO_TESTNET_SEND = "0";
 process.env.SOLANA_RPC_URL = "";
 const prices = createPriceFixture();
 await new Promise<void>(resolve => prices.listen(0, "127.0.0.1", resolve));
@@ -30,9 +33,11 @@ const api = async (method: string, path: string, token?: string, body?: unknown)
 };
 let checks = 0;
 const check = (name: string, value: unknown) => { assert.ok(value, name); console.log(`✓ ${name}`); checks++; };
+const feeC = (kind: "crypto_buy" | "crypto_sell" | "crypto_swap", cents: number) => quoteFee(kind, cents).feeCents;
 let rpc: ReturnType<typeof createServer> | null = null;
 try {
   check("base-unit formatting never loses 18-decimal precision", displayUnits("100000000000000001", 18) === "0.100000000000000001" && displayUnits("100000000", 6) === "100" && displayUnits("0", 8) === "0");
+  check("Sepolia transfer amounts parse exactly and reject exponent/over-precision inputs", parseEthToWei("0.010000000000000001") === 10000000000000001n && formatEthWei(parseEthToWei("0.010000000000000001")) === "0.010000000000000001" && (() => { try { parseEthToWei("1e-3"); return false; } catch { return true; } })() && (() => { try { parseEthToWei("0.0000000000000000001"); return false; } catch { return true; } })());
   check("shared address validation rejects wrong networks and checksum errors", validWallet("Bitcoin", "1BoatSLRHtKNngkdXEeobR76b53LETtpyT") && !validWallet("Bitcoin", "1BoatSLRHtKNngkdXEeobR76b53LETtpyU") && !validWallet("Ethereum", "0x0000000000000000000000000000000000000000"));
   const admin = (await api("POST", "/api/auth/login", undefined, { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD })).json.token;
   async function member(name: string, approved = true) {
@@ -52,42 +57,47 @@ try {
   check("anonymous quote and confirmation requests are denied", (await api("POST", qpath, undefined, buy)).status === 401 && (await api("POST", cpath, undefined, { quoteId: randomUUID() })).status === 401);
   check("unapproved account cannot quote", (await api("POST", qpath, pending.token, buy)).status === 403);
   const caps = (await api("GET", "/api/me/crypto/capabilities", alice.token)).json;
-  check("capabilities distinguish account orders from all unconnected execution services", caps.canOperate && caps.accountTrading && !caps.custody && !caps.onchainSend && !caps.onchainSwap && !caps.cashOnramp && !caps.cashOfframp && caps.networks.length === 3);
+  check("capabilities distinguish account orders from all unconnected execution services", caps.canOperate && caps.accountTrading && !caps.custody && !caps.onchainSend && !caps.onchainSwap && !caps.cashOnramp && !caps.cashOfframp && !caps.sepoliaTestnetSend && caps.networks.length === 3);
+  process.env.CRYPTO_TESTNET_SEND = "1";
+  const devnetCaps = (await api("GET", "/api/me/crypto/capabilities", alice.token)).json;
+  process.env.NODE_ENV = "production";
+  const productionCaps = (await api("GET", "/api/me/crypto/capabilities", alice.token)).json;
+  process.env.NODE_ENV = "development"; process.env.CRYPTO_TESTNET_SEND = "0";
+  check("Sepolia sending requires an explicit dev switch and remains absent in production", devnetCaps.sepoliaTestnetSend && !devnetCaps.onchainSend && !productionCaps.sepoliaTestnetSend);
   check("staff accounts cannot create account crypto orders", (await api("POST", qpath, admin, buy)).status === 400);
   for (const role of ["Admin", "Member", "Bookkeeper"] as const) {
     check(`${role} cannot bypass owner-only quote or confirm, but can read wallet balances`, !teamAllows("POST", qpath, role) && !teamAllows("POST", cpath, role) && teamAllows("POST", "/api/me/crypto/wallet-balance", role));
   }
   const btc = await quote(buy);
-  check("review performs no financial mutation and has a bounded expiry", cash() === 100000 && held("BTC") === 0n && btc.toUnits === "200000" && btc.expiresAt - btc.createdAt <= 60000 && btc.feeUsd === "0.00");
+  check("review performs no financial mutation and has a bounded expiry", cash() === 100000 && held("BTC") === 0n && btc.toUnits === "200000" && btc.expiresAt - btc.createdAt <= 60000 && btc.feeUsd === (feeC("crypto_buy", 10000) / 100).toFixed(2));
   check("quote reads and executions are owner scoped", (await api("GET", `/api/me/crypto/orders/${btc.id}`, bob.token)).status === 400 && (await confirm(btc.id, bob.token)).status === 400);
   const [first, replay] = await Promise.all([confirm(btc.id), confirm(btc.id)]);
-  check("concurrent confirm and retry debit only once and return identical receipts", first.status === 200 && replay.status === 200 && JSON.stringify(first.json) === JSON.stringify(replay.json) && cash() === 90000 && held("BTC") === 200000n);
+  check("concurrent confirm and retry debit only once and return identical receipts", first.status === 200 && replay.status === 200 && JSON.stringify(first.json) === JSON.stringify(replay.json) && cash() === 100000 - 10000 - feeC("crypto_buy", 10000) && held("BTC") === 200000n);
   check("receipt cannot claim blockchain execution", first.json.receipt.settlement === "account" && first.json.receipt.transactionHash === null && first.json.receipt.reference.startsWith("VYR-"));
   check("account order produces exactly one cash entry and one asset movement", Number(db.prepare("SELECT COUNT(*) n FROM transactions WHERE reference=?").get(first.json.receipt.reference)!.n) === 1 && Number(db.prepare("SELECT COUNT(*) n FROM holding_transactions WHERE reference=?").get(first.json.receipt.reference)!.n) === 1);
   check("order mutation and audit are paired", !!db.prepare("SELECT 1 FROM audit_log WHERE action='crypto.buy' AND target=?").get(`user:${alice.id}`));
   process.env.CRYPTO_TRADING_ENABLED = "0";
-  check("completed orders replay even after the execution flag is disabled", (await confirm(btc.id)).json.receipt.reference === first.json.receipt.reference && cash() === 90000);
+  check("completed orders replay even after the execution flag is disabled", (await confirm(btc.id)).json.receipt.reference === first.json.receipt.reference && cash() === 100000 - 10000 - feeC("crypto_buy", 10000));
   check("disabled trading refuses new quotes", (await api("POST", qpath, alice.token, buy)).status === 400);
   process.env.CRYPTO_TRADING_ENABLED = "1";
   const swap = await quote({ action: "swap", fromAsset: "BTC", toAsset: "ETH", amount: "0.001" });
   check("swap quote uses exact rational asset conversion", swap.toUnits === "16666666666666666" && swap.fromUnits === "100000");
   const swapResult = await confirm(swap.id);
-  check("swap updates both asset legs atomically without any cash movement", swapResult.status === 200 && cash() === 90000 && held("BTC") === 100000n && held("ETH") === 16666666666666666n && !db.prepare("SELECT 1 FROM transactions WHERE reference=?").get(swapResult.json.receipt.reference));
+  check("swap updates both asset legs atomically and debits only the swap fee", swapResult.status === 200 && cash() === 100000 - 10000 - feeC("crypto_buy", 10000) - feeC("crypto_swap", 5000) && held("BTC") === 100000n && held("ETH") === 16666666666666666n && Number(db.prepare("SELECT amount_cents FROM transactions WHERE reference=?").get(swapResult.json.receipt.reference)!.amount_cents) === 0 && Number(db.prepare("SELECT fee_cents FROM transactions WHERE reference=?").get(swapResult.json.receipt.reference)!.fee_cents) === feeC("crypto_swap", 5000));
   check("swap records two linked asset movements and one audited order", Number(db.prepare("SELECT COUNT(*) n FROM holding_transactions WHERE reference=?").get(swapResult.json.receipt.reference)!.n) === 2 && !!db.prepare("SELECT 1 FROM audit_log WHERE action='crypto.swap'").get());
   const sell = await quote({ action: "sell", fromAsset: "ETH", toAsset: "USD", amount: "0.016666666666666666" });
   check("sell quote exposes exact rounding to USD cents", sell.toQuantity === "49.99");
-  check("sell credits checking and consumes exact base units", (await confirm(sell.id)).status === 200 && held("ETH") === 0n && cash() === 94999);
-  const reservedQuote = await quote({ action: "swap", fromAsset: "BTC", toAsset: "SOL", amount: "0.001" });
-  const withdrawal = { asset: "BTC", network: "Bitcoin", address: "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", amount: "0.0008", requestKey: randomUUID() };
+  check("sell credits checking and consumes exact base units", (await confirm(sell.id)).status === 200 && held("ETH") === 0n && cash() === 100000 - 10000 - feeC("crypto_buy", 10000) - feeC("crypto_swap", 5000) + 4999 - feeC("crypto_sell", 4999));
+  const staleQuote = await quote({ action: "swap", fromAsset: "BTC", toAsset: "SOL", amount: "0.001" });
+  const withdrawal = { asset: "BTC", network: "Bitcoin", address: "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", amount: "0.0002", requestKey: randomUUID() };
   const send = await api("POST", "/api/me/crypto-withdrawals", alice.token, withdrawal);
-  check("send only reserves available holdings and never broadcasts", send.status === 201 && send.json.withdrawal.status === "pending" && held("BTC") === 20000n && !send.json.withdrawal.transaction_hash);
-  check("new reservation invalidates a previously affordable quote at confirmation", (await confirm(reservedQuote.id)).status === 400 && held("SOL") === 0n && held("BTC") === 20000n);
+  check("send debits the available units and never broadcasts", send.status === 201 && send.json.withdrawal.status === "recorded" && held("BTC") === 80000n && !send.json.withdrawal.transaction_hash);
+  check("a quote the debit has made unaffordable is refused at confirmation", (await confirm(staleQuote.id)).status === 400 && held("SOL") === 0n && held("BTC") === 80000n);
   const repeatedSend = await api("POST", "/api/me/crypto-withdrawals", alice.token, withdrawal);
-  check("withdrawal replay cannot reserve twice", repeatedSend.json.withdrawal.id === send.json.withdrawal.id && held("BTC") === 20000n);
-  await api("POST", `/api/me/crypto-withdrawals/${send.json.withdrawal.id}/cancel`, alice.token);
-  await api("POST", `/api/me/crypto-withdrawals/${send.json.withdrawal.id}/cancel`, alice.token);
-  check("withdrawal cancellation restores reserved units once", held("BTC") === 100000n);
-  check("the still-valid quote can execute after reservations are released", (await confirm(reservedQuote.id)).status === 200 && held("BTC") === 0n && held("SOL") === 250000000n);
+  check("withdrawal replay cannot debit twice", repeatedSend.json.withdrawal.id === send.json.withdrawal.id && held("BTC") === 80000n);
+  check("a recorded withdrawal cannot be cancelled", (await api("POST", `/api/me/crypto-withdrawals/${send.json.withdrawal.id}/cancel`, alice.token)).status === 404);
+  const affordableQuote = await quote({ action: "swap", fromAsset: "BTC", toAsset: "SOL", amount: "0.0008" });
+  check("the debit is permanent and only the remaining units stay spendable", (await confirm(affordableQuote.id)).status === 200 && held("BTC") === 0n && held("SOL") === 200000000n);
   const invalid = [
     { ...buy, amount: "1e2" }, { ...buy, amount: 100 }, { ...buy, amount: "-1" }, { ...buy, amount: "1.001" }, { ...buy, amount: "0" }, { ...buy, amount: "250000.01" },
     { ...buy, price: 1 }, { ...buy, toAsset: "UNKNOWN" }, { ...buy, action: "swap" }, { action: "swap", fromAsset: "SOL", toAsset: "SOL", amount: "1" },
@@ -117,11 +127,11 @@ try {
   const creditLimitQuote = await quote({ action: "sell", fromAsset: "SOL", toAsset: "USD", amount: "0.01" });
   const restoreCash = cash();
   db.prepare("UPDATE accounts SET balance_cents=1000000000 WHERE user_id=?").run(alice.id);
-  check("sell checks the checking balance ceiling again at confirmation", (await confirm(creditLimitQuote.id)).status === 400 && held("SOL") === 250000000n && cash() === 1000000000);
+  check("sell checks the checking balance ceiling again at confirmation", (await confirm(creditLimitQuote.id)).status === 400 && held("SOL") === 200000000n && cash() === 1000000000);
   db.prepare("UPDATE accounts SET balance_cents=? WHERE user_id=?").run(restoreCash, alice.id);
   const competing = await Promise.all([quote({ ...buy, amount: "600" }), quote({ ...buy, amount: "600" })]);
   const competingResults = await Promise.all(competing.map(q => confirm(q.id)));
-  check("different concurrent orders cannot reuse the same checking balance", competingResults.filter(r => r.status === 200).length === 1 && competingResults.filter(r => r.status === 400).length === 1 && cash() === restoreCash - 60000);
+  check("different concurrent orders cannot reuse the same checking balance", competingResults.filter(r => r.status === 200).length === 1 && competingResults.filter(r => r.status === 400).length === 1 && cash() === restoreCash - 60000 - feeC("crypto_buy", 60000));
   const solAddress = "So11111111111111111111111111111111111111112";
   const noReader = await api("POST", "/api/me/crypto/wallet-balance", alice.token, { network: "Solana", address: solAddress });
   check("unconfigured wallet reader returns unavailable, not zero", noReader.json.status === "unavailable" && noReader.json.units === null);
@@ -135,7 +145,7 @@ try {
   check("verified Solana mainnet read returns exact lamports", (await readSol()).json.units === "1234567891");
   solUnits = Number.MAX_SAFE_INTEGER + 1;
   check("unsafe numeric RPC balances are unavailable instead of rounded", (await readSol()).json.units === null);
-  check("wallet balance lookup does not mutate account holdings", held("SOL") === 250000000n);
+  check("wallet balance lookup does not mutate account holdings", held("SOL") === 200000000n);
   check("all financial foreign keys remain valid", db.prepare("PRAGMA foreign_key_check").all().length === 0);
   console.log(`\n${checks} crypto workspace checks passed.`);
 } finally {

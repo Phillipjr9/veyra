@@ -122,7 +122,6 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/admin/members/:id/external-accounts/:accountId/review", auth: true, perm: "accounts.edit_number" },
   { method: "GET", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
   { method: "POST", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
-  { method: "POST", path: "/api/me/crypto-withdrawals/:id/cancel", auth: true, perm: null },
 
   { method: "POST", path: "/api/me/deposits", auth: true, perm: null },
   { method: "POST", path: "/api/me/transfers", auth: true, perm: null },

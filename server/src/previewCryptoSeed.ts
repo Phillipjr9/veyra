@@ -34,12 +34,17 @@ export async function seedPreviewCrypto(db: DatabaseSync, baseUrl: string, log: 
     const fundingMarker = `preview_crypto_funding_v1:${owner.id}`;
     const fundingKey = getSetting(db, fundingMarker) ?? randomUUID();
     setSetting(db, fundingMarker, fundingKey, owner.id);
-    // The same key replays this test credit across boots, even after it is spent.
-    const funded = await fetch(`${baseUrl}/api/me/deposits`, { method: "POST", headers, body: JSON.stringify({
-      accountEntry: true, methodId: method.id, amount: "3000", requestKey: fundingKey,
-      note: "Preview crypto test balance — no external value",
-    }) });
-    if (!funded.ok) throw new Error(`Cannot prepare preview crypto balance: ${await funded.text()}`);
+    // The same key replays this preview credit across boots, even after it is
+    // spent. Skip the request entirely once its funding row exists so a changed
+    // display note can never turn a restart into a conflicting replay.
+    const alreadyFunded = db.prepare("SELECT id FROM funding_requests WHERE user_id=? AND request_key=?").get(owner.id, fundingKey);
+    if (!alreadyFunded) {
+      const funded = await fetch(`${baseUrl}/api/me/deposits`, { method: "POST", headers, body: JSON.stringify({
+        accountEntry: true, methodId: method.id, amount: "3000", requestKey: fundingKey,
+        note: "Preview crypto balance",
+      }) });
+      if (!funded.ok) throw new Error(`Cannot prepare preview crypto balance: ${await funded.text()}`);
+    }
     for (const buy of PREVIEW_CRYPTO_BUYS) {
       const marker = `preview_crypto_v1:${owner.id}:${buy.asset}`;
       let quoteId = getSetting(db, marker);
@@ -52,14 +57,14 @@ export async function seedPreviewCrypto(db: DatabaseSync, baseUrl: string, log: 
       }
       if (!quoteId) {
         const quoted = await fetch(`${baseUrl}/api/me/crypto/quote`, { method: "POST", headers, body: JSON.stringify({ action: "buy", fromAsset: "USD", toAsset: buy.asset, amount: buy.dollars }) });
-        if (!quoted.ok) throw new Error(`Cannot prepare ${type} ${buy.asset} test holding: ${await quoted.text()}`);
+        if (!quoted.ok) throw new Error(`Cannot prepare ${type} ${buy.asset} preview holding: ${await quoted.text()}`);
         const body = await quoted.json() as { quote: { id: string } };
         quoteId = body.quote.id;
         setSetting(db, marker, quoteId, owner.id);
       }
       const confirmed = await fetch(`${baseUrl}/api/me/crypto/confirm`, { method: "POST", headers, body: JSON.stringify({ quoteId }) });
-      if (!confirmed.ok) throw new Error(`Cannot confirm ${type} ${buy.asset} test holding: ${await confirmed.text()}`);
-      log(`${type}: ${buy.quantity} ${buy.asset} test holding prepared through an account buy`);
+      if (!confirmed.ok) throw new Error(`Cannot confirm ${type} ${buy.asset} preview holding: ${await confirmed.text()}`);
+      log(`${type}: ${buy.quantity} ${buy.asset} preview holding prepared through an account buy`);
     }
   }
 }
