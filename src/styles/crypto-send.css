@@ -40,6 +40,8 @@
    milled edge, so a turn reads as a solid object catching the light. */
 .coin3d { position:relative; z-index:2; width:92px; height:92px; transform-style:preserve-3d; }
 .coin3d-rim, .coin3d-face { position:absolute; inset:0; transform-style:preserve-3d; }
+/* Each panel is tangent to the XY face, extending along Z for thickness.
+   rotateY-only panels form a second cylinder across the logo, not its rim. */
 .coin3d-rim { transform:translateZ(calc(var(--thick) / -2)); }
 .coin3d-rim i { position:absolute; left:50%; top:50%; width:var(--segw); height:var(--thick); margin:calc(var(--thick) / -2) 0 0 calc(var(--segw) / -2); backface-visibility:hidden; }
 .coin3d-rim i.reed-light { background:linear-gradient(180deg,#fbe7b2,#e5ad48 52%,#a9751c); }
@@ -50,7 +52,7 @@
 .coin3d-front { background:radial-gradient(circle at 33% 26%,#fffaf0,#f8dc95 40%,#e3ab45 72%,#b8801f 100%);
   box-shadow:inset 0 0 0 1px #a9761f66, inset 0 -9px 13px #8a5f1566, inset 0 8px 11px #ffffffd0; }
 .coin3d-front::after { content:""; position:absolute; inset:7px; border-radius:50%; border:1px dashed #a9761f4d; }
-.coin3d-front img { position:relative; z-index:1; width:50px; height:50px; object-fit:contain; filter:drop-shadow(0 2px 3px #7a5312a0); }
+.coin3d-face img { position:relative; z-index:1; width:50px; height:50px; object-fit:contain; filter:drop-shadow(0 2px 3px #7a5312a0); }
 .coin3d-back { transform:rotateY(180deg) translateZ(var(--thick)); background:radial-gradient(circle at 62% 32%,#fff2d4,#eebb58 46%,#b8801f 100%); }
 .coin-glow { position:absolute; inset:2px; z-index:0; border-radius:50%; pointer-events:none;
   background:radial-gradient(circle,#f2c96b70,#f2c96b00 68%); filter:blur(7px); }

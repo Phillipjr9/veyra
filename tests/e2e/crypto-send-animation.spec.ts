@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { applicationFor } from "../../server/scripts/fixtures";
 
 const destination = "0x1111111111111111111111111111111111111111";
+const bitcoinDestination = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT";
 async function fixture(page: Page, request: APIRequestContext, asset = "USDC", amount = "10.123456") {
   const admin = (await (await request.post("/api/auth/login", { data: { email: "admin@veyra.dev", password: "veyra-admin-2026" } })).json()).token;
   const name = "Crypto Animation Owner", email = `crypto-animation-${crypto.randomUUID()}@veyra.test`;
@@ -18,7 +19,7 @@ async function fixture(page: Page, request: APIRequestContext, asset = "USDC", a
   await page.goto("/#/app/accounts");
   await page.locator(".holding-card").filter({ has: page.locator(".holding-code", { hasText: new RegExp(`^${asset}$`) }) }).getByRole("button", { name: "Send", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: `Send ${asset}`, exact: true });
-  await dialog.getByLabel("Destination wallet address").fill(destination);
+  await dialog.getByLabel("Destination wallet address").fill(asset === "BTC" ? bitcoinDestination : destination);
   await dialog.getByLabel(`Quantity (${asset})`).fill(amount);
   return { dialog, headers };
 }
@@ -255,4 +256,35 @@ test("receipt actions remain visible while scrolling on short mobile screens", a
   }
   await footer.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(dialog).toBeHidden();
+});
+
+
+test("Bitcoin coin rim surrounds the face instead of crossing the logo", async ({ page, request }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const { dialog } = await fixture(page, request, 'BTC', '0.0001');
+  await dialog.getByRole('button', { name: 'Review withdrawal' }).click();
+  await dialog.locator('.flow-confirm').click();
+  await expect(dialog.getByRole('status')).toContainText('Send complete');
+  const coin = dialog.locator('.coin3d');
+  const start = await coin.evaluate(el => getComputedStyle(el).transform);
+  await expect.poll(() => coin.evaluate(el => getComputedStyle(el).transform)).not.toBe(start);
+  await dialog.screenshot({ path: testInfo.outputPath('bitcoin-spinning-mobile.png') });
+  await expect.poll(() => coin.evaluate(el => {
+    const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
+    return Math.abs(m.m11 - 1) < .0001 && Math.abs(m.m13) < .0001;
+  })).toBe(true);
+  // An edge panel's normal must lie in the XY plane: the old rotateY-only
+  // geometry faced the camera and drew a gold strip over the logo at rest.
+  const normals = await coin.locator('.coin3d-rim i').evaluateAll(els => els.map(el => {
+    const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
+    return { z: m.m33, radial: Math.hypot(m.m31, m.m32) };
+  }));
+  expect(normals).toHaveLength(32);
+  for (const normal of normals) {
+    expect(Math.abs(normal.z)).toBeLessThan(.0001);
+    expect(normal.radial).toBeCloseTo(1, 4);
+  }
+  await dialog.locator('.crypto-send-recorded-mark').screenshot({ path: testInfo.outputPath('bitcoin-settled-coin.png') });
+  await fits(page);
 });

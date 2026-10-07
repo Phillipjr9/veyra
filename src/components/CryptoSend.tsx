@@ -36,17 +36,17 @@ function Coin3D({ asset, reduce }: { asset: string; reduce: boolean }) {
   const shell = { "--segw": `${segW}px`, "--thick": `${COIN_THICKNESS}px` } as CSSProperties;
   return <motion.div className="coin3d" style={shell}
     initial={reduce ? false : { y: -24, scale: .9 }}
-    animate={reduce ? { y: 0, scale: 1 } : { y: 0, scale: 1, rotateY: [0, 1080] }}
+    animate={reduce ? { y: 0, scale: 1 } : { y: 0, scale: 1, rotateY: [0, 720] }}
     transition={reduce ? { duration: 0 } : {
       y: { type: 'spring', stiffness: 130, damping: 13 },
       scale: { type: 'spring', stiffness: 130, damping: 13 },
-      // Three full turns after the coin has landed, then it rests face on.
-      rotateY: { duration: 2.1, delay: .32, ease: [0.16, 1, 0.3, 1] },
+      // Two full turns after the coin has landed, then it rests face on.
+      rotateY: { duration: 1.8, delay: .32, ease: [0.25, 0.1, 0.25, 1] },
     }}>
     <span className="coin3d-rim">{Array.from({ length: COIN_SEGMENTS }, (_, i) =>
-      <i key={i} className={i % 2 ? 'reed-dark' : 'reed-light'} style={{ transform: `rotateY(${(360 / COIN_SEGMENTS) * i}deg) translateZ(${COIN_RADIUS}px)` }} />)}</span>
+      <i key={i} className={i % 2 ? 'reed-dark' : 'reed-light'} style={{ transform: `rotateZ(${(360 / COIN_SEGMENTS) * i}deg) translateY(-${COIN_RADIUS}px) rotateX(90deg)` }} />)}</span>
     <span className="coin3d-face coin3d-front"><motion.img layoutId="crypto-send-hero" src={assetIcon(asset)} alt="" transition={{ type: 'spring', stiffness: 230, damping: 27 }} /></span>
-    <span className="coin3d-face coin3d-back" aria-hidden="true" />
+    <span className="coin3d-face coin3d-back" aria-hidden="true"><img src={assetIcon(asset)} alt="" /></span>
   </motion.div>;
 }
 
