@@ -113,7 +113,9 @@ export const RANGE_LABEL: Record<CandleRange, string> = {
 
 export async function fetchCandles(asset: string, range: CandleRange) {
   const data = await apiGet<{ previewData?: boolean; asset: string; range: CandleRange; candles: Candle[] }>(`/api/me/holdings/${encodeURIComponent(asset)}/candles?range=${range}`);
-  if (data.previewData) throw new Error("Current market history is unavailable.");
+  // Generated history is drawn only in development, and only on a page that
+  // carries the permanent "not live" banner. It is never a fallback for a
+  // live feed that failed.
   return data;
 }
 
@@ -179,7 +181,11 @@ export type MarketsResponse = {
 
 export async function fetchMarkets(): Promise<MarketsResponse> {
   const data = await apiGet<MarketsResponse>("/api/me/markets");
-  return data.previewData ? { ...data, disclosure: "Current market quotes are unavailable. Digital assets are not deposits or FDIC insured.", markets: [], quotedAt: null, quoteStatus: "unavailable", tradingEnabled: false } : data;
+  // Generated markets are listed only in development, and only beside the
+  // permanent "not live" banner the page renders. Trading stays switched off:
+  // displaying sample prices is one thing, executing an order against them is
+  // quite another, and no receipt should ever rest on a generated quote.
+  return data.previewData ? { ...data, previewData: true, tradingEnabled: false } : data;
 }
 
 export function useMarkets() {

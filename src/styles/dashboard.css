@@ -1349,6 +1349,20 @@
    Anything dropped reappears in .market-stats inside the expanded row.
 --------------------------------------------------------------------------- */
 .markets-page { container-type: inline-size; container-name: markets; }
+/* Sample market data is shown only in development, so the banner has to be
+   impossible to scroll past or mistake for ordinary page furniture. */
+.preview-crypto-notice {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  margin: 0 0 18px; padding: 12px 14px;
+  border: 2px solid #b45309; border-radius: 12px;
+  background: repeating-linear-gradient(135deg, #fffbeb 0 12px, #fef3c7 12px 24px);
+  color: #7c2d12; font-size: 13px; line-height: 1.5;
+}
+.preview-crypto-notice strong {
+  flex: none; padding: 3px 8px; border-radius: 6px;
+  background: #b45309; color: #fff;
+  font-size: 11px; font-weight: 800; letter-spacing: .08em;
+}
 
 @container markets (max-width: 1100px) {
   .market-table thead th:nth-child(4),

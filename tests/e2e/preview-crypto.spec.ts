@@ -15,16 +15,22 @@ async function fits(page: Page) {
   for (const dialog of await page.getByRole("dialog").all()) expect(await dialog.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
 }
 
-test("customer UI never relabels generated fixtures as live prices", async ({ page, request }) => {
+test("sample markets render only behind a permanent not-live banner and never enable trading", async ({ page, request }) => {
   await login(page, "personal");
-  await expect(page.locator(".preview-crypto-notice")).toHaveCount(0);
+  // Generated holdings keep their quantities, but valuations stay unavailable:
+  // a fabricated portfolio total would be a claim about real money.
   await expect(page.locator(".cw-hero-tag")).toHaveText("Quotes unavailable");
   for (const quantity of ["0.01 BTC", "0.25 ETH", "5 SOL", "500 USDC", "250 USDT"]) await expect(page.locator(".cw-asset-list")).toContainText(quantity);
   await expect(page.locator(".cw-action-bar").getByRole("button", { name: /^Buy/ })).toBeDisabled();
+  await expect(page.locator(".preview-crypto-notice")).toHaveCount(0);
+
   await page.goto("/#/app/markets?asset=BTC");
-  await expect(page.locator(".market-asset")).toHaveCount(0);
-  await expect(page.locator(".candle-chart")).toHaveCount(0);
-  await expect(page.getByText(/Test crypto data|Sample prices|test holdings/)).toHaveCount(0);
+  const notice = page.locator(".preview-crypto-notice");
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toContainText("TEST DATA · NOT LIVE");
+  await expect(page.getByRole("heading", { name: "Markets · test data", exact: true })).toBeVisible();
+  await expect(page.locator(".market-asset")).toHaveCount(24);
+  await expect(page.locator(".candle-chart")).toHaveCount(1);
   for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 900 }); await fits(page); }
   const session = await (await request.post("/api/auth/login", { data: { email: "demo.personal@veyra.dev", password: "veyra-demo-2026" } })).json();
   const result = await request.post("/api/me/crypto/quote", { headers: { authorization: `Bearer ${session.token}` }, data: { action: "buy", fromAsset: "USD", toAsset: "USDC", amount: "1" } });

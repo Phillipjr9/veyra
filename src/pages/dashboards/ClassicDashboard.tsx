@@ -2188,11 +2188,12 @@ export function MarketsPage() {
 
   return (
     <div className="app-page markets-page">
-      <PageHeader eyebrow="Digital assets · Market data" title="Markets">
+      <PageHeader eyebrow="Digital assets · Market data" title={data?.previewData ? "Markets · test data" : "Markets"}>
         <button type="button" className="ghost-btn" onClick={() => { void reload(); toast({ tone: "info", title: "Refreshing market data" }); }}>
           <RefreshCw size={15} /> Refresh
         </button>
       </PageHeader>
+      {data?.previewData && <p className="preview-crypto-notice" role="status"><strong>TEST DATA · NOT LIVE</strong>Sample prices, charts and market statistics generated for development. These are not live market quotes, and nothing here reflects a real market or a real balance.</p>}
 
       <div className="market-toolbar">
         <label className="market-search">
