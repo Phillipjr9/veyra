@@ -74,7 +74,7 @@ test('catalog is separate from holdings; animated crypto request is recorded and
  let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
  await page.route('**/api/me/crypto-withdrawals',async route=>{if(route.request().method()!=='POST')return route.continue();const response=await route.fetch();await gate;await route.fulfill({response});});
  await send.getByRole('button',{name:'Confirm withdrawal'}).click();await expect(send.getByText('Submitting withdrawal request…',{exact:true})).toBeVisible();await expect(send.locator('.flow-track')).toBeVisible();release();
- await expect(send.getByText('Request recorded · not broadcast',{exact:true})).toBeVisible();await expect(send.getByText(/No transaction hash or blockchain confirmation exists/)).toBeVisible();await send.getByRole('button',{name:'Close',exact:true}).click();
+ await expect(send.getByText('Send complete',{exact:true})).toBeVisible();await expect(send.getByText(/External custody and on-chain execution are not connected/)).toBeVisible();await send.getByRole('button',{name:'Close',exact:true}).click();
  await expect(usdc).toContainText('Available: 14.876544 USDC');await expect(usdc).not.toContainText('reserved');
  await page.reload();await expect(page.locator('.crypto-request-history')).toContainText('recorded');await expect(usdc).toContainText('Available: 14.876544 USDC');
  await expect(page.getByRole('button',{name:'Cancel and release units'})).toHaveCount(0);

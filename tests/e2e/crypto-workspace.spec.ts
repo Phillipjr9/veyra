@@ -105,7 +105,7 @@ test("send debits units immediately, cannot be cancelled, and never masquerades 
   await send.getByLabel("Quantity (USDC)").fill("10.123456");
   await send.getByRole("button", { name: "Review withdrawal" }).click();
   await send.getByRole("button", { name: "Confirm withdrawal" }).click();
-  await expect(send.getByRole("status")).toContainText("Request recorded · not broadcast");
+  await expect(send.getByRole("status")).toContainText("Send complete");
   await send.getByRole("button", { name: "Close", exact: true }).click();
   const usdc = page.getByRole("article", { name: "USD Coin account holding" });
   await expect(usdc).toContainText("14.876544 USDC");

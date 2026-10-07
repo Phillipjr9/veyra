@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { LayoutGroup, MotionConfig, motion, useReducedMotion } from "motion/react";
-import { Clock3, Download, Wallet, X } from "lucide-react";
+import { Check, Download, Wallet, X } from "lucide-react";
 import { apiGet, apiPost } from "../lib/api";
 import { assetIcon, type Holding } from "../lib/holdings";
 import { downloadFile, longDate } from "../lib/store";
-import { FlowProcessing, FlowTrack, StageDots } from "./MoneyFlow";
+import { Confetti, FlowProcessing, FlowTrack, StageDots } from "./MoneyFlow";
 import { useBankingDialog } from "./bankingDialog";
 import "../styles/banking-controls.css";
 import "../styles/crypto-send.css";
@@ -65,7 +65,7 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
   }
   const track = {
     from: { label: 'Your holdings', sub: holding.asset, icon: <img src={assetIcon(holding.asset)} alt="" /> },
-    to: { label: 'Withdrawal request', sub: network ?? 'Not supported', icon: <Wallet size={21} /> },
+    to: { label: 'Destination wallet', sub: network ?? 'Not supported', icon: <Wallet size={21} /> },
   };
   const cancelled = result?.status === 'cancelled';
   const download = () => {
@@ -73,8 +73,9 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
     downloadFile(`veyra-withdrawal-request-${result.reference}.txt`, [
       'VEYRA — CRYPTO WITHDRAWAL REQUEST', `Reference: ${result.reference}`, `Date: ${longDate(result.created_at)}`,
       `Quantity: ${result.quantity} ${result.asset}`, `Network: ${result.network}`, `Destination: ${result.address}`,
-      `Status: ${result.status}`, 'Not broadcast. No blockchain transaction hash or confirmation.',
-      'No network fee collected. This document is a request record, not proof of an on-chain transfer.',
+      `Status: ${result.status === 'recorded' ? 'Sent' : result.status}`,
+      'Settled in your Veyra account record. No blockchain transaction hash or confirmation exists.',
+      'No network fee collected. External custody and on-chain execution are not connected.',
     ].join('\n'));
   };
   return <MotionConfig reducedMotion={reduce ? 'always' : 'never'}><LayoutGroup id={layoutId}>
@@ -113,19 +114,20 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
           <div className="crypto-send-destination"><span>Requested destination</span><code>{address}</code></div>
         </motion.div>}
         {stage === 'recorded' && result && <motion.div className="crypto-send-recorded" initial={reduce ? false : { opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .35 }}>
+          <Confetti />
           <div role="status">
-            <div className="crypto-send-recorded-mark" aria-hidden="true"><motion.img layoutId="crypto-send-hero" src={assetIcon(result.asset)} alt="" transition={{ type: 'spring', stiffness: 230, damping: 27 }} /><motion.span initial={reduce ? false : { scale: .6 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 260, damping: 20 }}><Clock3 size={19} /></motion.span></div>
-            <span className="crypto-send-eyebrow">WITHDRAWAL REQUEST</span>
-            <h2 className="flow-title">{cancelled ? 'Previously cancelled request' : 'Request recorded · not broadcast'}</h2>
+            <div className="crypto-send-recorded-mark" aria-hidden="true"><motion.img layoutId="crypto-send-hero" src={assetIcon(result.asset)} alt="" transition={{ type: 'spring', stiffness: 230, damping: 27 }} /><motion.span initial={reduce ? false : { scale: .6 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 260, damping: 20, delay: .2 }}><Check size={19} /></motion.span></div>
+            <span className="crypto-send-eyebrow">WITHDRAWAL SENT</span>
+            <h2 className="flow-title">{cancelled ? 'Previously cancelled request' : 'Send complete'}</h2>
             <strong className="crypto-send-quantity">{result.quantity} <small>{result.asset}</small></strong>
-            <p className="flow-sub">{cancelled ? 'This request is cancelled. It has not been submitted again.' : 'Your request is recorded and the units have left your holdings.'}</p>
+            <p className="flow-sub">{cancelled ? 'This request is cancelled. It has not been submitted again.' : `${result.quantity} ${result.asset} has been sent from your Veyra holdings.`}</p>
           </div>
           <div className="receipt">
-            {[['Reference', result.reference], ['Network', result.network], ['Status', result.status], ['Network fee', 'None collected'], ['Broadcast', 'Not broadcast']].map(([label, value], i) => <motion.div key={label} className="receipt-row" initial={reduce ? false : { opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * .065 }}><span>{label}</span><b>{value}</b></motion.div>)}
+            {[['Reference', result.reference], ['Network', result.network], ['Status', 'Sent'], ['Network fee', 'None collected']].map(([label, value], i) => <motion.div key={label} className="receipt-row" initial={reduce ? false : { opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * .065 }}><span>{label}</span><b>{value}</b></motion.div>)}
           </div>
           <div className="crypto-send-destination"><span>Destination wallet address</span><code>{result.address}</code></div>
-          <p className="crypto-send-note">No transaction hash or blockchain confirmation exists for this request.</p>
-          <div className="flow-actions"><button type="button" className="ghost-btn" onClick={download}><Download size={15} /> Request record</button><button type="button" className="solid-btn" onClick={close}>Done</button></div>
+          <p className="crypto-send-note">Completed in your Veyra account record. External custody and on-chain execution are not connected, so no network fee or transaction hash is involved.</p>
+          <div className="flow-actions"><button type="button" className="ghost-btn" onClick={download}><Download size={15} /> Send receipt</button><button type="button" className="solid-btn" onClick={close}>Done</button></div>
         </motion.div>}
       </div>
     </section></div>

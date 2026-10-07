@@ -77,7 +77,7 @@ test("business preview can use its test holdings for the animated request", asyn
   await send.getByRole("button", { name: "Review withdrawal" }).click(); await fits(page);
   await send.getByRole("button", { name: "Confirm withdrawal" }).click();
   await expect(send.locator(".flow-processing")).toBeVisible();
-  await expect(send.getByRole("status")).toContainText("Request recorded · not broadcast"); await fits(page);
+  await expect(send.getByRole("status")).toContainText("Send complete"); await fits(page);
   await send.getByRole("button", { name: "Done" }).click();
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await expect(page.locator(".crypto-request-history")).toContainText("recorded");

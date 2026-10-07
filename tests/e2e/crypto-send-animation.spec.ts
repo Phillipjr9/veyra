@@ -77,17 +77,18 @@ test("shared send animation has real movement, waits for response, debits once a
     await page.setViewportSize({ width: 390, height: 844 });
     await dialog.screenshot({ path: testInfo.outputPath("crypto-processing-mobile.png") });
     release();
-    await expect(dialog.getByRole("status")).toContainText("Request recorded · not broadcast");
+    await expect(dialog.getByRole("status")).toContainText("Send complete");
     await expect(dialog.locator(".crypto-send-recorded .crypto-send-quantity")).toHaveText("10.123456 USDC");
-    await expect(dialog.locator(".confetti,.check-wrap")).toHaveCount(0);
+    // A completed send now celebrates like any other finished flow.
+    await expect(dialog.locator(".confetti")).toHaveCount(1);
     await expect(dialog.locator(".receipt")).toContainText(rows[0].reference);
     for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 844 }); await fits(page); }
     await dialog.screenshot({ path: testInfo.outputPath("crypto-recorded-desktop.png") });
     const download = page.waitForEvent("download");
-    await dialog.getByRole("button", { name: "Request record" }).click();
+    await dialog.getByRole("button", { name: "Send receipt" }).click();
     const file = await download;
     const text = await readFile((await file.path())!, "utf8");
-    expect(text).toContain(destination); expect(text).toContain("10.123456 USDC"); expect(text).toContain("Not broadcast");
+    expect(text).toContain(destination); expect(text).toContain("10.123456 USDC"); expect(text).toContain("Settled in your Veyra account record");
     await dialog.getByRole("button", { name: "Done" }).click();
     await expect(page.locator(".crypto-request-history")).toContainText("recorded");
     await expect(page.locator(".holding-card")).toContainText("Available: 14.876544 USDC");
@@ -106,7 +107,7 @@ test("reduced motion remains visible and preserves all eighteen ETH decimal plac
   await expect(dialog.locator(".flow-processing .flow-sub b")).toHaveText(`${amount} ETH`);
   await expect(dialog.locator(".flow-dot,.flow-travelling-token")).toHaveCount(0);
   expect(await dialog.locator(".flow-orbit > img").evaluate(el => getComputedStyle(el).animationName)).toBe("none");
-  await expect(dialog.getByRole("status")).toContainText("Request recorded · not broadcast");
+  await expect(dialog.getByRole("status")).toContainText("Send complete");
   expect(Date.now() - start).toBeGreaterThanOrEqual(2300);
   await expect(dialog.locator(".crypto-send-quantity")).toHaveText(`${amount} ETH`);
   expect((await withdrawals(request, headers))[0].units).toBe("123");
@@ -134,7 +135,7 @@ test("refusal and lost response are retryable without a second debit", async ({ 
   await expect(dialog.locator(".flow-confirm")).toBeVisible();
   expect(await withdrawals(request, headers)).toHaveLength(1);
   await dialog.locator(".flow-confirm").click();
-  await expect(dialog.getByRole("status")).toContainText("Request recorded · not broadcast");
+  await expect(dialog.getByRole("status")).toContainText("Send complete");
   expect(new Set(keys).size).toBe(1); expect(calls).toBe(3);
   expect(await withdrawals(request, headers)).toHaveLength(1);
 });
@@ -154,7 +155,7 @@ test("a lost response replay debits the units exactly once", async ({ page, requ
   await dialog.locator(".flow-confirm").click();
   await expect(dialog.getByRole("alert")).toBeVisible();
   await dialog.locator(".flow-confirm").click();
-  await expect(dialog.getByRole("status")).toContainText("Request recorded · not broadcast");
+  await expect(dialog.getByRole("status")).toContainText("Send complete");
   expect(await withdrawals(request, headers)).toHaveLength(1);
   await dialog.getByRole("button", { name: "Done" }).click();
   // 25 USDC held, 10.123456 requested once — the replay must not debit twice.
