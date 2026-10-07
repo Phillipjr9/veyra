@@ -12,6 +12,7 @@ type Rails = {
   provider: "stripe"; configured: boolean; live: boolean; status: "unavailable" | "not_started" | "onboarding" | "provisioning" | "pending" | "active" | "restricted" | "closed";
   connected: boolean; accountReady: boolean; features: { active: string[]; pending: string[]; restricted: string[] };
   receiving: { bankName?: string; routingNumber?: string; accountNumberLast4?: string; supportedNetworks?: string[] } | null; updatedAt?: number;
+  settlements?: Array<{ id: string; flowType: string; amount: number; currency: string; description: string; status: "open" | "posted" | "void"; createdAt: number; postedAt: number | null }>;
 };
 
 const railCopy: Record<Rails["status"], { title: string; detail: string }> = {
@@ -106,6 +107,7 @@ export function ExternalAccountsPage() {
       {rails.features.active.length > 0 && <p className="external-review-note">Active: {rails.features.active.map(feature => feature.replace(/_/g, " ")).join(" · ")}</p>}
       {rails.features.pending.length > 0 && <p className="external-review-note">Pending: {rails.features.pending.map(feature => feature.replace(/_/g, " ")).join(" · ")}</p>}
       {rails.features.restricted.length > 0 && <p className="banking-error">Restricted: {rails.features.restricted.map(feature => feature.replace(/_/g, " ")).join(" · ")}</p>}
+      {rails.settlements && rails.settlements.length > 0 && <div className="rail-settlement-list" aria-label="Recent Stripe settlement status"><strong>Recent Stripe settlement status</strong>{rails.settlements.map(settlement => <p className="external-review-note" key={settlement.id}><span className={`funding-badge ${settlement.status === "posted" ? "is-configured" : ""}`}>{settlement.status === "posted" ? "Settled" : settlement.status === "open" ? "Pending" : "Voided"}</span> {settlement.description} · {settlement.amount < 0 ? "−" : "+"}${Math.abs(settlement.amount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {settlement.currency.toUpperCase()}</p>)}</div>}
       <div className="external-account-toolbar">
         {(rails.status === "not_started" || rails.status === "onboarding" || rails.status === "restricted") && <button type="button" className="solid-btn" disabled={railBusy} onClick={() => void beginStripeOnboarding()}>{railBusy ? "Opening Stripe…" : rails.status === "not_started" ? "Start secure verification" : "Continue secure verification"}<ArrowRight size={15} /></button>}
         {(rails.status === "provisioning" || rails.status === "onboarding") && <button type="button" className="ghost-btn" disabled={railBusy} onClick={() => void activateFinancialAccount()}>{railBusy ? "Checking Stripe…" : "Activate financial account"}</button>}

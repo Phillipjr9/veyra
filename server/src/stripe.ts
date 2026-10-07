@@ -20,7 +20,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Request, Response } from "express";
 import type { DatabaseSync } from "node:sqlite";
-import { now } from "./db.js";
+import { inTransaction, now } from "./db.js";
 
 const STRIPE_API = "https://api.stripe.com";
 const WEBHOOK_TOLERANCE_SEC = 5 * 60;
@@ -222,6 +222,95 @@ function publicRail(row: RailRow | undefined, cfg: StripeConfig) {
   };
 }
 
+type SettlementRow = {
+  provider_transaction_id: string; financial_account_id: string; provider_flow_type: string; amount_cents: number; currency: string;
+  description: string; status: "open" | "posted" | "void"; created_at: number; posted_at: number | null;
+};
+
+const cleanDescription = (value: unknown, fallback: string) => String(typeof value === "string" ? value : fallback)
+  .replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 160) || fallback;
+const settlementLedgerId = (providerId: string) => `stripe_${createHash("sha256").update(providerId).digest("hex").slice(0, 28)}`;
+const stripeStatus = (value: unknown): "open" | "posted" | "void" => value === "posted" ? "posted" : value === "void" ? "void" : "open";
+
+/**
+ * Reduces one authoritative Stripe Treasury Transaction into the account
+ * projection. An open provider transaction is visible as a pending Veyra
+ * ledger row but cannot affect available balance. Only `posted` changes cents.
+ * This is deliberately idempotent across duplicate and out-of-order webhooks.
+ */
+function reconcileTreasuryTransaction(db: DatabaseSync, rail: RailRow, object: Json): void {
+  const providerId = typeof object.id === "string" ? object.id : "";
+  const financialAccount = typeof object.financial_account === "string" ? object.financial_account : "";
+  const currency = String(object.currency ?? "").toLowerCase();
+  const amount = Number(object.amount);
+  if (!providerId || !financialAccount || financialAccount !== rail.financial_account_id) throw new Error("Treasury transaction does not match a mapped financial account");
+  if (currency !== "usd" || !Number.isSafeInteger(amount) || amount === 0) throw new Error("Treasury transaction has an unsupported currency or amount");
+  const nextStatus = stripeStatus(object.status);
+  const flowId = typeof object.flow === "string" ? object.flow : "";
+  const flowType = typeof object.flow_type === "string" ? object.flow_type : "";
+  const description = cleanDescription(object.description, amount > 0 ? "Stripe Treasury credit" : "Stripe Treasury debit");
+  const at = now();
+
+  inTransaction(db, () => {
+    const existing = db.prepare("SELECT * FROM stripe_settlements WHERE provider_transaction_id=?").get(providerId) as (SettlementRow & { ledger_transaction_id: string; user_id: string }) | undefined;
+    if (existing) {
+      if (existing.amount_cents !== amount || existing.currency !== currency || existing.financial_account_id !== financialAccount) {
+        throw new Error("Stripe transaction identifier was replayed with conflicting settlement data");
+      }
+      if (existing.status === nextStatus) return;
+      if (existing.status === "posted") {
+        // A posted Treasury transaction is terminal. Returns/reversals arrive
+        // as a distinct provider transaction, preserving an immutable history.
+        throw new Error("Stripe transaction attempted to leave posted state");
+      }
+      if (existing.status === "void" && nextStatus !== "void") throw new Error("Void Stripe transaction cannot settle later");
+      if (nextStatus === "open") return;
+      if (nextStatus === "void") {
+        db.prepare("UPDATE stripe_settlements SET status='void',updated_at=? WHERE provider_transaction_id=?").run(at, providerId);
+        db.prepare("UPDATE transactions SET status='failed',note=? WHERE id=?").run("Stripe Treasury transaction was voided before settlement.", existing.ledger_transaction_id);
+        return;
+      }
+      const account = db.prepare("SELECT id,balance_cents FROM accounts WHERE user_id=?").get(rail.user_id) as { id: number; balance_cents: number } | undefined;
+      if (!account) throw new Error("Mapped Stripe member has no account projection");
+      const balance = account.balance_cents + amount;
+      if (!Number.isSafeInteger(balance) || balance < 0) throw new Error("Posted Stripe transaction cannot reconcile against the current Veyra balance");
+      db.prepare("UPDATE accounts SET balance_cents=?,updated_at=? WHERE id=?").run(balance, at, account.id);
+      db.prepare("UPDATE stripe_settlements SET status='posted',posted_at=?,updated_at=? WHERE provider_transaction_id=?").run(at, at, providerId);
+      db.prepare("UPDATE transactions SET status='cleared',note=? WHERE id=?").run(`Settled by Stripe Treasury · ${description}`, existing.ledger_transaction_id);
+      return;
+    }
+
+    const account = db.prepare("SELECT id,balance_cents FROM accounts WHERE user_id=?").get(rail.user_id) as { id: number; balance_cents: number } | undefined;
+    if (!account) throw new Error("Mapped Stripe member has no account projection");
+    const ledgerId = settlementLedgerId(providerId);
+    if (nextStatus === "posted") {
+      const balance = account.balance_cents + amount;
+      if (!Number.isSafeInteger(balance) || balance < 0) throw new Error("Posted Stripe transaction cannot reconcile against the current Veyra balance");
+      db.prepare("UPDATE accounts SET balance_cents=?,updated_at=? WHERE id=?").run(balance, at, account.id);
+    }
+    const ledgerStatus = nextStatus === "posted" ? "cleared" : nextStatus === "void" ? "failed" : "pending";
+    const category = amount > 0 ? "Funding" : "Transfer";
+    const merchant = amount > 0 ? "Stripe Treasury credit" : "Stripe Treasury payment";
+    db.prepare(`INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,status,reference,note,created_at,performed_by)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(
+      ledgerId, account.id, rail.user_id, merchant, category, flowType ? `Stripe ${flowType}` : "Stripe Treasury", amount,
+      ledgerStatus, `STRIPE-${providerId}`, nextStatus === "posted" ? `Settled by Stripe Treasury · ${description}` : description,
+      Number(object.created) > 0 ? Number(object.created) * 1000 : at,
+    );
+    db.prepare(`INSERT INTO stripe_settlements(provider_transaction_id,user_id,financial_account_id,provider_flow_id,provider_flow_type,ledger_transaction_id,amount_cents,currency,description,status,created_at,posted_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(providerId, rail.user_id, financialAccount, flowId, flowType, ledgerId, amount, currency,
+      description, nextStatus, Number(object.created) > 0 ? Number(object.created) * 1000 : at, nextStatus === "posted" ? at : null, at);
+  });
+}
+
+function recentSettlements(db: DatabaseSync, userId: string) {
+  return (db.prepare(`SELECT provider_transaction_id,provider_flow_type,amount_cents,currency,description,status,created_at,posted_at
+    FROM stripe_settlements WHERE user_id=? ORDER BY created_at DESC LIMIT 6`).all(userId) as SettlementRow[]).map(row => ({
+    id: row.provider_transaction_id, flowType: row.provider_flow_type, amount: row.amount_cents / 100, currency: row.currency,
+    description: row.description, status: row.status, createdAt: row.created_at, postedAt: row.posted_at,
+  }));
+}
+
 export function createStripeRails(db: DatabaseSync) {
   const rowFor = (userId: string) => db.prepare("SELECT * FROM stripe_rails WHERE user_id=?").get(userId) as RailRow | undefined;
 
@@ -293,7 +382,7 @@ export function createStripeRails(db: DatabaseSync) {
   }
 
   return {
-    status(userId: string) { return publicRail(rowFor(userId), stripeConfig()); },
+    status(userId: string) { return { ...publicRail(rowFor(userId), stripeConfig()), settlements: recentSettlements(db, userId) }; },
 
     async onboarding(user: { id: string; email: string; name: string; accountType: string }) {
       const cfg = stripeConfig();
@@ -447,11 +536,20 @@ export function createStripeRails(db: DatabaseSync) {
       const type = typeof event.type === "string" ? event.type : "";
       const object = event?.data?.object as Json | undefined;
       if (!eventId || !type || !object || typeof object !== "object") return void res.status(400).json({ error: "Invalid Stripe event." });
-      if (db.prepare("SELECT 1 FROM stripe_events WHERE id=?").get(eventId)) return void res.json({ received: true, duplicate: true });
       const objectId = typeof object.id === "string" ? object.id : "";
       const payloadHash = createHash("sha256").update(raw).digest("hex");
-      db.prepare("INSERT INTO stripe_events(id,type,object_id,created_at,received_at,livemode,payload_sha256,status) VALUES(?,?,?,?,?,?,?,?)")
-        .run(eventId, type, objectId, Number(event.created ?? 0) * 1000 || now(), now(), event.livemode ? 1 : 0, payloadHash, "received");
+      const recorded = db.prepare("SELECT status,payload_sha256 FROM stripe_events WHERE id=?").get(eventId) as { status: string; payload_sha256: string } | undefined;
+      if (recorded && recorded.status !== "failed") return void res.json({ received: true, duplicate: true });
+      if (recorded) {
+        // A prior 5xx intentionally asks Stripe to retry. Keep its receipt but
+        // move it back to processing; matching the hash stops an event ID from
+        // being reused to substitute different settlement details.
+        if (recorded.payload_sha256 !== payloadHash) return void res.status(400).json({ error: "Conflicting Stripe event payload." });
+        db.prepare("UPDATE stripe_events SET status='received',received_at=?,processed_at=NULL,error_code=NULL WHERE id=?").run(now(), eventId);
+      } else {
+        db.prepare("INSERT INTO stripe_events(id,type,object_id,created_at,received_at,livemode,payload_sha256,status) VALUES(?,?,?,?,?,?,?,?)")
+          .run(eventId, type, objectId, Number(event.created ?? 0) * 1000 || now(), now(), event.livemode ? 1 : 0, payloadHash, "received");
+      }
       try {
         const metadataUser = typeof object?.metadata?.veyra_user_id === "string" ? object.metadata.veyra_user_id : null;
         let rail = metadataUser ? rowFor(metadataUser) : undefined;
@@ -466,6 +564,9 @@ export function createStripeRails(db: DatabaseSync) {
           writeRail(rail.user_id, { financial_account_id: typeof object.id === "string" ? object.id : rail.financial_account_id,
             status: deriveRailStatus(null, object), active_features_json: safeJson(features.active), pending_features_json: safeJson(features.pending),
             restricted_features_json: safeJson(features.restricted), financial_address_json: safeJson(financialAddress(object) ?? {}), livemode: object.livemode ? 1 : 0 });
+        }
+        if (rail && (type.startsWith("treasury.transaction.") || object.object === "treasury.transaction")) {
+          reconcileTreasuryTransaction(db, rail, object);
         }
         if (objectId && (type.startsWith("issuing_card.") || object.object === "issuing.card")) {
           const cardStatus = String(object.status ?? "");

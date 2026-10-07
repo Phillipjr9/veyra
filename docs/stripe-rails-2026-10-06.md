@@ -12,7 +12,8 @@ This is intentionally **not** a claim that Veyra is a bank. Treasury and Issuing
 - One opaque Stripe connected-account and financial-account mapping per Veyra account.
 - Hosted Stripe Connect onboarding. Identity documents, external-bank credentials, and onboarding secrets do not pass through Veyra forms or database storage.
 - Financial-account feature requests for card issuing, ABA receiving details, inbound ACH, outbound ACH/wire payments, and outbound ACH/wire transfers.
-- Signed `/api/webhooks/stripe` handling with Stripe timestamp tolerance, HMAC verification, event-id deduplication, a payload hash (not raw event retention), and provider-status reconciliation.
+- Signed `/api/webhooks/stripe` handling with Stripe timestamp tolerance, HMAC verification, retry-safe event-id journaling, a payload hash (not raw event retention), and provider-status reconciliation.
+- Treasury-transaction settlement reduction keyed by Stripe's provider transaction ID: `open` is a pending local ledger entry, `posted` atomically clears it and moves the projected balance once, and `void` fails an unsettled entry. No browser callback or generic outbound-payment success can change a live balance.
 - Live Stripe Issuing virtual/physical card creation once `card_issuing` is active. Veyra stores only the opaque Stripe card/cardholder IDs, status, last four digits, and expiry. It never writes a PAN, CVV, PIN, bank credential, or Connect client secret.
 - Provider-side freeze/unfreeze. Veyra refuses to route a live Issuing card through its local simulated-transfer path.
 - A status panel in **Accounts → External accounts** that uses the existing premium card system and displays onboarding, pending, active, and restricted feature states.
@@ -36,6 +37,8 @@ This is intentionally **not** a claim that Veyra is a bank. Treasury and Issuing
    treasury.financial_account.created
    treasury.financial_account.closed
    treasury.financial_account.features_status_updated
+   treasury.transaction.created
+   treasury.transaction.updated
    treasury.received_credit.created
    treasury.received_credit.succeeded
    treasury.received_credit.available
@@ -82,15 +85,24 @@ This is intentionally **not** a claim that Veyra is a bank. Treasury and Issuing
 
 ## Reconciliation rule
 
-Provider webhooks, not a browser success response, are the authority for settlement. The current adapter records and deduplicates signed provider events and maps provider feature/card status into Veyra. Before enabling customer ACH/wire movement in production, the operations team must complete the next settlement milestone:
+Provider webhooks, not a browser success response, are the authority for settlement. For a mapped financial account, `treasury.transaction` is the only event that updates Veyra's account projection:
 
-- consume posted Treasury transaction/received-credit/outbound-payment events into the immutable Veyra ledger with a unique provider-transaction key;
-- reconcile each provider transaction against the daily Stripe financial-account transaction export;
-- hold failed, returned, and duplicate events in an operator-visible exception queue;
+- a unique `stripe_settlements` row links the provider transaction to exactly one Veyra transaction;
+- `open` creates a **pending** ledger row and does not alter balance;
+- `posted` atomically changes the row to **cleared** and applies its signed USD cents exactly once; a direct `posted` event is also supported;
+- `void` changes only an unsettled row to **failed**; a later `posted`, a changed amount/currency/account, an impossible debit, or a post-settlement reversal is rejected with a 5xx so Stripe retries and operations can investigate;
+- a repeated successful delivery is acknowledged without applying the balance again. A failed event is deliberately eligible for a same-payload retry instead of being incorrectly deduplicated forever.
+
+The existing **External accounts** panel shows recent provider settlement state (pending, settled, or voided) without displaying sensitive provider data. Stripe's full transaction/export history remains the operations source of record.
+
+Before enabling customer ACH/wire initiation in production, the operations team must still complete these release controls:
+
+- reconcile each provider transaction against the daily Stripe financial-account transaction export and investigate every unmatched settlement;
+- route failed/returned/reversal conditions into an operator-visible exception workflow (reversals must remain distinct provider transactions);
 - enable the Stripe Connect financial-account component (or an equivalently reviewed native flow) for external account collection and money movement;
 - run Stripe test-clock/sandbox cases for ACH pending, return, reversal, duplicate delivery, out-of-order delivery, and partial provider outage before enabling live outbound payments.
 
-Until that milestone is completed, Veyra intentionally refuses to represent a local transfer as a live Stripe payment. This is a safety property, not a missing loading state.
+Until those controls are complete, Veyra intentionally refuses to represent a local transfer as a live Stripe payment. This is a safety property, not a missing loading state.
 
 ## Secret rotation
 

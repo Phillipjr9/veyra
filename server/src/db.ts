@@ -1065,6 +1065,32 @@ ALTER TABLE cards ADD COLUMN provider_status TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX idx_cards_provider_card ON cards(provider_card_id) WHERE provider_card_id IS NOT NULL;
 `,
   },
+  {
+    version: 26,
+    sql: `
+-- Provider Treasury transactions are the settlement authority. A unique row
+-- per Stripe transaction lets webhook retries and out-of-order status updates
+-- reconcile one Veyra ledger row exactly once; browser responses never credit
+-- or debit a live account.
+CREATE TABLE stripe_settlements (
+  provider_transaction_id TEXT PRIMARY KEY,
+  user_id                 TEXT NOT NULL REFERENCES users(id),
+  financial_account_id    TEXT NOT NULL,
+  provider_flow_id        TEXT NOT NULL DEFAULT '',
+  provider_flow_type      TEXT NOT NULL DEFAULT '',
+  ledger_transaction_id   TEXT NOT NULL UNIQUE REFERENCES transactions(id),
+  amount_cents            INTEGER NOT NULL,
+  currency                TEXT NOT NULL,
+  description             TEXT NOT NULL DEFAULT '',
+  status                  TEXT NOT NULL CHECK(status IN ('open','posted','void')),
+  created_at              INTEGER NOT NULL,
+  posted_at               INTEGER,
+  updated_at              INTEGER NOT NULL
+);
+CREATE INDEX idx_stripe_settlements_user ON stripe_settlements(user_id,created_at DESC);
+CREATE INDEX idx_stripe_settlements_financial ON stripe_settlements(financial_account_id,status);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

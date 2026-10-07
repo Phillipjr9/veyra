@@ -85,7 +85,7 @@ try {
   check("signed Stripe callback is accepted", (await send(sign(event, timestamp))).status === 200);
   check("signed event is recorded without raw payload", Boolean(db.prepare("SELECT id,payload_sha256,status FROM stripe_events WHERE id=?").get("evt_veyra_rails_test")));
   check("Stripe retry is idempotently acknowledged", (await send(sign(event, timestamp))).status === 200);
-  check("migration creates rail mapping table", Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stripe_rails'").get()));
+  check("migration creates rail mapping and settlement tables", Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stripe_rails'").get()) && Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='stripe_settlements'").get()));
 
   const userId = "stripe_live_member", tokenId = "stripe_live_session", password = "stripe-live-pass";
   const createdAt = Date.now();
@@ -109,6 +109,34 @@ try {
   const frozen = await fetch(`${base}/api/me/cards/${issuedBody.card!.id}`, { method: "PATCH", headers: auth, body: JSON.stringify({ frozen: true }) });
   check("live card freeze is propagated to Stripe before local success", frozen.status === 200 && stripeRequests.some(request => request.path === "/v1/issuing/cards/ic_veyra_test" && request.body.includes("status=inactive")));
   check("live Issuing card cannot become a simulated local transfer", (await fetch(`${base}/api/me/transfers`, { method: "POST", headers: auth, body: JSON.stringify({ counterparty: "Merchant", amount: 1, category: "Operations", method: "Card", cardId: issuedBody.card!.id }) })).status === 409);
+
+  // Treasury Transactions, not browser completion callbacks or an outbound
+  // payment's creation status, are settlement authority. These fixtures prove
+  // the local projection remains pending until Stripe reports `posted`.
+  const treasuryEvent = (eventId: string, transactionId: string, status: "open" | "posted" | "void", amount: number, description = "ACH settlement") => JSON.stringify({
+    id: eventId, type: `treasury.transaction.${status === "open" ? "created" : "updated"}`, created: Math.floor(Date.now() / 1000), livemode: false,
+    data: { object: { id: transactionId, object: "treasury.transaction", financial_account: "fa_veyra_test", amount, currency: "usd", status,
+      flow: `flow_${transactionId}`, flow_type: amount > 0 ? "received_credit" : "outbound_payment", description, created: Math.floor(Date.now() / 1000) } },
+  });
+  const sendWebhook = async (body: string) => {
+    const signedAt = Math.floor(Date.now() / 1000);
+    return fetch(`${base}/api/webhooks/stripe`, { method: "POST", headers: { "content-type": "application/json", "stripe-signature": sign(body, signedAt) }, body });
+  };
+  const sendTreasury = (eventId: string, transactionId: string, status: "open" | "posted" | "void", amount: number, description = "ACH settlement") =>
+    sendWebhook(treasuryEvent(eventId, transactionId, status, amount, description));
+  const accountBalance = () => (db.prepare("SELECT balance_cents FROM accounts WHERE user_id=?").get(userId) as { balance_cents: number }).balance_cents;
+  check("open Treasury transaction is accepted", (await sendTreasury("evt_treasury_open", "tr_open_to_post", "open", 2_500)).status === 200);
+  const openSettlement = db.prepare("SELECT status,ledger_transaction_id FROM stripe_settlements WHERE provider_transaction_id=?").get("tr_open_to_post") as { status: string; ledger_transaction_id: string };
+  check("open Treasury transaction remains pending with no balance movement", openSettlement.status === "open" && accountBalance() === 10_000 && (db.prepare("SELECT status FROM transactions WHERE id=?").get(openSettlement.ledger_transaction_id) as { status: string }).status === "pending");
+  check("posted Treasury transaction settles the pending ledger exactly once", (await sendTreasury("evt_treasury_posted", "tr_open_to_post", "posted", 2_500)).status === 200 && accountBalance() === 12_500);
+  check("duplicate posted Treasury event does not move balance twice", (await sendTreasury("evt_treasury_posted", "tr_open_to_post", "posted", 2_500)).status === 200 && accountBalance() === 12_500);
+  check("direct posted Treasury event creates an already-cleared ledger row", (await sendTreasury("evt_treasury_direct_posted", "tr_direct_posted", "posted", 1_000)).status === 200 && accountBalance() === 13_500 && (db.prepare("SELECT status FROM transactions WHERE reference=?").get("STRIPE-tr_direct_posted") as { status: string }).status === "cleared");
+  check("void Treasury transaction marks its pending ledger row failed", (await sendTreasury("evt_treasury_void_open", "tr_void_before_post", "open", 600)).status === 200 && (await sendTreasury("evt_treasury_void", "tr_void_before_post", "void", 600)).status === 200 && (db.prepare("SELECT status FROM transactions WHERE reference=?").get("STRIPE-tr_void_before_post") as { status: string }).status === "failed" && accountBalance() === 13_500);
+  const outOfOrder = treasuryEvent("evt_treasury_void_then_post", "tr_void_before_post", "posted", 600);
+  check("unsafe void-to-posted reordering returns a retryable webhook failure", (await sendWebhook(outOfOrder)).status === 500 && (await sendWebhook(outOfOrder)).status === 500 && accountBalance() === 13_500);
+  const railStatus = await fetch(`${base}/api/me/rails`, { headers: { authorization: `Bearer ${token}` } });
+  const railBody = await railStatus.json() as { rails?: { settlements?: Array<{ id: string; status: string }> } };
+  check("rail status surfaces provider settlement state without sensitive details", railStatus.status === 200 && railBody.rails?.settlements?.some(settlement => settlement.id === "tr_open_to_post" && settlement.status === "posted"));
 
   console.log(`\n${checks} Stripe rail checks passed.`);
 } finally {
