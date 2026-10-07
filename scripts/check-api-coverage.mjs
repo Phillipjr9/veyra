@@ -75,6 +75,14 @@ const RETIRED_ROUTES = new Map([
   ["POST /api/me/scout/apply", "410 scout_credit_disabled — no funded savings provider"],
 ]);
 
+// Signed provider callbacks and short-lived component-session mints are not
+// navigable UI routes. They are documented operational integration boundaries,
+// deliberately kept out of the browser route scanner.
+const INFRASTRUCTURE_ROUTES = new Map([
+  ["POST /api/webhooks/stripe", "Stripe-signed webhook; never callable by the product UI"],
+  ["POST /api/me/rails/stripe/account-session", "Reserved for Stripe Connect embedded components; client secret is minted on demand"],
+]);
+
 const server = readFileSync(SERVER_FILE, "utf8");
 
 /** `app.get("/api/x/:id", …)` → "GET /api/x/:id" */
@@ -147,7 +155,7 @@ const unwired = [...serverKeys]
     return !(method === "GET" && [...referenced].some(path => accepts.test(path)));
   })
   .map(([, route]) => route)
-  .filter(route => !SUPERSEDED_BY_SNAPSHOT.has(route) && !RETIRED_ROUTES.has(route));
+  .filter(route => !SUPERSEDED_BY_SNAPSHOT.has(route) && !RETIRED_ROUTES.has(route) && !INFRASTRUCTURE_ROUTES.has(route));
 
 // Client calls that don't correspond to any route (typos, removed endpoints,
 // or a method the route doesn't accept).

@@ -25,16 +25,23 @@ import { basename, resolve } from "node:path";
   }
 })();
 
-import { previewCryptoEnabled } from "./previewCrypto.js";
-import { seedPreviewCrypto } from "./previewCryptoSeed.js";
-import { createApp } from "./app.js";
-import { describeRecaptcha, recaptchaConfig } from "./recaptcha.js";
-import { describeFederated } from "./federated.js";
-import { describeWebauthn } from "./webauthn.js";
-import { describeCrypto } from "./assets.js";
-import { describePrices } from "./prices.js";
-import { describeMail } from "./mail.js";
-import { seedDemoAccounts, DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD, DEMO_PASSWORD } from "./demo.js";
+// These imports are intentionally dynamic. Static ESM imports are evaluated
+// before this module's body, which would let security.ts read a development
+// fallback before the local .env loader above had populated TOKEN_SECRET.
+// Loading configuration first makes `npm run server` and host-provided env
+// behave identically, including key rotation and TOTP encryption settings.
+const { previewCryptoEnabled } = await import("./previewCrypto.js");
+const { seedPreviewCrypto } = await import("./previewCryptoSeed.js");
+const { createApp } = await import("./app.js");
+const { describeRecaptcha, recaptchaConfig } = await import("./recaptcha.js");
+const { describeFederated } = await import("./federated.js");
+const { describeWebauthn } = await import("./webauthn.js");
+const { describeCrypto } = await import("./assets.js");
+const { describePrices } = await import("./prices.js");
+const { describeMail } = await import("./mail.js");
+const { describeStripe } = await import("./stripe.js");
+const { productionRuntimeReport } = await import("./runtime.js");
+const { seedDemoAccounts, DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD, DEMO_PASSWORD } = await import("./demo.js");
 
 const PORT = Number(process.env.PORT ?? 8787);
 const isProduction = process.env.NODE_ENV === "production";
@@ -66,6 +73,14 @@ if (previewCryptoEnabled()) {
   if (process.env.DB_PATH && resolve(process.env.DB_PATH) !== previewDb) throw new Error("Preview crypto requires the isolated server/preview-crypto.db database.");
   process.env.DB_PATH = previewDb;
 }
+
+const runtimeReport = productionRuntimeReport();
+for (const warning of runtimeReport.warnings) console.warn(`Warning: ${warning}`);
+if (runtimeReport.errors.length) {
+  for (const error of runtimeReport.errors) console.error(`Refusing to start: ${error}`);
+  process.exit(1);
+}
+
 const { app, db } = createApp(process.env.DB_PATH);
 
 if (process.env.NODE_ENV === "production" && !process.env.TOKEN_SECRET) {
@@ -99,6 +114,7 @@ app.listen(PORT, "0.0.0.0", (error?: Error) => {
   console.log(describeCrypto());
   console.log(describePrices());
   console.log(describeMail());
+  console.log(describeStripe());
 
   if (isProduction) {
     console.log("Mode: production (members sign up through the API)");

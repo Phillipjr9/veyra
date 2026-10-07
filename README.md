@@ -180,6 +180,18 @@ server/
   tsconfig.json         NodeNext strict typecheck
 ```
 
+## Stripe banking rails
+
+Veyra uses **Stripe Connect + Treasury + Issuing** for its provider-backed account, ACH/wire, and card-issuing foundation. It is a fintech product experience, not a claim that Veyra itself is a bank. Stripe capability approval and its banking-partner requirements remain prerequisites to live money movement.
+
+The backend has a server-only Stripe adapter, hosted onboarding, financial-account feature requests, signed/idempotent webhooks, provider-status reconciliation, and live Issuing card creation/freezing. Live cards retain only opaque provider IDs, expiry and last four digits — never PAN, CVV, PIN, external-bank credentials, webhook raw bodies, or Connect client secrets. Existing visual surfaces preserve their design and display onboarding/pending/active/restricted states in **Accounts → External accounts**.
+
+Set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`, and a canonical `APP_URL`; see `.env.example` and [the Stripe rail runbook](docs/stripe-rails-2026-10-06.md). In production, an unconfigured or incomplete provider connection fails closed instead of falling back to a simulated card or transfer rail.
+
+```bash
+npm run test:stripe-rails
+```
+
 ## Email system
 
 - `src/emails/design.ts` mirrors the app tokens as email-safe inline HTML

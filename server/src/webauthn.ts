@@ -14,11 +14,13 @@
  * narrow slice of it — enough to read a COSE key. That is worth ~80 lines to
  * keep this dependency-free, the same trade already made in `federated.ts`.
  *
- * Deliberately NOT implemented: attestation statement verification. Attestation
- * tells you which authenticator model was used, which matters when you must
- * restrict members to issued hardware. Veyra wants members to use the device
- * in their hand, so we request `attestation: "none"` and ignore `attStmt`
- * entirely. Nothing below trusts it.
+ * Veyra's member policy is deliberately `attestation: "none"`: people can use
+ * the device in their hand, rather than only a company-issued authenticator.
+ * The verifier enforces that policy — it accepts only the WebAuthn `none`
+ * format with an empty statement and rejects any unexpected attestation object.
+ * That is safer than silently ignoring a statement. A future hardware-only
+ * policy needs a dedicated FIDO Metadata Service trust-chain verifier; do not
+ * flip this into `direct` without adding that verifier.
  *
  * Environment:
  *   WEBAUTHN_RP_ID       Domain passkeys are bound to ("veyra.com"). No port,
@@ -349,6 +351,13 @@ export function verifyRegistration(input: {
   try {
     const decoded = cborDecode(attestationRaw, 0);
     if (!(decoded.value instanceof Map)) throw new Error("attestationObject is not a CBOR map");
+    const fmt = decoded.value.get("fmt");
+    const statement = decoded.value.get("attStmt");
+    // registrationOptions() requests `none`. Do not accept a different format
+    // and accidentally claim it was verified — attestation trust chains need
+    // FIDO metadata and explicit roots, which this product does not yet use.
+    if (fmt !== "none") throw new Error("attestation format is not permitted by this passkey policy");
+    if (!(statement instanceof Map) || statement.size !== 0) throw new Error("none attestation must carry an empty statement");
     const raw = decoded.value.get("authData");
     if (!Buffer.isBuffer(raw)) throw new Error("attestationObject has no authData");
     authData = parseAuthData(raw);

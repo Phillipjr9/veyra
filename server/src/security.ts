@@ -15,6 +15,15 @@ const DEV_SECRET = "veyra-dev-secret-do-not-use-in-production";
 
 export const TOKEN_SECRET = process.env.TOKEN_SECRET ?? DEV_SECRET;
 export const IS_DEV_SECRET = TOKEN_SECRET === DEV_SECRET;
+/**
+ * Grace period for an HMAC rotation. New sessions are always signed by
+ * TOKEN_SECRET; existing sessions signed by one of these keys stay valid until
+ * their normal 12-hour expiry. Remove the old key after at least TOKEN_TTL_MS
+ * plus a deployment buffer. Comma separation lets an emergency rotation bridge
+ * more than one rolling deployment without turning verification into a keyring.
+ */
+export const TOKEN_SECRET_PREVIOUS = (process.env.TOKEN_SECRET_PREVIOUS ?? "")
+  .split(",").map(secret => secret.trim()).filter(secret => secret.length >= 32 && secret !== TOKEN_SECRET).slice(0, 2);
 
 /* ---------- passwords (scrypt: memory-hard, built into Node) ---------- */
 
@@ -56,10 +65,12 @@ export function verifyToken(token: string): TokenPayload | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [header, body, signature] = parts;
-  const expected = createHmac("sha256", TOKEN_SECRET).update(`${header}.${body}`).digest("base64url");
-  const a = Buffer.from(signature);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  const supplied = Buffer.from(signature);
+  const matches = [TOKEN_SECRET, ...TOKEN_SECRET_PREVIOUS].some(secret => {
+    const expected = Buffer.from(createHmac("sha256", secret).update(`${header}.${body}`).digest("base64url"));
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  });
+  if (!matches) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString()) as TokenPayload;
     if (typeof payload.exp !== "number" || payload.exp < Date.now()) return null;

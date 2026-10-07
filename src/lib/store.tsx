@@ -43,6 +43,8 @@ export type Card = {
   controls: CardControls;
   shipping: CardShipping;
   walletStatus: "not_added" | "added";
+  /** Stripe Issuing status. Provider cards intentionally never expose PAN/CVV/PIN from Veyra storage. */
+  providerStatus?: string;
   createdAt: number;
 };
 
@@ -400,14 +402,18 @@ function normalize(raw: unknown, p: Profile): Account {
 
   const cards = (list<Partial<Card>>(r.cards) ?? base.cards).map((c): Card => {
     const fresh = cardNumbers(c.last4);
+    const providerCard = typeof c.providerStatus === "string" && c.providerStatus.length > 0;
     const masked = typeof c.fullNumber !== "string" || c.fullNumber.includes("•");
     return {
       id: c.id ?? rid("card"),
       label: c.label ?? "Card",
       last4: fresh.last4,
-      fullNumber: masked || !current ? fresh.fullNumber : (c.fullNumber as string),
+      // Stripe Issuing card data stays in Stripe's card-data vault. Preserve
+      // the last-four mask from the API rather than generating a convincing
+      // but false PAN in the product UI.
+      fullNumber: providerCard ? (typeof c.fullNumber === "string" && c.fullNumber ? c.fullNumber : `•••• •••• •••• ${fresh.last4}`) : (masked || !current ? fresh.fullNumber : (c.fullNumber as string)),
       exp: c.exp ?? fresh.exp,
-      cvv: c.cvv ?? fresh.cvv,
+      cvv: providerCard ? "•••" : (c.cvv ?? fresh.cvv),
       limit: num(c.limit, 2500),
       spent: num(c.spent, 0),
       frozen: Boolean(c.frozen),
@@ -415,12 +421,13 @@ function normalize(raw: unknown, p: Profile): Account {
       merchantLock: c.merchantLock || undefined,
       categoryLock: c.categoryLock || undefined,
       cardholder: c.cardholder ?? p.name,
-      pin: /^\d{4}$/.test(c.pin ?? "") ? (c.pin as string) : digits(4),
+      pin: providerCard ? "" : (/^\d{4}$/.test(c.pin ?? "") ? (c.pin as string) : digits(4)),
       singleTransactionLimit: num(c.singleTransactionLimit, Math.min(num(c.limit, 2500), 5000)),
       dailyAtmLimit: num(c.dailyAtmLimit, c.type === "physical" ? 1000 : 0),
       controls: { ...defaultCardControls(c.type === "physical" ? "physical" : "virtual"), ...(c.controls ?? {}) },
       shipping: c.type === "physical" ? { ...deliveredShipping(Date.now()), ...(c.shipping ?? {}) } : virtualShipping(),
       walletStatus: c.walletStatus === "added" ? "added" : "not_added",
+      providerStatus: providerCard ? c.providerStatus : undefined,
       createdAt: num(c.createdAt, Date.now()),
     };
   });

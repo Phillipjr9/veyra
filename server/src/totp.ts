@@ -1,13 +1,21 @@
 /**
  * TOTP support for authenticator-app sign-in verification (RFC 6238 / RFC 4226).
- * Secrets are encrypted at rest with a key derived from TOKEN_SECRET; the setup
- * secret is only returned once, while the account holder is enrolling it.
+ * Secrets are encrypted at rest with a separately rotatable encryption secret;
+ * TOKEN_SECRET remains a backwards-compatible fallback for installations that
+ * predate TOTP_ENCRYPTION_KEY. The setup secret is only returned once, while
+ * the account holder is enrolling it.
  */
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { TOKEN_SECRET } from "./security.js";
+import { TOKEN_SECRET, TOKEN_SECRET_PREVIOUS } from "./security.js";
 
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-const SECRET_KEY = createHash("sha256").update(`veyra:totp:v1:${TOKEN_SECRET}`).digest();
+const TOTP_ENCRYPTION_SECRET = process.env.TOTP_ENCRYPTION_KEY ?? TOKEN_SECRET;
+const previousEncryptionSecrets = (process.env.TOTP_ENCRYPTION_KEY_PREVIOUS ?? "")
+  .split(",").map(secret => secret.trim()).filter(Boolean);
+// Include the historic token-derived key when moving to a dedicated TOTP key.
+const decryptionSecrets = [...new Set([TOTP_ENCRYPTION_SECRET, ...previousEncryptionSecrets, TOKEN_SECRET, ...TOKEN_SECRET_PREVIOUS])];
+const keyFor = (secret: string) => createHash("sha256").update(`veyra:totp:v1:${secret}`).digest();
+const SECRET_KEY = keyFor(TOTP_ENCRYPTION_SECRET);
 const STEP_MS = 30_000;
 const CODE_DIGITS = 6;
 
@@ -88,12 +96,15 @@ export function encryptTotpSecret(secret: string): string {
 export function decryptTotpSecret(encrypted: string): string {
   const [version, ivText, tagText, dataText] = encrypted.split(".");
   if (version !== "v1" || !ivText || !tagText || !dataText) throw new Error("Authenticator secret is unavailable.");
-  const decipher = createDecipheriv("aes-256-gcm", SECRET_KEY, Buffer.from(ivText, "base64url"));
-  decipher.setAuthTag(Buffer.from(tagText, "base64url"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(dataText, "base64url")),
-    decipher.final(),
-  ]).toString("utf8");
+  const iv = Buffer.from(ivText, "base64url"), tag = Buffer.from(tagText, "base64url"), data = Buffer.from(dataText, "base64url");
+  for (const secret of decryptionSecrets) {
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", keyFor(secret), iv);
+      decipher.setAuthTag(tag);
+      return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
+    } catch { /* Try the narrowly bounded previous-key grace list. */ }
+  }
+  throw new Error("Authenticator secret is unavailable.");
 }
 
 /** Testable TOTP generator; callers must never return this value to a client. */
