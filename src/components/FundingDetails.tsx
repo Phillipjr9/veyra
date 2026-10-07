@@ -30,6 +30,9 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
         {!methods.length && <option value="">No funding methods available</option>}
         {methods.map(method => <option key={method.id} value={method.id}>{method.label}</option>)}
       </select>
+      {/* A dead method used to look identical to a working one: the only
+          symptom was a disabled button further down the form. */}
+      {currentMethod?.unavailable && <p className="funding-method-warning" aria-live="polite">{currentMethod.label} isn’t ready to use yet. Choose another funding method to continue.</p>}
       <div className="funding-linked-action"><p>{linkedAccountCount ? "Your linked accounts and approved references are available in the dropdown." : "No bank account is available yet. Add an account reference for review, or choose another available method."}</p><Link className="text-link" to="/app/external-accounts" onClick={onCancel}>{linkedAccountCount ? "Manage linked accounts" : "Link an external account"} <ArrowRight size={14} /></Link></div>
       {children}
       <label className="flow-label" htmlFor="funding-amount">Amount (USD)</label>

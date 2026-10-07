@@ -102,7 +102,12 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
     dialog.current?.focus({ preventScroll: true });
   }, [phase, dialog]);
   const available = immediateFunding ? methods : methods.filter(m => m.kind === activeKind);
-  const method = available.find(m => m.id === selected) ?? available.find(m => m.kind === activeKind) ?? available[0];
+  // Never land on a method the member cannot use. "Link a bank (ACH)" and
+  // "Direct deposit" are unavailable until a bank is linked or receiving
+  // details exist, and opening on one of them left the only action button dead
+  // with nothing on screen explaining why.
+  const usable = available.filter(m => !m.unavailable);
+  const method = available.find(m => m.id === selected) ?? usable.find(m => m.kind === activeKind) ?? usable[0] ?? available[0];
   const option = activeKind ? fundingOption(activeKind) : undefined;
   const submitted = requests.find(r => r.id === submittedId) ?? (lastReceipt?.id === submittedId ? lastReceipt : undefined);
   const change = () => { setRequestKey(crypto.randomUUID()); setSubmittedId(""); setLastReceipt(null); setError(""); setPhase("form"); };
@@ -161,7 +166,6 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
     {!compact ? <header className="funding-hub-header"><div><span className="funding-eyebrow">MOVE MONEY IN</span><h2>Add funds</h2></div><button type="button" className="ghost-btn sm" disabled={busy} onClick={() => void refreshStatus()}>Refresh funding status</button><button type="button" className="funding-close" aria-label="Close" onClick={close} disabled={busy}><X size={20} /></button></header> : <div className="flow-head"><StageDots kind={immediateFunding || !loaded ? "deposit" : "funding"} stage={phase === "receipt" ? "success" : phase} /><button type="button" className="flow-close" aria-label="Close" onClick={close} disabled={busy}><X size={16} /></button></div>}
     <div className={compact ? "flow-body" : undefined}>
     {error && <p role="alert" className="banking-error">{error}</p>}
-    {phase === "receipt" && <button type="button" className="ghost-btn sm" disabled={busy} onClick={() => void refreshStatus()}>Refresh funding status</button>}
     {!loaded && !error && <p>Loading your funding methods…</p>}
     {immediateFunding && phase === "form" && <FundingDetails methods={methods} linkedAccountCount={linkedAccounts.length} selected={method?.id ?? ""} amount={amount} note={note} busy={busy}
       onMethod={id => { setSelected(id); setActiveKind(methods.find(m => m.id === id)?.kind ?? null); change(); }}
@@ -181,6 +185,9 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
       receipt={submitted ? { status: submitted.status, reference: submitted.reference, ledgerOnly: !!requestMethod(submitted).ledgerOnly, createdAt: submitted.created_at } : undefined}
       onPresented={() => pause.current?.finish()}
       close={close} again={() => choose(null)} />}
+    {/* Belongs with the receipt, not floating above it. It is still the way to
+        re-read a pending request or clear a failed account refresh. */}
+    {phase === "receipt" && <button type="button" className="ghost-btn sm funding-receipt-refresh" disabled={busy} onClick={() => void refreshStatus()}>Refresh funding status</button>}
     {!immediateFunding && loaded && <div hidden={phase !== "form"}>
     {activeKind && option ? <>
       <button type="button" className="funding-back" onClick={() => choose(null)} disabled={busy}><ArrowLeft size={16} /> All funding methods</button>
