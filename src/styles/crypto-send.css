@@ -32,9 +32,26 @@
 .crypto-send-destination code { display:block; font-size:11px; line-height:1.75; overflow-wrap:anywhere; white-space:normal; user-select:all; }
 .crypto-send-note { margin:16px 0 0; font-size:11.5px; line-height:1.7; color:var(--muted); }
 .crypto-send-recorded { text-align:center; }
-.crypto-send-recorded-mark { width:86px; height:86px; position:relative; display:grid; place-items:center; margin:6px auto 20px; border:1px solid #ebd9ac; border-radius:26px; background:linear-gradient(145deg,#fffaf0,#f8ebce); box-shadow:0 7px 0 -2px #e8d8b4,0 17px 28px #a0844018; }
-.crypto-send-recorded-mark > img { width:62px; height:62px; object-fit:contain; }
-.crypto-send-recorded-mark > span { position:absolute; right:-8px; bottom:-6px; display:grid; place-items:center; width:32px; height:32px; color:#967023; background:#fff9ea; border:2px solid #fff; border-radius:50%; box-shadow:0 3px 12px #87672a22; }
+/* Completion: a struck coin landing on its face — milled edge, thickness and a
+   specular sweep — rather than a flat gold tile. */
+.crypto-send-recorded-mark { width:104px; height:104px; position:relative; display:grid; place-items:center; margin:10px auto 22px; perspective:620px; }
+.crypto-send-recorded-mark > img { position:relative; z-index:2; width:54px; height:54px; object-fit:contain; filter:drop-shadow(0 3px 4px #7a5312a8); }
+.coin-face { position:absolute; inset:9px; z-index:1; border-radius:50%; transform-style:preserve-3d;
+  background:radial-gradient(circle at 32% 26%,#fff9e8,#f6d589 40%,#e0a93f 70%,#b57c1c 100%);
+  box-shadow:0 0 0 1px #a9761f55, inset 0 -7px 11px #8a5f1575, inset 0 6px 9px #ffffffcc, 0 11px 0 -5px #a9761f, 0 26px 36px #a0844048; }
+.coin-face::after { content:""; position:absolute; inset:8px; border-radius:50%; border:1px dashed #a9761f40; }
+.coin-sheen { position:absolute; inset:9px; z-index:3; border-radius:50%; overflow:hidden; pointer-events:none; }
+.coin-sheen::after { content:""; position:absolute; top:-45%; left:-55%; width:42%; height:190%; transform:rotate(18deg); background:linear-gradient(90deg,transparent,#fff 52%,transparent); filter:blur(3px); }
+.coin-ring { position:absolute; inset:9px; z-index:0; border-radius:50%; border:2px solid #e0a93f; pointer-events:none; }
+.crypto-send-recorded-mark > .coin-check { position:absolute; right:-4px; bottom:-2px; z-index:4; display:grid; place-items:center; width:34px; height:34px; color:#fff; background:linear-gradient(145deg,#5fae7d,#3d8a5d); border:2px solid #fff; border-radius:50%; box-shadow:0 4px 13px #2f6b4733; }
+/* Tumbling coins and shards. Distinct from the flat confetti a fiat transfer uses. */
+.crypto-send-burst { position:absolute; left:50%; top:60px; z-index:6; width:0; height:0; perspective:560px; pointer-events:none; }
+.crypto-send-burst > span { position:absolute; left:0; top:0; display:block; transform-style:preserve-3d; }
+.burst-coin { display:grid; place-items:center; border-radius:50%;
+  background:radial-gradient(circle at 33% 27%,#fff7dd,#f1ca6d 45%,#c8902b 100%);
+  box-shadow:0 0 0 1px #a9761f55, inset 0 -2px 3px #8a5f1570, 0 3px 9px #8a5f1540; }
+.burst-coin img { width:66%; height:66%; object-fit:contain; }
+.burst-shard { border-radius:3px; background:linear-gradient(90deg,#f7e3ae,#dca53c); box-shadow:0 0 7px #f2c96b90; }
 .crypto-send-eyebrow { display:block; margin-bottom:9px; font-size:9px; letter-spacing:.15em; font-weight:700; color:#977333; }
 .crypto-send-recorded .receipt { text-align:left; }
 .crypto-send-recorded .receipt-row b { overflow-wrap:anywhere; min-width:0; }

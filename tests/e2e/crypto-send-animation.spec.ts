@@ -79,8 +79,12 @@ test("shared send animation has real movement, waits for response, debits once a
     release();
     await expect(dialog.getByRole("status")).toContainText("Send complete");
     await expect(dialog.locator(".crypto-send-recorded .crypto-send-quantity")).toHaveText("10.123456 USDC");
-    // A completed send now celebrates like any other finished flow.
-    await expect(dialog.locator(".confetti")).toHaveCount(1);
+    // A completed send celebrates with a struck-coin burst, richer than the
+    // flat confetti a fiat transfer uses.
+    await expect(dialog.locator(".crypto-send-burst")).toHaveCount(1);
+    await expect(dialog.locator(".burst-coin")).not.toHaveCount(0);
+    await expect(dialog.locator(".burst-shard")).not.toHaveCount(0);
+    await expect(dialog.locator(".coin-face")).toHaveCount(1);
     await expect(dialog.locator(".receipt")).toContainText(rows[0].reference);
     for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 844 }); await fits(page); }
     await dialog.screenshot({ path: testInfo.outputPath("crypto-recorded-desktop.png") });
@@ -129,7 +133,7 @@ test("refusal and lost response are retryable without a second debit", async ({ 
   await dialog.locator(".flow-confirm").click();
   await expect(dialog.getByRole("alert")).toContainText("Request refused");
   expect(await withdrawals(request, headers)).toHaveLength(0);
-  await expect(dialog.locator(".crypto-send-recorded,.confetti")).toHaveCount(0);
+  await expect(dialog.locator(".crypto-send-recorded,.crypto-send-burst")).toHaveCount(0);
   await dialog.locator(".flow-confirm").click();
   await expect(dialog.getByRole("alert")).toBeVisible();
   await expect(dialog.locator(".flow-confirm")).toBeVisible();

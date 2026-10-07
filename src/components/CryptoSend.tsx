@@ -1,10 +1,10 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { LayoutGroup, MotionConfig, motion, useReducedMotion } from "motion/react";
 import { Check, Download, Wallet, X } from "lucide-react";
 import { apiGet, apiPost } from "../lib/api";
 import { assetIcon, type Holding } from "../lib/holdings";
 import { downloadFile, longDate } from "../lib/store";
-import { Confetti, FlowProcessing, FlowTrack, StageDots } from "./MoneyFlow";
+import { FlowProcessing, FlowTrack, StageDots } from "./MoneyFlow";
 import { useBankingDialog } from "./bankingDialog";
 import "../styles/banking-controls.css";
 import "../styles/crypto-send.css";
@@ -18,6 +18,37 @@ export function CryptoWithdrawalHistory({ revision }: { revision: number }) {
 }
 // Presentation steps, not fabricated custody/signing/broadcast progress.
 const REQUEST_STEPS = ["Preparing withdrawal details", "Displaying network and destination", "Preparing the request summary", "Preparing your request receipt"];
+
+/**
+ * A struck coin pays out: discs that tumble in three dimensions and arcing
+ * shards, rather than the flat rectangles the fiat transfer uses. Pieces are
+ * generated once per asset so a re-render never restarts the burst.
+ */
+function CoinBurst({ asset }: { asset: string }) {
+  const reduce = useReducedMotion();
+  const pieces = useMemo(() => Array.from({ length: 22 }, (_, i) => {
+    const angle = (i / 22) * Math.PI * 2 + (i % 3) * 0.22;
+    const dist = 74 + ((i * 41) % 62);
+    return {
+      id: i,
+      x: Math.cos(angle) * dist,
+      y: Math.sin(angle) * dist * 0.6 - 36,
+      size: 10 + ((i * 13) % 10),
+      spin: 240 + ((i * 107) % 420),
+      tilt: (i % 2 ? 1 : -1) * (150 + ((i * 61) % 240)),
+      delay: (i % 6) * 0.05,
+      coin: i % 3 !== 2,
+      logo: i % 6 === 0,
+    };
+  }), [asset]);
+  if (reduce) return null;
+  return <div className="crypto-send-burst" aria-hidden="true">{pieces.map(p => <motion.span key={p.id} className={p.coin ? "burst-coin" : "burst-shard"}
+    style={{ width: p.size, height: p.coin ? p.size : p.size * 0.38 }}
+    initial={{ x: 0, y: 0, scale: 0.3, opacity: 0, rotateX: 0, rotateY: 0 }}
+    animate={{ x: [0, p.x, p.x * 1.14], y: [0, p.y, p.y + 128], scale: [0.3, 1, 0.82], opacity: [0, 1, 0], rotateX: [0, p.tilt, p.tilt * 1.5], rotateY: [0, p.spin, p.spin * 1.7] }}
+    transition={{ duration: 1.75, delay: 0.22 + p.delay, times: [0, 0.38, 1], ease: "easeOut" }}
+  >{p.logo && <img src={assetIcon(asset)} alt="" />}</motion.span>)}</div>;
+}
 
 export function CryptoSendDialog({ holding, close, submitted }: { holding: Holding; close: () => void; submitted: () => void | Promise<void> }) {
   const [amount, setAmount] = useState(""), [address, setAddress] = useState("");
@@ -114,9 +145,16 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
           <div className="crypto-send-destination"><span>Requested destination</span><code>{address}</code></div>
         </motion.div>}
         {stage === 'recorded' && result && <motion.div className="crypto-send-recorded" initial={reduce ? false : { opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .35 }}>
-          <Confetti />
+          <CoinBurst asset={result.asset} />
           <div role="status">
-            <div className="crypto-send-recorded-mark" aria-hidden="true"><motion.img layoutId="crypto-send-hero" src={assetIcon(result.asset)} alt="" transition={{ type: 'spring', stiffness: 230, damping: 27 }} /><motion.span initial={reduce ? false : { scale: .6 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 260, damping: 20, delay: .2 }}><Check size={19} /></motion.span></div>
+            <div className="crypto-send-recorded-mark" aria-hidden="true">
+              <motion.span className="coin-face" initial={reduce ? false : { rotateY: -200, scale: .72 }} animate={{ rotateY: 0, scale: 1 }} transition={{ type: 'spring', stiffness: 110, damping: 13 }} />
+              <motion.span className="coin-ring" initial={reduce ? false : { scale: .78, opacity: .6 }} animate={{ scale: 1.85, opacity: 0 }} transition={{ duration: 1.25, delay: .22, ease: 'easeOut' }} />
+              <motion.span className="coin-ring" initial={reduce ? false : { scale: .78, opacity: .45 }} animate={{ scale: 1.5, opacity: 0 }} transition={{ duration: 1.1, delay: .5, ease: 'easeOut' }} />
+              <motion.img layoutId="crypto-send-hero" src={assetIcon(result.asset)} alt="" transition={{ type: 'spring', stiffness: 230, damping: 27 }} />
+              <motion.span className="coin-sheen" initial={reduce ? false : { x: '-130%' }} animate={{ x: '130%' }} transition={{ duration: .95, delay: .34, ease: 'easeInOut' }} />
+              <motion.span className="coin-check" initial={reduce ? false : { scale: .6 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 260, damping: 20, delay: .2 }}><Check size={19} /></motion.span>
+            </div>
             <span className="crypto-send-eyebrow">WITHDRAWAL SENT</span>
             <h2 className="flow-title">{cancelled ? 'Previously cancelled request' : 'Send complete'}</h2>
             <strong className="crypto-send-quantity">{result.quantity} <small>{result.asset}</small></strong>
