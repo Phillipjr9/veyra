@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useState, type ReactNode } from "react";
 import { ArrowRight } from "lucide-react";
+import { FundingMethodPicker } from "./FundingMethodPicker";
 import { money } from "../lib/store";
 import { quoteFee } from "../../shared/fees";
 
@@ -21,10 +22,6 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
   const invalid = (attempted || amount !== "") && !valid;
   const amountCents = valid ? Math.round(Number(amount) * 100) : 0;
   const fee = quoteFee(currentMethod?.kind === "card" ? "card_deposit" : "deposit", amountCents);
-  // Methods that cannot be used yet are kept in the list (so the catalog stays
-  // complete and the existing option labels stay stable) but grouped apart.
-  const readyMethods = methods.filter(method => !method.unavailable);
-  const setupMethods = methods.filter(method => method.unavailable);
   const summaryFee = currentMethod?.kind === "card" ? quoteFee("card_deposit", 10_000) : null;
   return <form className="flow-pane funding-details" noValidate onSubmit={e => {
     e.preventDefault(); setAttempted(true);
@@ -37,17 +34,7 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
           does not reliably clip overflow, so actions could sit on top of fields. */}
       <div className="funding-details-scroll">
       <label className="flow-label" htmlFor="funding-method">Funding method</label>
-      <div className="funding-picker">
-        <select id="funding-method" value={selected} onChange={e => onMethod(e.target.value)}>
-          {!methods.length && <option value="">No funding methods available</option>}
-          {readyMethods.length > 0 && <optgroup label={setupMethods.length ? "Ready now" : "Available methods"}>
-            {readyMethods.map(method => <option key={method.id} value={method.id}>{method.label}</option>)}
-          </optgroup>}
-          {setupMethods.length > 0 && <optgroup label="Needs setup">
-            {setupMethods.map(method => <option key={method.id} value={method.id}>{method.label}</option>)}
-          </optgroup>}
-        </select>
-      </div>
+      <FundingMethodPicker methods={methods} selected={selected} disabled={busy} onChange={onMethod} />
       {/* At-a-glance summary of the selected method, so the choice is clear
           without opening the list again. */}
       {currentMethod && <div className={`funding-method-summary ${currentMethod.unavailable ? "is-setup" : "is-ready"}`} aria-live="polite">

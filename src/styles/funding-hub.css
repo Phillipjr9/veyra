@@ -139,12 +139,30 @@
 .external-account-tabs button.active { background: #fffdf9; color: #241a35; box-shadow: 0 6px 16px rgba(36, 26, 53, .12); }
 .external-account-tabs button:focus-visible { outline: 2px solid #7558dc; outline-offset: 2px; }
 
-/* Funding method dropdown: a clearer control with grouped options and a
-   one-line summary of the selected method (status, availability and fee). */
+/* Funding method picker: icon tiles, short hints and grouped options. */
 .funding-picker { position: relative; }
-.funding-picker select { appearance: none; -webkit-appearance: none; width: 100%; min-height: 48px; padding: 12px 42px 12px 14px; border-radius: 13px; cursor: pointer; font-weight: 600; background-color: var(--paper); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%236c4796' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 16px center; }
-.funding-picker select:disabled { cursor: not-allowed; opacity: .7; }
-.funding-picker select option, .funding-picker select optgroup { font-weight: 500; color: var(--ink); }
+.funding-picker-trigger { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 62px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.funding-picker-trigger:hover:not(:disabled) { border-color: #b69cd7; }
+.funding-picker-trigger.is-open { border-color: #9d7be3; box-shadow: 0 0 0 3px #9d7be322; }
+.funding-picker-trigger:disabled { opacity: .7; cursor: not-allowed; }
+.funding-picker-trigger:focus-visible, .funding-picker-option:focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+.funding-picker-text { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 3px; }
+.funding-picker-text strong { font-size: 14px; font-weight: 650; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.funding-picker-text small { font-size: 12px; color: #786a83; line-height: 1.4; }
+.funding-picker-tile { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px; flex-shrink: 0; background: linear-gradient(145deg, #f4edff, #e7dbf5); color: #6c4796; box-shadow: inset 0 1px 0 #fff; }
+.funding-picker-tile.funding-icon-zelle { background: none; box-shadow: none; }
+.funding-picker-chevron { flex-shrink: 0; color: #6c4796; transition: transform .2s ease; }
+.funding-picker-trigger.is-open .funding-picker-chevron { transform: rotate(180deg); }
+.funding-picker-list { margin-top: 8px; padding: 6px; border: 1px solid #e2d9ed; border-radius: 16px; background: #fff; box-shadow: 0 8px 20px #4c2c6814; display: flex; flex-direction: column; gap: 2px; }
+.funding-picker-group { margin: 8px 10px 4px; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #8a7b99; }
+.funding-picker-option { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 10px; border: 0; border-radius: 12px; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.funding-picker-option:hover, .funding-picker-option:focus-visible { background: #f6f2fb; }
+.funding-picker-option.is-selected { background: #efe9fa; }
+.funding-picker-option.is-setup .funding-picker-text strong { color: #5f5170; }
+.funding-picker-option > svg { color: #6c4796; flex-shrink: 0; }
+.funding-picker-option .funding-badge { flex-shrink: 0; }
+/* Icon tiles for the picker: reuse the category colours used elsewhere. */
+.funding-picker-tile.funding-icon-bank, .funding-picker-tile.funding-icon-direct_deposit { color: #347466; background: linear-gradient(135deg, #eff9f3, #dbede5); }
 .funding-method-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-top: 8px; padding: 9px 12px; border-radius: 12px; border: 1px solid #e2d9ed; background: #fbf9fe; font-size: 12px; color: #41334d; }
 .funding-method-summary.is-setup { border-color: #e9dcc1; background: #fffbf2; }
 .funding-method-summary .funding-badge { background: #e9f5ee; color: #30674e; }

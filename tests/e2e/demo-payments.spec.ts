@@ -1,4 +1,4 @@
-import { confirmFunding } from "./funding-helpers";
+import { chooseFundingMethod, confirmFunding } from "./funding-helpers";
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
 import { PNG } from 'pngjs';
 import jsQR from 'jsqr';
@@ -18,7 +18,7 @@ async function fits(page:Page){expect(await page.evaluate(()=>Math.max(document.
 async function decode(page:Page){const src=await page.getByRole('img',{name:'Scannable QR for this Veyra payment link'}).getAttribute('src');const png=PNG.sync.read(Buffer.from(src!.split(',')[1],'base64'));const qr=jsQR(new Uint8ClampedArray(png.data),png.width,png.height);expect(qr).not.toBeNull();return qr!.data;}
 async function account(request:APIRequestContext,token:string){return (await(await request.get('/api/me/state',{headers:{authorization:`Bearer ${token}`}})).json()).account;}
 async function addFunds(page:Page,method='Debit card',amount='100.00'){
- await page.getByRole('button',{name:'Add funds',exact:true}).first().click();const dialog=page.getByRole('dialog',{name:'Add funds',exact:true});await expect(dialog).toBeVisible();await dialog.getByLabel('Funding method',{exact:true}).selectOption({label:method});await dialog.getByLabel('Amount (USD)',{exact:true}).fill(amount);await confirmFunding(dialog);await expect(dialog.getByRole('status')).toContainText('Funds added to your account immediately');return dialog;
+ await page.getByRole('button',{name:'Add funds',exact:true}).first().click();const dialog=page.getByRole('dialog',{name:'Add funds',exact:true});await expect(dialog).toBeVisible();await chooseFundingMethod(dialog, method);await dialog.getByLabel('Amount (USD)',{exact:true}).fill(amount);await confirmFunding(dialog);await expect(dialog.getByRole('status')).toContainText('Funds added to your account immediately');return dialog;
 }
 for(const type of ['personal','business'] as const)test(`${type}: original Add funds credits normal balance immediately and persists`,async({page,request})=>{
  const u=await fixture(request,`Funding${type}`,type==='personal'?'+1 555 019 8101':'+1 555 019 8102',type);await login(page,u.email);await page.goto('/#/app/transfers');await expect(page.getByRole('heading',{name:'Transfers',exact:true})).toBeVisible();await expect(page.getByText('PAYMENT PLAYGROUND',{exact:true})).toHaveCount(0);
@@ -43,7 +43,7 @@ test('QR email/phone and signed-out deep link work with the restored transfer fo
 test('a lost deposit response can be retried without a second credit',async({page,request})=>{
  const u=await fixture(request,'Retry','+1 555 019 8105');await login(page,u.email);await page.goto('/#/app/transfers');let calls=0;
  await page.route('**/api/me/deposits',async route=>{calls++;if(calls===1){await route.fetch();await route.abort('failed');}else await route.continue();});
- await page.getByRole('button',{name:'Add funds',exact:true}).first().click();const dialog=page.getByRole('dialog',{name:'Add funds',exact:true});await dialog.getByLabel('Funding method',{exact:true}).selectOption({label:'Wire transfer'});await dialog.getByLabel('Amount (USD)',{exact:true}).fill('150');await confirmFunding(dialog);await expect(dialog.getByRole('alert')).toBeVisible();expect((await account(request,u.token)).balance).toBe(150);
+ await page.getByRole('button',{name:'Add funds',exact:true}).first().click();const dialog=page.getByRole('dialog',{name:'Add funds',exact:true});await chooseFundingMethod(dialog, 'Wire transfer');await dialog.getByLabel('Amount (USD)',{exact:true}).fill('150');await confirmFunding(dialog);await expect(dialog.getByRole('alert')).toBeVisible();expect((await account(request,u.token)).balance).toBe(150);
  await confirmFunding(dialog);await expect(dialog.getByRole('status')).toContainText('Funds added');expect((await account(request,u.token)).balance).toBe(150);expect((await account(request,u.token)).transactions.filter((t:{reference:string})=>t.reference?.startsWith('VYR-'))).toHaveLength(1);
 });
 

@@ -1,4 +1,4 @@
-import { confirmFunding } from "./funding-helpers";
+import { chooseFundingMethod, confirmFunding, fundingMethodOptions, openFundingMethods } from "./funding-helpers";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
 import { quoteFee } from "../../shared/fees";
@@ -23,7 +23,7 @@ async function form(page: Page, amount = "25.50", quickJump = false) {
     await page.locator(".command-palette-box").getByRole("button", { name: /^Add Funds/ }).click();
   } else await page.getByRole("button", { name: "Add funds", exact: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
-  await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: "Bank transfer" });
+  await chooseFundingMethod(dialog, "Bank transfer");
   await dialog.getByLabel("Amount (USD)", { exact: true }).fill(amount);
   return dialog;
 }
@@ -102,8 +102,8 @@ test("a fast response still gets a visible animation and adding more uses a new 
   await expect(dialog.getByRole("status")).toContainText("Funds added to your account immediately");
   expect(Date.now() - started).toBeGreaterThanOrEqual(2300);
   await dialog.getByRole("button", { name: "Add more funds", exact: true }).click();
-  await expect(dialog.getByLabel("Funding method", { exact: true }).locator("option")).toHaveCount(8);
-  await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: "Debit card" });
+  await openFundingMethods(dialog); await expect(fundingMethodOptions(dialog)).toHaveCount(8);
+  await chooseFundingMethod(dialog, "Debit card");
   await dialog.getByLabel("Amount (USD)").fill("15");
   await confirmFunding(dialog);
   await expect(dialog.getByRole("status")).toContainText("Funds added to your account immediately");
@@ -197,7 +197,7 @@ test("details and review match the send flow; edit and cancel never submit a dep
   await dialog.getByRole("button", { name: "Edit", exact: true }).click();
   await expect(dialog.getByLabel("Amount (USD)")).toHaveValue("40");
   await expect(dialog.getByLabel("Memo (optional)")).toHaveValue("My account top-up");
-  await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: "Debit card" });
+  await chooseFundingMethod(dialog, "Debit card");
   await dialog.getByLabel("Amount (USD)").fill("50");
   await dialog.getByRole("button", { name: "Review deposit", exact: true }).click();
   await expect(dialog.locator(".flow-rows")).toContainText("Debit card");

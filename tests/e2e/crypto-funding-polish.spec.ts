@@ -1,3 +1,4 @@
+import { chooseFundingMethod, fundingMethodOptions, openFundingMethods } from "./funding-helpers";
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { quoteFee } from "../../shared/fees";
 
@@ -75,8 +76,8 @@ test("funding lists the real linked account; Direct Deposit displays only admin-
   } })).status()).toBe(200);
   await page.goto("/#/app"); await page.getByRole("button", { name: "Add funds", exact: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
-  await expect(dialog.getByLabel("Funding method", { exact: true }).locator("option").filter({ hasText: "Connected Bank Checking •••• 7890" })).toHaveCount(1);
-  await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: "Direct deposit" });
+  await openFundingMethods(dialog); await expect(fundingMethodOptions(dialog).filter({ hasText: "Connected Bank Checking •••• 7890" })).toHaveCount(1);
+  await chooseFundingMethod(dialog, "Direct deposit");
   const details = dialog.getByRole("region", { name: "Direct Deposit banking details" });
   await expect(details).toContainText("User Specific Payroll Bank"); await expect(details).toContainText("021000021"); await expect(details).toContainText("Savings");
   await expect(details).not.toContainText("777123456789"); await details.getByRole("button", { name: "Show account number" }).click(); await expect(details).toContainText("777123456789");
@@ -93,9 +94,9 @@ test("no linked account has a direct linking action, no fake bank, and no generi
   await expect(page.getByRole("heading", { name: "Recent deposits", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Add funds", exact: true }).first().click(); const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
   await expect(dialog.getByRole("link", { name: "Link an external account" })).toBeVisible();
-  await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: "Link a bank (ACH)" });
+  await chooseFundingMethod(dialog, "Link a bank (ACH)");
   await dialog.getByLabel("Amount (USD)", { exact: true }).fill("25"); await expect(dialog.getByRole("button", { name: "Review deposit" })).toBeDisabled();
-  await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: "Direct deposit" });
+  await chooseFundingMethod(dialog, "Direct deposit");
   await expect(dialog).toContainText("has not configured Direct Deposit"); await expect(dialog.locator(".direct-deposit-details")).not.toContainText("Northfield");
   await dialog.getByRole("link", { name: "Link an external account" }).click(); await expect(page).toHaveURL(/external-accounts/);
   await expect(page.getByRole("heading", { name: "Link an external account" })).toBeVisible(); await expect(page.getByRole("region", { name: "Available bank accounts" })).toContainText("No verified external accounts");
@@ -155,7 +156,7 @@ test("an owner submits a reference, staff review it, and only then can it be sel
   await expect(page.getByRole("article", { name: "Harbor External Bank ending 8765" })).toContainText("Staff-approved reference");
   await page.getByRole("button", { name: "Continue to Add funds" }).click();
   const funding = page.getByRole("dialog", { name: "Add funds", exact: true });
-  await funding.getByLabel("Funding method", { exact: true }).selectOption({ label: "Harbor External Bank Checking •••• 8765 · Account reference" });
+  await chooseFundingMethod(funding, "Harbor External Bank Checking •••• 8765 · Account reference");
   await funding.getByLabel("Amount (USD)", { exact: true }).fill("25");
   await expect(funding.getByRole("button", { name: "Review deposit" })).toBeEnabled();
   await expect(funding).toContainText("External bank and card processing is not connected"); await fits(page);

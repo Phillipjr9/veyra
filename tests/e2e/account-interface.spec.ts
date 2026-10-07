@@ -1,4 +1,4 @@
-import { confirmFunding } from "./funding-helpers";
+import { chooseFundingMethod, confirmFunding, fundingMethodOptions, openFundingMethods } from "./funding-helpers";
 import { test, expect, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
 import { FUNDING_OPTIONS } from "../../shared/funding";
@@ -30,9 +30,9 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
   for (const option of FUNDING_OPTIONS) {
     await page.getByRole("button", { name: "Add funds", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
-    await expect(dialog.getByLabel("Funding method", { exact: true }).locator("option")).toHaveCount(8);
+    await openFundingMethods(dialog); await expect(fundingMethodOptions(dialog)).toHaveCount(8);
     await ordinaryInterface(page);
-    await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: option.label });
+    await chooseFundingMethod(dialog, option.label);
     await dialog.getByLabel("Amount (USD)", { exact: true }).fill("14.25");
     if (option.kind === "ach" || option.kind === "direct_deposit") {
       await expect(dialog.getByRole("button", { name: "Review deposit", exact: true })).toBeDisabled();
