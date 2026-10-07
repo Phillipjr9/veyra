@@ -55,7 +55,11 @@ export function tradingEnabled(): boolean {
 }
 
 export function describeCrypto(): string {
-  return tradingEnabled()
-    ? "Digital assets: account trading ON; custody and on-chain execution not connected; not FDIC insured"
+  const account = tradingEnabled()
+    ? "Digital assets: account trading ON"
     : "Digital assets: view only (CRYPTO_TRADING_ENABLED controls internal account trading)";
+  const sepolia = process.env.NODE_ENV !== "production" && process.env.CRYPTO_TESTNET_SEND === "1"
+    ? "; direct-wallet Sepolia test sends ON (no Veyra balance changes)"
+    : "";
+  return `${account}${sepolia}; custody and mainnet execution not connected; not FDIC insured`;
 }

@@ -1,8 +1,7 @@
 import { ASSETS } from "../../shared/catalog.js";
 
-/** Explicit, non-production test data. Never a fallback for a failed live feed. */
+/** Explicit, non-production generated data. Never a fallback for a failed live feed. */
 export const previewCryptoEnabled = () => process.env.NODE_ENV !== "production" && process.env.PREVIEW_CRYPTO_DATA === "1";
-export const PREVIEW_CRYPTO_NOTICE = "Test crypto data: sample prices, charts and market statistics—not live market data. Preview account holdings have no external value. Orders update internal records only; withdrawals are not broadcast.";
 
 const PRICES: Record<string, number> = {
   BTC: 50000, ETH: 3000, SOL: 200, USDC: 1, USDT: 1, BNB: 600,

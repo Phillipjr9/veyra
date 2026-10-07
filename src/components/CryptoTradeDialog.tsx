@@ -87,7 +87,6 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
   const choose = (value: string, which: "source" | "target") => { if (which === "source") { setSource(value); if (value === target) setTarget(holdings.find(h => h.asset !== value)?.asset ?? "ETH"); } else setTarget(value); setAmount(""); };
   return <div className="banking-scrim"><section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label={titles[quote?.action ?? action]} className="banking-panel cw-dialog">
     <span className="cw-eyebrow"><ShieldCheck size={14} /> VEYRA ACCOUNT ORDER</span>
-    {quote?.previewData && <p className="preview-crypto-notice" role="status"><strong>TEST DATA · NOT LIVE</strong>This quote is generated sample data. Confirming it moves test records only — no real funds and no external market.</p>}
     {!processing && <><h2>{receipt ? "Account order completed" : quote ? "Review your order" : titles[action]}</h2>
     <p className="cw-subtle">Account balances only. Custody, cash conversion and external trading providers are not connected. This is not an on-chain transaction.</p></>}
     {error && <p role="alert" className="banking-error">{error}</p>}

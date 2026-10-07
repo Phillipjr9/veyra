@@ -133,3 +133,7 @@
 @media (max-width: 480px) { .external-account-fields { grid-template-columns: minmax(0,1fr); gap: 0; } .external-account-form-panel input:not([type=checkbox]), .external-account-form-panel select { font-size: 16px; } }
 
 .external-add-reference { margin-bottom: 20px; }
+.external-account-tabs { display: inline-flex; gap: 8px; padding: 6px; margin: 4px 0 18px; border-radius: 999px; background: #f4f0f8; border: 1px solid #e3dce9; }
+.external-account-tabs button { border: 0; background: transparent; color: #5c5664; font: inherit; font-size: 13px; font-weight: 700; padding: 9px 16px; border-radius: 999px; cursor: pointer; }
+.external-account-tabs button.active { background: #fffdf9; color: #241a35; box-shadow: 0 6px 16px rgba(36, 26, 53, .12); }
+.external-account-tabs button:focus-visible { outline: 2px solid #7558dc; outline-offset: 2px; }

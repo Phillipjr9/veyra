@@ -13,7 +13,7 @@ export function FundingAnimation({ phase, amount, source, immediate, receipt, cl
   amount: number;
   source: string;
   immediate: boolean;
-  receipt?: { status: string; reference: string; ledgerOnly: boolean; createdAt: number };
+  receipt?: { status: string; reference: string; ledgerOnly: boolean; createdAt: number; fee?: number };
   close: () => void;
   again: () => void;
   onPresented: () => void;
@@ -30,7 +30,7 @@ export function FundingAnimation({ phase, amount, source, immediate, receipt, cl
     { label: "To", value: "Your Veyra account" },
     { label: "Status", value: receipt?.status ?? "" },
     { label: "Available", value: "Now" },
-    ...(receipt?.ledgerOnly ? [{ label: "Fee", value: "$0.00", tone: "free" as const }] : []),
+    ...(receipt?.ledgerOnly ? [{ label: "Fee", value: (receipt.fee ?? 0) > 0 ? money(receipt.fee ?? 0) : "$0.00", tone: (receipt.fee ?? 0) > 0 ? undefined : "free" as const }] : []),
   ];
   const download = () => downloadFile(`veyra-receipt-${receipt?.reference}.txt`, [
     "VEYRA — DEPOSIT RECEIPT", `Amount: ${money(amount)}`,

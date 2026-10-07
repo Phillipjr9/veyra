@@ -1089,6 +1089,44 @@ ALTER TABLE crypto_withdrawals_v26 RENAME TO crypto_withdrawals;
 CREATE INDEX idx_crypto_withdrawals_user ON crypto_withdrawals(user_id, status);
 `,
   },
+  {
+    version: 27,
+    sql: `
+-- v27: transaction fees and debit-card funding references.
+--
+-- Fees are stored as a separate non-negative column so the signed principal in
+-- amount_cents stays immutable and auditable. The cash effect of a ledger row
+-- is always amount_cents - fee_cents (see shared/fees.ts).
+ALTER TABLE transactions ADD COLUMN fee_cents INTEGER NOT NULL DEFAULT 0 CHECK (fee_cents >= 0);
+
+-- external_accounts now holds two kinds of funding references: staff-entered
+-- bank references and member-entered debit-card references. Card rows never
+-- store a PAN, CVV or full expiry: the client sends a masked last-four plus an
+-- opaque token, and the billing address is stored as JSON for receipts only.
+CREATE TABLE external_accounts_v27 (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ kind TEXT NOT NULL DEFAULT 'bank' CHECK(kind IN ('bank','card')),
+ bank_name TEXT NOT NULL DEFAULT '', account_name TEXT NOT NULL DEFAULT '',
+ last4 TEXT NOT NULL CHECK(length(last4)=4 AND last4 NOT GLOB '*[^0-9]*'),
+ account_type TEXT NOT NULL DEFAULT 'Checking' CHECK(account_type IN ('Checking','Savings')),
+ card_brand TEXT NOT NULL DEFAULT '',
+ card_exp_month INTEGER CHECK(card_exp_month IS NULL OR (card_exp_month >= 1 AND card_exp_month <= 12)),
+ card_exp_year INTEGER CHECK(card_exp_year IS NULL OR card_exp_year >= 2000),
+ billing_address_json TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL CHECK(status IN ('pending','verified','disconnected')),
+ provider_reference TEXT UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+ verification_kind TEXT NOT NULL DEFAULT 'provider' CHECK(verification_kind IN ('provider','staff_reference','card_token')),
+ verification_note TEXT NOT NULL DEFAULT '', reviewed_by TEXT REFERENCES users(id), request_key TEXT,
+ CHECK(status != 'verified' OR (length(trim(provider_reference)) > 0 AND provider_reference IS NOT NULL))
+);
+INSERT INTO external_accounts_v27 (id,user_id,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at,verification_kind,verification_note,reviewed_by,request_key)
+ SELECT id,user_id,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at,verification_kind,verification_note,reviewed_by,request_key FROM external_accounts;
+DROP TABLE external_accounts;
+ALTER TABLE external_accounts_v27 RENAME TO external_accounts;
+CREATE INDEX idx_external_accounts_owner ON external_accounts(user_id,status);
+CREATE UNIQUE INDEX idx_external_accounts_request ON external_accounts(user_id,request_key);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

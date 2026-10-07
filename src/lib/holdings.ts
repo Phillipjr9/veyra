@@ -51,8 +51,7 @@ export type TradeResult = {
 
 export async function fetchHoldings(): Promise<HoldingsResponse> {
   // Generated holdings are rendered in development so the whole product can be
-  // exercised, and the workspace badges them as test data. Sample prices never
-  // stand in for a live feed that failed.
+  // exercised. Generated prices never stand in for a live feed that failed.
   return apiGet<HoldingsResponse>("/api/me/holdings");
 }
 
@@ -111,9 +110,8 @@ export const RANGE_LABEL: Record<CandleRange, string> = {
 
 export async function fetchCandles(asset: string, range: CandleRange) {
   const data = await apiGet<{ previewData?: boolean; asset: string; range: CandleRange; candles: Candle[] }>(`/api/me/holdings/${encodeURIComponent(asset)}/candles?range=${range}`);
-  // Generated history is drawn only in development, and only on a page that
-  // carries the permanent "not live" banner. It is never a fallback for a
-  // live feed that failed.
+  // Generated history is drawn only in development. It is never a fallback for
+  // a live feed that failed.
   return data;
 }
 
@@ -178,9 +176,9 @@ export type MarketsResponse = {
 };
 
 export async function fetchMarkets(): Promise<MarketsResponse> {
-  // Generated markets are listed in development beside the page's permanent
-  // "not live" banner, and may be traded against there so the buy, sell and
-  // swap flows can be exercised end to end. Never a fallback for live data.
+  // Generated markets are listed in development and may be traded against so
+  // the buy, sell and swap flows can be exercised end to end. Never a fallback
+  // for live data.
   return apiGet<MarketsResponse>("/api/me/markets");
 }
 

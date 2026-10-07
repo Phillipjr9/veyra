@@ -176,7 +176,7 @@ server/
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
   scripts/test-api.ts   HTTP integration suite (boots the real server)
   scripts/price-fixture.ts Offline market quotes/history for audit and browser tests
-  scripts/audit-routes.ts  104 routes × 6 identities gate/isolation audit (+22 isolation/validation probes)
+  scripts/audit-routes.ts  132 routes × 6 identities gate/isolation audit (+22 isolation/validation probes)
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -524,17 +524,24 @@ builds each member's Account snapshot straight from these tables.
 
 The **Crypto** workspace (`/app/assets`) separates Veyra's built-in account
 holdings from a connected external wallet. Approved account owners can review
-and confirm internal **buy, sell and swap** orders. **Send** reserves holdings
-as a cancellable pending request; it does not broadcast a blockchain transaction.
-The existing asset catalog and **Markets** (`/app/markets`) remain available.
+and confirm internal **buy, sell and swap** orders. A Veyra-account **Send**
+records a debit only; it does not broadcast and cannot be cancelled. The existing
+asset catalog and **Markets** (`/app/markets`) remain available.
 
 Ethereum browser wallets (EIP-6963/EIP-1193), Phantom Solana and UniSat Bitcoin
 can share public addresses. Wallet balances and receiving QR codes belong to
-those external wallets, not the Veyra account ledger. Connections do not sign
-transactions or prove ownership for Veyra authentication. No private keys or
-recovery phrases are requested. Unsupported/unavailable balances stay unknown.
+those external wallets, not the Veyra account ledger. Connecting alone never
+signs or authorizes a transaction, and does not prove ownership for Veyra
+authentication. No private keys or recovery phrases are requested.
+Unsupported/unavailable balances stay unknown.
 
-**Custody, external execution, bridging and cash on/off-ramps are not connected.**
+A separate **development-only Sepolia test send** can be explicitly enabled with
+`CRYPTO_TESTNET_SEND=1`. It sends native test ETH from a user's own Ethereum
+wallet after showing the destination, amount and estimated fee and asking for
+wallet approval. Testnet transfers never debit Veyra holdings. Production
+startup refuses this switch; it does not enable Ethereum mainnet sends.
+
+**Custody, mainnet execution, bridging and cash on/off-ramps are not connected.**
 An internal order receipt is not proof that coins exist in custody or that an
 external market executed a trade. Existing account balances and reservations
 must not be treated as backed assets or automatically submitted to a future
@@ -822,21 +829,20 @@ Checks: `npm run test:preview-access` and `npm run test:e2e:preview-access`.
 
 ### Crypto testing preview
 
-Run `npm run dev:preview` for the website and API with **sample—not live—crypto
-prices**. To restart only its API, use `PORT=8787 npm run server:preview`.
-The ordinary `npm run server` command does **not** enable sample prices.
+Run `npm run dev:preview` for the website and API with **generated crypto
+prices for local preview**. To restart only its API, use `PORT=8787 npm run server:preview`.
+The ordinary `npm run server` command does **not** enable generated preview prices.
 
 This mode uses the isolated, gitignored `server/preview-crypto.db`. Both Personal
 and Business quick-access accounts start with 0.01 BTC, 0.25 ETH, 5 SOL, 500 USDC
-and 250 USDT (a $3,000 sample valuation). There are 24 priced markets with
+and 250 USDT (a $3,000 generated valuation). There are 24 priced markets with
 synthetic statistics, sparklines and candle history in the API fixture only.
-The customer UI now suppresses generated valuations, markets and charts and
-shows unavailable prices instead. Quantities remain visible and pending
-withdrawal requests still work. Use ordinary `npm run server` with the configured
-market feed for customer-facing buy/sell/swap; browser regression suites use a
-separate offline upstream fixture. Connected wallet balances are never fabricated.
+The customer UI shows the generated portfolio, markets and charts. Account
+orders remain internal Veyra ledger records; use ordinary `npm run server` with
+the configured market feed for customer-facing buy/sell/swap. Connected wallet
+balances are never fabricated.
 
-Startup records one idempotent $3,000 test funding credit per fixture owner and
+Startup records one idempotent $3,000 generated funding credit per fixture owner and
 uses real internal buy orders to establish the portfolio. Persisted quote IDs
 make retries/restarts safe; later trades and cancellations are not reset.
 Seeding is restricted to the known, password-verified fixture owners. Fresh

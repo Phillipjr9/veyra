@@ -1,6 +1,7 @@
 import { confirmFunding } from "./funding-helpers";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
+import { quoteFee } from "../../shared/fees";
 
 test.skip(process.env.ACCOUNT_LEDGER_ENABLED !== "1", "Requires immediate account-ledger funding.");
 async function owner(page: Page, request: APIRequestContext, accountType: "personal" | "business" = "personal") {
@@ -107,7 +108,8 @@ test("a fast response still gets a visible animation and adding more uses a new 
   await confirmFunding(dialog);
   await expect(dialog.getByRole("status")).toContainText("Funds added to your account immediately");
   expect(keys).toHaveLength(2); expect(keys[0]).not.toBe(keys[1]);
-  expect((await state(request, token)).balance).toBe(25);
+  const cardFee = quoteFee("card_deposit", 1500).feeCents / 100;
+  expect((await state(request, token)).balance).toBe(10 + 15 - cardFee);
 });
 
 test("reduced motion uses a quiet confirmation without moving particles or confetti", async ({ page, request }) => {

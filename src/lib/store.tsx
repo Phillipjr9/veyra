@@ -13,6 +13,7 @@ export type Txn = {
   merchant: string;
   category: string;
   amount: number; // negative = money out, positive = money in
+  fee?: number; // non-negative charge; cash effect is amount - fee
   reward: number;
   date: number;
   cardId?: string;
@@ -254,7 +255,7 @@ export type Account = {
 };
 
 export type Profile = { name: string; business: string; email: string; accountType: "personal" | "business" };
-export type MoveResult = { status?: "pending" | "cleared"; reference: string; date: number; amount: number; balanceBefore: number; balanceAfter: number; reward: number; scout: number };
+export type MoveResult = { status?: "pending" | "cleared"; reference: string; date: number; amount: number; fee: number; balanceBefore: number; balanceAfter: number; reward: number; scout: number };
 
 /* ============================================================
    Formatting & utilities
@@ -354,7 +355,7 @@ export async function copyText(text: string): Promise<boolean> {
 
 export function transactionsToCSV(txns: Txn[]) {
   const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
-  const head = ["Date", "Merchant", "Category", "Method", "Amount", "Rewards", "Scout savings", "Reference", "Memo"];
+  const head = ["Date", "Merchant", "Category", "Method", "Amount", "Fee", "Rewards", "Scout savings", "Reference", "Memo"];
   const rows = txns.map(t =>
     [
       new Date(t.date).toISOString().slice(0, 10),
@@ -362,6 +363,7 @@ export function transactionsToCSV(txns: Txn[]) {
       esc(t.category),
       t.method ?? "",
       t.amount.toFixed(2),
+      (t.fee ?? 0).toFixed(2),
       t.reward.toFixed(2),
       (t.scout ?? 0).toFixed(2),
       t.reference ?? "",
@@ -442,6 +444,7 @@ function normalize(raw: unknown, p: Profile): Account {
       merchant: RENAMED[merchantRaw] ?? merchantRaw,
       category,
       amount,
+      fee: num(t.fee, 0),
       reward: num(t.reward, 0),
       scout: num(t.scout, 0),
       date: num(t.date, Date.now()),
@@ -874,9 +877,11 @@ function useAccountState() {
     const methods = await apiGet<{ methods: { id: string; label: string; kind: string }[] }>("/api/me/funding");
     const method = methods.methods.find(m => m.id === source || m.label === source || (source === "check" && m.kind === "check"));
     if (!method) throw new Error("This funding source is not enabled. Open Add funds for your account's instructions.");
-    const reply = await apiPost<{ request: { reference: string; created_at: number } }>("/api/me/deposits", { amount, methodId: method.id, requestKey: crypto.randomUUID() });
+    const reply = await apiPost<{ request: { reference: string; created_at: number }; fee?: string; amountCredited?: string }>("/api/me/deposits", { amount, methodId: method.id, requestKey: crypto.randomUUID() });
     const balance = ref.current?.balance ?? 0;
-    return { reference: reply.request.reference, date: reply.request.created_at, amount, balanceBefore: balance, balanceAfter: balance, reward: 0, scout: 0, status: "pending" };
+    const fee = Number(reply.fee ?? 0);
+    const credited = reply.amountCredited === undefined ? amount : Number(reply.amountCredited);
+    return { reference: reply.request.reference, date: reply.request.created_at, amount, fee, balanceBefore: balance, balanceAfter: reply.amountCredited === undefined ? balance : balance + credited, reward: 0, scout: 0, status: "pending" };
   }, []);
 
   const depositCheck = useCallback(async (_checkNumber: string, _issuer: string, amount: number, _memo?: string): Promise<MoveResult> => deposit(amount, "check"), [deposit]);

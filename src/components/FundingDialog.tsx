@@ -9,6 +9,7 @@ import { VeyraMark } from "./VeyraMark";
 import { FlowReview, StageDots } from "./MoneyFlow";
 import { ArrowDownLeft, ArrowLeft, ArrowRight, Building2, CircleHelp, CreditCard, FileCheck2, Landmark, LockKeyhole, ShieldCheck, Smartphone, WalletCards, X } from "lucide-react";
 import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider, type FundingKind } from "../../shared/funding";
+import { quoteFee } from "../../shared/fees";
 import { apiGet, apiPost } from "../lib/api";
 import { money, useAcct } from "../lib/store";
 import { useBankingDialog } from "./bankingDialog";
@@ -50,8 +51,8 @@ function ProviderSetup({ kind }: { kind: "ach" | "card" }) {
       <button type="button" className="solid-btn" disabled>Link bank · not activated</button>
     </> : <>
       <div className="funding-card-illustration" aria-hidden="true"><span>veyra <CreditCard size={26} /></span><strong>•••• &nbsp; •••• &nbsp; •••• &nbsp; ••••</strong><small>SECURE DEBIT CARD LINKING</small></div>
-      <h3>Your card stays with the processor</h3><p>Once activated, a provider-hosted form will collect and tokenize your debit card. You’ll review any fees and limits before authorizing a charge. Veyra will not ask you to put a full card number or CVV in a funding note.</p>
-      <button type="button" className="solid-btn" disabled>Add debit card · not activated</button>
+      <h3>Add your debit card with its billing address</h3><p>Use External accounts to enter the card number, expiry and billing address. The card number and security code are validated in your browser and only a masked reference is stored by Veyra. Card-funded deposits show their fee before you confirm.</p>
+      <Link to="/app/external-accounts" className="solid-btn">Add debit card in External accounts</Link>
     </>}
   </section>;
 }
@@ -161,6 +162,8 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
     }
   }
 
+  const amountCents = Math.round((Number(amount) || 0) * 100);
+  const reviewFee = method ? quoteFee(method.kind === "card" ? "card_deposit" : "deposit", amountCents) : null;
   const compact = immediateFunding || !loaded || phase !== "form";
   return <MotionConfig reducedMotion="user"><div className={compact ? "flow-scrim" : "banking-scrim"}><section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Add funds" className={compact ? "flow-modal kind-deposit funding-flow-modal" : "banking-panel funding-hub"}>
     {!compact ? <header className="funding-hub-header"><div><span className="funding-eyebrow">MOVE MONEY IN</span><h2>Add funds</h2></div><button type="button" className="ghost-btn sm" disabled={busy} onClick={() => void refreshStatus()}>Refresh funding status</button><button type="button" className="funding-close" aria-label="Close" onClick={close} disabled={busy}><X size={20} /></button></header> : <div className="flow-head"><StageDots kind={immediateFunding || !loaded ? "deposit" : "funding"} stage={phase === "receipt" ? "success" : phase} /><button type="button" className="flow-close" aria-label="Close" onClick={close} disabled={busy}><X size={16} /></button></div>}
@@ -178,11 +181,12 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
       amount={Number(amount)} confirmLabel={`Add ${money(Number(amount))}`} onBack={() => setPhase("form")} onConfirm={() => void submit()}
       track={{ from: { label: method.label, sub: "Selected funding method", icon: <ArrowDownLeft size={20} /> }, to: { label: "Your Veyra account", sub: "Account entry", icon: <VeyraMark width={20} height={20} /> } }}
       rows={[{ label: "Method", value: method.label }, { label: "To", value: "Your Veyra account" },
-        ...(note ? [{ label: "Memo", value: note }] : []), { label: "Available", value: "Immediately after confirmation" }, { label: "Fee", value: "$0.00 · Free", tone: "free" }]}
+        ...(note ? [{ label: "Memo", value: note }] : []), { label: "Available", value: "Immediately after confirmation" },
+        { label: "Fee", value: reviewFee && reviewFee.feeCents > 0 ? `${money(reviewFee.feeCents / 100)} · ${reviewFee.rateBps / 100}%` : "$0.00 · Free", tone: reviewFee && reviewFee.feeCents > 0 ? undefined : "free" }]}
     />}
     {immediateFunding && phase === "review" && <p className="funding-animation-note">This updates your account. External bank and card processing is not connected.</p>}
     {(phase === "processing" || phase === "receipt") && <FundingAnimation phase={phase} amount={submitted ? submitted.amount_cents / 100 : Number(amount)} source={method?.label ?? "Funding method"} immediate={immediateFunding}
-      receipt={submitted ? { status: submitted.status, reference: submitted.reference, ledgerOnly: !!requestMethod(submitted).ledgerOnly, createdAt: submitted.created_at } : undefined}
+      receipt={submitted ? { status: submitted.status, reference: submitted.reference, ledgerOnly: !!requestMethod(submitted).ledgerOnly, createdAt: submitted.created_at, fee: reviewFee ? reviewFee.feeCents / 100 : 0 } : undefined}
       onPresented={() => pause.current?.finish()}
       close={close} again={() => choose(null)} />}
     {/* Belongs with the receipt, not floating above it. It is still the way to
@@ -192,7 +196,7 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
     {activeKind && option ? <>
       <button type="button" className="funding-back" onClick={() => choose(null)} disabled={busy}><ArrowLeft size={16} /> All funding methods</button>
       <h3 className="funding-detail-title" ref={detailTitle} tabIndex={-1}>{option.label}</h3>
-      {!immediateFunding && option.providerRequired ? <>{activeKind === "ach" && <label className="funding-method-label">Saved bank account<select aria-label="Saved bank account" disabled={!linkedAccounts.length || busy}>{!linkedAccounts.length && <option>No bank account available</option>}{linkedAccounts.map(account => <option key={account.id} value={account.id}>{account.bank_name} {account.account_type} •••• {account.last4}{account.verification_kind === "staff_reference" ? " · Account reference" : ""}</option>)}</select></label>}<ProviderSetup kind={activeKind as "ach" | "card"} />{activeKind === "ach" && <Link to="/app/external-accounts" className="solid-btn" onClick={close}>{linkedAccounts.length ? "Manage linked accounts" : "Link an external account"}</Link>}</> : <>
+      {!immediateFunding && option.providerRequired ? <>{(activeKind === "ach" || activeKind === "card") && <label className="funding-method-label">{activeKind === "card" ? "Saved debit card" : "Saved bank account"}<select aria-label={activeKind === "card" ? "Saved debit card" : "Saved bank account"} disabled={!linkedAccounts.length || busy}>{!linkedAccounts.length && <option>No {activeKind === "card" ? "debit card" : "bank account"} available</option>}{linkedAccounts.filter(account => (account.kind ?? "bank") === activeKind).map(account => <option key={account.id} value={account.id}>{account.kind === "card" ? `${account.card_brand ?? "Debit card"} •••• ${account.last4}` : `${account.bank_name} ${account.account_type} •••• ${account.last4}${account.verification_kind === "staff_reference" ? " · Account reference" : ""}`}</option>)}</select></label>}<ProviderSetup kind={activeKind as "ach" | "card"} />{(activeKind === "ach" || activeKind === "card") && <Link to="/app/external-accounts" className="solid-btn" onClick={close}>{linkedAccounts.length ? "Manage linked accounts" : activeKind === "card" ? "Add a debit card" : "Link an external account"}</Link>}</> : <>
         <p className="funding-detail-intro">{immediateFunding ? "Choose the amount to add to your account." : option.description}</p>
         {!immediateFunding && activeKind === "zelle" && <div className="funding-activation-note"><strong>Use your participating bank’s app</strong><p>Veyra does not send or request Zelle payments. Confirm that the recipient email or phone and the name shown in your bank app match these instructions before sending. Availability and limits depend on the receiving bank; receipt is not instant or guaranteed here.</p></div>}
         {activeKind === "direct_deposit" && <DirectDepositDetails details={receiving} close={close} />}

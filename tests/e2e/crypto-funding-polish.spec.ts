@@ -1,4 +1,5 @@
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
+import { quoteFee } from "../../shared/fees";
 
 test.skip(process.env.E2E_LINKED_ACCOUNTS !== "1", "Uses a trusted provider link in the disposable browser fixture only.");
 async function login(page: Page, request: APIRequestContext, type = "personal") {
@@ -36,7 +37,7 @@ test("three distinct responsive trade presentations wait for real confirmation, 
     const animation = dialog.locator(`.crypto-trade-animation.trade-${action}`);
     await expect(animation).toBeVisible(); await expect(animation.locator(".flow-orbit-progress circle").first()).toHaveCSS("fill", "none"); await expect(animation.locator(".flow-steplist li")).toHaveCount(4);
     await expect(dialog.getByRole("button", { name: "Close", exact: true })).toBeDisabled(); await fits(page);
-    await expect(animation).toContainText(action === "swap" ? "checking balance stays unchanged" : action === "buy" ? "checking debit" : "checking credit");
+    await expect(animation).toContainText(action === "swap" ? "swap fee is debited from checking" : action === "buy" ? "checking debit" : "checking credit");
     if (action === "sell") { await expect(animation.locator(".trade-cash-mark")).toBeVisible(); await page.screenshot({ path: info.outputPath("sell-desktop.png") }); }
     if (action === "swap") {
       await expect(animation.getByRole("heading", { name: "Waiting for account confirmation…" })).toBeVisible();
@@ -45,7 +46,8 @@ test("three distinct responsive trade presentations wait for real confirmation, 
     }
     await expect(dialog.getByText("Recorded once in your account")).toBeVisible();
     expect(Date.now() - at).toBeGreaterThanOrEqual(action === "sell" ? 3500 : 2400);
-    expect(await balance()).toBe(before + (action === "buy" ? -20 : action === "sell" ? 2 : 0));
+    const fee = action === "buy" ? quoteFee("crypto_buy", 2000).feeCents / 100 : action === "sell" ? quoteFee("crypto_sell", 200).feeCents / 100 : quoteFee("crypto_swap", 200).feeCents / 100;
+    expect(await balance()).toBe(before + (action === "buy" ? -20 - fee : action === "sell" ? 2 - fee : -fee));
     await dialog.getByRole("button", { name: "Done" }).click(); await page.unroute("**/api/me/crypto/confirm");
   }
   expect(posts).toBe(3);

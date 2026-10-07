@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
+import { quoteFee } from "../../shared/fees";
 import { PNG } from "pngjs";
 import jsQR from "jsqr";
 
@@ -35,13 +36,16 @@ async function reviewBuy(page: Page, amount = "25.50") {
 }
 for (const type of ["personal", "business"] as const) test(`${type}: reviewed buy, exact swap and sell reconcile account balances and history`, async ({ page, request }) => {
   const session = await owner(page, request, type);
+  const buyFee = quoteFee("crypto_buy", 2550).feeCents / 100;
+  const swapFee = quoteFee("crypto_swap", 1012).feeCents / 100;
+  const sellFee = quoteFee("crypto_sell", 1537).feeCents / 100;
   const buy = await reviewBuy(page);
   expect(await balance(request, session.token)).toBe(1000);
   await buy.getByRole("button", { name: "Confirm buy" }).click();
   await expect(buy.getByRole("status")).toContainText("Recorded once in your account");
   await expect(buy).toContainText("No blockchain transaction hash");
   await buy.getByRole("button", { name: "Done" }).click();
-  expect(await balance(request, session.token)).toBe(974.5);
+  expect(await balance(request, session.token)).toBe(1000 - 25.5 - buyFee);
   const usdc = page.getByRole("article", { name: "USD Coin account holding" });
   await expect(usdc).toContainText("25.5 USDC");
   await usdc.getByRole("button", { name: "Swap", exact: true }).click();
@@ -55,7 +59,7 @@ for (const type of ["personal", "business"] as const) test(`${type}: reviewed bu
   await swap.getByRole("button", { name: "Confirm swap" }).click();
   await expect(swap.getByRole("status")).toContainText("Recorded once");
   await swap.getByRole("button", { name: "Done" }).click();
-  expect(await balance(request, session.token)).toBe(974.5);
+  expect(await balance(request, session.token)).toBe(1000 - 25.5 - buyFee - swapFee);
   await expect(usdc).toContainText("15.376544 USDC");
   await page.locator(".cw-action-bar").getByRole("button", { name: /^Sell/ }).click();
   const sell = page.getByRole("dialog", { name: "Sell crypto", exact: true });
@@ -67,7 +71,7 @@ for (const type of ["personal", "business"] as const) test(`${type}: reviewed bu
   await sell.getByRole("button", { name: "Confirm sell" }).click();
   await expect(sell.getByRole("status")).toContainText("Recorded once");
   await sell.getByRole("button", { name: "Done" }).click();
-  expect(await balance(request, session.token)).toBe(989.87);
+  expect(await balance(request, session.token)).toBe(1000 - 25.5 - buyFee - swapFee + 15.37 - sellFee);
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await expect(page.locator(".cw-order")).toHaveCount(3);
   await page.reload();
@@ -80,15 +84,16 @@ test("lost confirmation response recovers the same completed order across reload
   const session = await owner(page, request);
   await page.route("**/api/me/crypto/confirm", async route => { const response = await route.fetch(); expect(response.status()).toBe(200); await route.abort("failed"); });
   const dialog = await reviewBuy(page, "30");
+  const buyFee = quoteFee("crypto_buy", 3000).feeCents / 100;
   await dialog.getByRole("button", { name: "Confirm buy" }).click();
   await expect(dialog.getByRole("button", { name: "Retry same order" })).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Edit / refresh quote" })).toBeDisabled();
-  expect(await balance(request, session.token)).toBe(970);
+  expect(await balance(request, session.token)).toBe(1000 - 30 - buyFee);
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await page.reload();
   await page.getByRole("button", { name: "Check earlier order" }).click();
   await expect(page.getByRole("dialog").getByRole("status")).toContainText("Recorded once in your account");
-  expect(await balance(request, session.token)).toBe(970);
+  expect(await balance(request, session.token)).toBe(1000 - 30 - buyFee);
   const orders = await (await request.get("/api/me/crypto/orders", { headers: { authorization: `Bearer ${session.token}` } })).json();
   expect(orders.orders).toHaveLength(1);
 });
@@ -117,15 +122,16 @@ test("send debits units immediately, cannot be cancelled, and never masquerades 
   await expect(usdc).toContainText("14.876544 USDC");
 });
 
-async function installWalletFixtures(page: Page, settings: { ethereumChain?: string; bitcoinChain?: string; reject?: boolean; unavailable?: boolean; delay?: boolean } = {}) {
+async function installWalletFixtures(page: Page, settings: { ethereumChain?: string; bitcoinChain?: string; reject?: boolean; unavailable?: boolean; delay?: boolean; sendOutcome?: "reject" | "unknown" } = {}) {
   await page.addInitScript(settings => {
     const w = window as any;
     const handlers = new Map<string, Set<(...args: any[]) => void>>();
     const events = (prefix: string) => ({ on(name: string, fn: (...args: any[]) => void) { const key = prefix + name; if (!handlers.has(key)) handlers.set(key, new Set()); handlers.get(key)!.add(fn); }, removeListener(name: string, fn: (...args: any[]) => void) { handlers.get(prefix + name)?.delete(fn); } });
     w.__walletCalls = [];
+    w.__walletTx = null;
     w.__walletEmit = (key: string, value?: unknown) => { for (const fn of handlers.get(key) ?? []) fn(value); };
     const address = "0x1111111111111111111111111111111111111111";
-    const eth = { ...events("eth:"), async request({ method, params }: any) { w.__walletCalls.push(method); if (settings.reject && method === "eth_requestAccounts") throw new Error("Connection rejected by the user."); if (method === "eth_requestAccounts" || method === "eth_accounts") return [address]; if (method === "eth_chainId") return settings.ethereumChain ?? "0x1"; if (settings.unavailable) throw new Error("RPC offline"); if (method === "eth_getBalance") { if (settings.delay) await new Promise<void>(resolve => { w.__walletRelease = resolve; }); return "0x" + BigInt("1234567890123456789").toString(16); } if (method === "eth_call") { if (params[0].to === "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48") return "0x" + BigInt("123456789").toString(16); throw new Error("Token read unavailable"); } throw new Error("Unexpected wallet method"); } };
+    const eth = { ...events("eth:"), async request({ method, params }: any) { w.__walletCalls.push(method); if (settings.reject && method === "eth_requestAccounts") throw new Error("Connection rejected by the user."); if (method === "eth_requestAccounts" || method === "eth_accounts") return [address]; if (method === "eth_chainId") return settings.ethereumChain ?? "0x1"; if (settings.unavailable) throw new Error("RPC offline"); if (method === "eth_getBalance") { if (settings.delay) await new Promise<void>(resolve => { w.__walletRelease = resolve; }); return "0x" + BigInt("1234567890123456789").toString(16); } if (method === "eth_call") { if (params[0].to === "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48") return "0x" + BigInt("123456789").toString(16); throw new Error("Token read unavailable"); } if (method === "eth_estimateGas") return "0x5208"; if (method === "eth_gasPrice") return "0x3b9aca00"; if (method === "eth_sendTransaction") { if (settings.sendOutcome === "reject") throw Object.assign(new Error("User rejected the request."), { code: 4001 }); w.__walletTx = params?.[0]; if (settings.sendOutcome === "unknown") throw new Error("Provider connection lost after approval."); return "0x" + "ab".repeat(32); } if (method === "eth_getTransactionReceipt") return { transactionHash: "0x" + "ab".repeat(32), blockNumber: "0x10", status: "0x1" }; throw new Error("Unexpected wallet method"); } };
     w.ethereum = eth;
     window.addEventListener("eip6963:requestProvider", () => window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: { info: { uuid: "31e65091-4c52-4d10-97f0-63d4e35d6a5f", name: "Fixture Ethereum", rdns: "untrusted.wallet", icon: 'data:image/svg+xml,<svg onload="window.__unsafeWalletIcon=true"/>' }, provider: eth } })));
     const publicKey = { toString: () => "So11111111111111111111111111111111111111112" };
@@ -246,4 +252,76 @@ test("expired reviews cannot confirm and an entirely unpriced portfolio is not s
   await page.getByRole("button", { name: "Refresh account", exact: true }).click();
   await expect(page.locator(".cw-hero h2")).toHaveText("Unavailable");
   await expect(page.locator(".cw-hero")).toContainText("Partial estimated value");
+});
+
+test("development Sepolia send asks the user's wallet, shows the fee, and leaves Veyra balances unchanged", async ({ page, request }) => {
+  await installWalletFixtures(page, { ethereumChain: "0xaa36a7" });
+  const session = await owner(page, request);
+  const cashBefore = await balance(request, session.token);
+  const holdingsBefore = (await (await request.get("/api/me/holdings", { headers: { authorization: `Bearer ${session.token}` } })).json()).holdings
+    .map((item: { asset: string; units: string }) => [item.asset, item.units]);
+  await page.getByRole("button", { name: "Send Sepolia test ETH", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Send Sepolia test ETH", exact: true });
+  await expect(dialog).toContainText("DEVELOPMENT TESTNET");
+  await dialog.getByRole("button", { name: /Fixture Ethereum/ }).click();
+  await dialog.getByLabel("Sepolia recipient address").fill("0x2222222222222222222222222222222222222222");
+  await dialog.getByLabel("Sepolia ETH amount").fill("0.010000000000000001");
+  await dialog.getByRole("button", { name: "Review transfer" }).click();
+  await expect(dialog.locator(".cw-sepolia-review")).toContainText("0.010000000000000001 ETH");
+  await expect(dialog.locator(".cw-sepolia-review")).toContainText("0.000021 ETH");
+  await dialog.getByRole("button", { name: "Review and approve in wallet" }).click();
+  await expect(dialog.getByRole("status")).toContainText("Included in a Sepolia block");
+  await expect(dialog.getByRole("link", { name: /Sepolia Etherscan/ })).toHaveAttribute("href", /^https:\/\/sepolia\.etherscan\.io\/tx\/0x/);
+  const tx = await page.evaluate(() => (window as any).__walletTx);
+  expect(tx).toEqual({ from: "0x1111111111111111111111111111111111111111", to: "0x2222222222222222222222222222222222222222", value: `0x${BigInt("10000000000000001").toString(16)}` });
+  expect(Object.keys(tx).sort()).toEqual(["from", "to", "value"]);
+  const methods = await page.evaluate(() => (window as any).__walletCalls as string[]);
+  expect(methods).toContain("eth_sendTransaction");
+  expect(methods).not.toContain("personal_sign"); expect(methods).not.toContain("eth_sign");
+  expect(await balance(request, session.token)).toBe(cashBefore);
+  const holdingsAfter = (await (await request.get("/api/me/holdings", { headers: { authorization: `Bearer ${session.token}` } })).json()).holdings
+    .map((item: { asset: string; units: string }) => [item.asset, item.units]);
+  expect(holdingsAfter).toEqual(holdingsBefore);
+});
+
+test("explicit wallet rejection returns to review without implying submission", async ({ page, request }) => {
+  await installWalletFixtures(page, { ethereumChain: "0xaa36a7", sendOutcome: "reject" });
+  await owner(page, request);
+  await page.getByRole("button", { name: "Send Sepolia test ETH", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Send Sepolia test ETH", exact: true });
+  await dialog.getByRole("button", { name: /Fixture Ethereum/ }).click();
+  await dialog.getByLabel("Sepolia recipient address").fill("0x2222222222222222222222222222222222222222");
+  await dialog.getByLabel("Sepolia ETH amount").fill("0.01");
+  await dialog.getByRole("button", { name: "Review transfer" }).click();
+  await dialog.getByRole("button", { name: "Review and approve in wallet" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("wallet request was rejected");
+  await expect(dialog.getByRole("button", { name: "Review and approve in wallet" })).toBeVisible();
+  await expect(dialog).not.toContainText("Do not submit it again");
+});
+
+test("inconclusive wallet response blocks retry to prevent a duplicate transfer", async ({ page, request }) => {
+  await installWalletFixtures(page, { ethereumChain: "0xaa36a7", sendOutcome: "unknown" });
+  await owner(page, request);
+  await page.getByRole("button", { name: "Send Sepolia test ETH", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Send Sepolia test ETH", exact: true });
+  await dialog.getByRole("button", { name: /Fixture Ethereum/ }).click();
+  await dialog.getByLabel("Sepolia recipient address").fill("0x2222222222222222222222222222222222222222");
+  await dialog.getByLabel("Sepolia ETH amount").fill("0.01");
+  await dialog.getByRole("button", { name: "Review transfer" }).click();
+  await dialog.getByRole("button", { name: "Review and approve in wallet" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("response was inconclusive");
+  await expect(dialog).toContainText("Do not submit it again until you check your wallet's Sepolia activity");
+  await expect(dialog.getByRole("button", { name: "Review and approve in wallet" })).toHaveCount(0);
+});
+
+test("Sepolia test-send flow refuses Ethereum mainnet before any transaction request", async ({ page, request }) => {
+  await installWalletFixtures(page); // Default fixture chain is Ethereum mainnet.
+  await owner(page, request);
+  await page.getByRole("button", { name: "Send Sepolia test ETH", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Send Sepolia test ETH", exact: true });
+  await dialog.getByRole("button", { name: /Fixture Ethereum/ }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Switch your wallet to Ethereum Sepolia testnet");
+  const methods = await page.evaluate(() => (window as any).__walletCalls as string[]);
+  expect(methods).not.toContain("eth_sendTransaction");
+  await expect(dialog.getByRole("button", { name: "Close", exact: true })).toBeEnabled();
 });

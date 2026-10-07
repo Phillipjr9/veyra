@@ -8,7 +8,7 @@ async function login(page: Page, type: string) {
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/#\/app$/);
   await page.goto("/#/app/assets");
-  await expect(page.locator(".cw-hero-tag")).toHaveText("Test data · not live");
+  await expect(page.locator(".cw-hero-tag")).toHaveCount(0);
 }
 async function reviewBuy(page: Page, amount = "10") {
   await page.locator(".cw-action-bar").getByRole("button", { name: /^Buy/ }).click();
@@ -26,18 +26,18 @@ async function fits(page: Page) {
   for (const dialog of await page.getByRole("dialog").all()) expect(await dialog.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
 }
 
-test("sample markets render only behind a permanent not-live banner and never enable trading", async ({ page, request }) => {
+test("preview markets render without source labels and keep trades account-scoped", async ({ page, request }) => {
   await login(page, "personal");
-  // Generated holdings are shown and tradeable, but every surface says the
-  // prices are test data rather than a live market.
-  await expect(page.locator(".cw-hero-tag")).toHaveText("Test data · not live");
-  await expect(page.locator(".preview-crypto-notice")).toHaveCount(1);
+  // Generated holdings are shown and tradeable without source labels on the
+  // workspace.
+  await expect(page.locator(".cw-hero-tag")).toHaveCount(0);
+  await expect(page.locator(".preview-crypto-notice")).toHaveCount(0);
   for (const quantity of ["0.01 BTC", "0.25 ETH", "5 SOL", "500 USDC", "250 USDT"]) await expect(page.locator(".cw-asset-list")).toContainText(quantity);
   await expect(page.locator(".cw-action-bar").getByRole("button", { name: /^Buy/ })).toBeEnabled();
   await expect(page.locator(".cw-action-bar").getByRole("button", { name: /^Sell/ })).toBeEnabled();
   await expect(page.locator(".cw-action-bar").getByRole("button", { name: /^Swap/ })).toBeEnabled();
 
-  // A buy must actually execute against the sample feed, not just be enabled.
+  // A buy must actually execute against the generated feed, not just be enabled.
   const buy = await reviewBuy(page, "10");
   await buy.getByRole("button", { name: "Confirm buy" }).click();
   await expect(buy.getByRole("heading", { name: "Account order completed" })).toBeVisible();
@@ -45,10 +45,9 @@ test("sample markets render only behind a permanent not-live banner and never en
   await expect(page.locator(".cw-asset-list")).toContainText("510 USDC");
 
   await page.goto("/#/app/markets?asset=BTC");
-  const notice = page.locator(".preview-crypto-notice");
-  await expect(notice).toHaveCount(1);
-  await expect(notice).toContainText("TEST DATA · NOT LIVE");
-  await expect(page.getByRole("heading", { name: "Markets · test data", exact: true })).toBeVisible();
+  await expect(page.locator(".preview-crypto-notice")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Markets", exact: true })).toBeVisible();
+  await expect(page.locator(".markets-page")).not.toContainText(/test data|not live/i);
   await expect(page.locator(".market-asset")).toHaveCount(24);
   await expect(page.locator(".candle-chart")).toHaveCount(1);
   for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 900 }); await fits(page); }
@@ -57,15 +56,15 @@ test("sample markets render only behind a permanent not-live banner and never en
   expect(result.status()).toBe(201); const { quote } = await result.json();
   await page.evaluate(({ id, quoteId }) => sessionStorage.setItem(`veyra.crypto.pending.${id}`, quoteId), { id: session.user.id, quoteId: quote.id });
   await page.goto("/#/app/assets"); await page.getByRole("button", { name: "Check earlier order" }).click();
-  // A pending quote on generated data now recovers like any other, badged as
-  // test data and refusing to let the customer start a duplicate order.
+  // A pending quote on generated data now recovers like any other, without a
+  // source badge, and refuses to let the customer start a duplicate order.
   const resumed = page.getByRole("dialog");
-  await expect(resumed).toContainText("TEST DATA · NOT LIVE");
+  await expect(resumed.locator(".preview-crypto-notice")).toHaveCount(0);
   await expect(resumed).toContainText("Status unconfirmed");
   await expect(resumed.getByRole("button", { name: "Retry same order" })).toBeVisible();
 });
 
-test("business preview can use its test holdings for the animated request", async ({ page }) => {
+test("business preview can use its generated holdings for the animated request", async ({ page }) => {
   await login(page, "business");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator(".cw-action-bar").getByRole("button", { name: /^Send/ }).click();

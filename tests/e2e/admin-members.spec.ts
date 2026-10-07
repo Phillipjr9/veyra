@@ -59,3 +59,16 @@ test('Zelle email studio previews distinguish ledger activity, pending review an
  await page.getByRole('button',{name:/Zelle incoming · request declined/}).click();await expect(frame.getByRole('heading',{name:'Incoming Zelle funding request declined'})).toBeVisible();
  await page.setViewportSize({width:390,height:844});await fits(page);
 });
+
+test('admin module navigation stays in view on desktop and remains reachable on mobile',async({page})=>{
+ await signIn(page);await page.goto('/#/app/superadmin');
+ const nav=page.locator('.admin-tabs-nav');
+ for(const width of [1440,1024]){
+  await page.setViewportSize({width,height:900});await expect(nav).toBeVisible();
+  const layout=await nav.evaluate(el=>{const r=el.getBoundingClientRect(),buttons=[...el.querySelectorAll('button')].map(button=>button.getBoundingClientRect());return{client:el.clientWidth,scroll:el.scrollWidth,rows:[...new Set(buttons.map(box=>Math.round(box.top)))],outside:buttons.some(box=>box.left<r.left-1||box.right>r.right+1)}});
+  expect(layout.scroll).toBeLessThanOrEqual(layout.client+1);expect(layout.outside).toBe(false);expect(layout.rows.length).toBeGreaterThan(1);
+ }
+ await page.setViewportSize({width:390,height:844});await expect(nav).toBeHidden();
+ const picker=page.getByLabel('Open admin module');await expect(picker).toBeVisible();await picker.selectOption('profile');
+ await expect(page.getByText('All permissions — highest access level')).toBeVisible();
+});

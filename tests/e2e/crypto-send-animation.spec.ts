@@ -16,8 +16,9 @@ async function fixture(page: Page, request: APIRequestContext, asset = "USDC", a
   expect(quoted.status()).toBe(201);
   expect((await request.post("/api/me/crypto/confirm", { headers, data: { quoteId: (await quoted.json()).quote.id } })).status()).toBe(200);
   await page.addInitScript(token => localStorage.setItem("veyra.token", token), session.token);
-  await page.goto("/#/app/accounts");
-  await page.locator(".holding-card").filter({ has: page.locator(".holding-code", { hasText: new RegExp(`^${asset}$`) }) }).getByRole("button", { name: "Send", exact: true }).click();
+  await page.goto("/#/app/assets");
+  await page.locator(".cw-action-bar").getByRole("button", { name: /^Send/ }).click();
+  await page.locator(".cw-send-picker").getByRole("button", { name: new RegExp(`^${asset}`) }).click();
   const dialog = page.getByRole("dialog", { name: `Send ${asset}`, exact: true });
   await dialog.getByLabel("Destination wallet address").fill(asset === "BTC" ? bitcoinDestination : destination);
   await dialog.getByLabel(`Quantity (${asset})`).fill(amount);
@@ -96,8 +97,10 @@ test("shared send animation has real movement, waits for response, debits once a
     const text = await readFile((await file.path())!, "utf8");
     expect(text).toContain(destination); expect(text).toContain("10.123456 USDC"); expect(text).toContain("Settled in your Veyra account record");
     await dialog.getByRole("button", { name: "Done" }).click();
+    await page.getByRole("button", { name: "Activity", exact: true }).click();
     await expect(page.locator(".crypto-request-history")).toContainText("recorded");
-    await expect(page.locator(".holding-card")).toContainText("Available: 14.876544 USDC");
+    await page.getByRole("button", { name: "Account assets", exact: true }).click();
+    await expect(page.getByRole("article", { name: "USD Coin account holding" }).locator(".cw-asset-quantity")).toContainText("14.876544 USDC");
     await expect(page.getByRole("button", { name: "Cancel and release units" })).toHaveCount(0);
   } finally { release(); }
 });
@@ -150,7 +153,7 @@ test("refusal and lost response are retryable without a second debit", async ({ 
 
 test("a lost response replay debits the units exactly once", async ({ page, request }) => {
   const { dialog, headers } = await fixture(page, request);
-  const usdc = page.locator(".holding-card").filter({ has: page.locator(".holding-code", { hasText: /^USDC$/ }) });
+  const usdc = page.getByRole("article", { name: "USD Coin account holding" });
   let first = true;
   await page.route("**/api/me/crypto-withdrawals", async route => {
     if (route.request().method() !== "POST" || !first) return route.continue();
@@ -167,7 +170,7 @@ test("a lost response replay debits the units exactly once", async ({ page, requ
   expect(await withdrawals(request, headers)).toHaveLength(1);
   await dialog.getByRole("button", { name: "Done" }).click();
   // 25 USDC held, 10.123456 requested once — the replay must not debit twice.
-  await expect(usdc).toContainText("Available: 14.876544 USDC");
+  await expect(usdc.locator(".cw-asset-quantity")).toContainText("14.876544 USDC");
 });
 
 

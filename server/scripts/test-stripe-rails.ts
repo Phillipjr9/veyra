@@ -36,9 +36,13 @@ try {
   process.env.WEBAUTHN_ORIGINS = "https://app.veyra.example";
   process.env.PREVIEW_LOGIN_SHORTCUTS = "0";
   process.env.ACCOUNT_LEDGER_ENABLED = "0";
+  delete process.env.CRYPTO_TESTNET_SEND;
   process.env.STRIPE_SECRET_KEY = "sk_live_veyraadaptertest";
   process.env.STRIPE_WEBHOOK_SECRET = "whsec_veyra_adapter_test";
   check("valid production Stripe environment passes deployment checks", productionRuntimeReport().errors.length === 0);
+  process.env.CRYPTO_TESTNET_SEND = "1";
+  check("production refuses the Sepolia test-send switch", productionRuntimeReport().errors.some(error => error.includes("Sepolia testnet-send switch")));
+  delete process.env.CRYPTO_TESTNET_SEND;
   process.env.CORS_ORIGIN = "*";
   check("production deployment check rejects wildcard CORS", productionRuntimeReport().errors.some(error => error.includes("CORS_ORIGIN")));
 } finally {

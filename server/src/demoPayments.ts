@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { BadInputError, dollarsToCents, inTransaction, getSetting } from './db.js';
+import { applyFee, quoteFee } from '../../shared/fees.js';
 import { rateLimit } from './security.js';
 import { type DemoSnapshot, type DemoResult } from '../../shared/demoPayments.js';
 
@@ -42,11 +43,12 @@ export function createDemoPayments(db: DatabaseSync) {
       member: { name: m.name, email: m.email, phone: m.phone ?? '', phoneUsable: !!phone && owners().filter(u => normalizeDemoPhone(u.phone ?? '') === phone).length === 1, accountType: m.account_type },
       balanceCents: enabled ? account(id)?.balance_cents ?? null : null, bankStatus: 'unlinked', cardLinked: false, events: [], inbox: [] };
   }
-  function entry(id: string, cents: number, p: Preview, name: string, reference: string, at: number) {
+  function entry(id: string, cents: number, p: Preview, name: string, reference: string, at: number, feeCents = 0) {
+    const cash = applyFee(cents, feeCents);
     const a = account(id);
-    if (!a || !Number.isSafeInteger(a.balance_cents + cents) || a.balance_cents + cents < 0 || a.balance_cents + cents > 1000000000) fail('Insufficient balance or account balance limit exceeded.');
-    db.prepare('UPDATE accounts SET balance_cents=balance_cents+?,updated_at=? WHERE id=?').run(cents,at,a.id);
-    db.prepare("INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,status,reference,note,created_at,performed_by) VALUES(?,?,?,?,?,?,?,'cleared',?,?,?,?)").run(randomUUID(),a.id,id,name,p.category || 'Transfer',p.method,cents,reference,`Account transfer — no external settlement. ${p.note}`,at,p.user_id);
+    if (!a || !Number.isSafeInteger(a.balance_cents + cash) || a.balance_cents + cash < 0 || a.balance_cents + cash > 1000000000) fail('Insufficient balance or account balance limit exceeded.');
+    db.prepare('UPDATE accounts SET balance_cents=balance_cents+?,updated_at=? WHERE id=?').run(cash,at,a.id);
+    db.prepare("INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,fee_cents,status,reference,note,created_at,performed_by) VALUES(?,?,?,?,?,?,?,?,'cleared',?,?,?,?)").run(randomUUID(),a.id,id,name,p.category || 'Transfer',p.method,cents,feeCents,reference,`Account transfer — no external settlement.${feeCents ? ` Fee ${feeCents/100}.` : ''} ${p.note}`,at,p.user_id);
   }
   function action(id: string, body: Record<string, unknown>): DemoResult {
     if (!demoPaymentsEnabled()) fail('Account transfers are unavailable. No payment was submitted.');
@@ -70,10 +72,11 @@ export function createDemoPayments(db: DatabaseSync) {
           if (found.member.id === id) fail('Use a different recipient, not your own identifier.');
           identifier = found.identifier; name = found.member.name; recipientId = found.member.id;
         }
+        const fee = quoteFee('transfer', cents);
         const previewId = randomUUID(), expires = Date.now() + 600000;
         db.prepare('DELETE FROM demo_account_payment_previews WHERE user_id=? AND expires_at<? AND result_json IS NULL').run(id,Date.now());
         db.prepare('INSERT INTO demo_account_payment_previews VALUES(?,?,?,?,?,?,?,?,?,?,NULL)').run(previewId,id,recipientId,identifier,name,cents,method,category,note,expires);
-        return { message: 'Review the recipient and amount.', preview: { id: previewId, name, identifier, amountCents: cents, method, category, expiresAt: expires } };
+        return { message: 'Review the recipient, amount and fee.', preview: { id: previewId, name, identifier, amountCents: cents, feeCents: fee.feeCents, method, category, expiresAt: expires } };
       }
       if (body.action !== 'confirm_transfer') fail('This separate-wallet action is retired. Use Add funds on your account.');
       const p = db.prepare('SELECT * FROM demo_account_payment_previews WHERE id=? AND user_id=?').get(text(body.id),id) as Preview | undefined;
@@ -88,10 +91,11 @@ export function createDemoPayments(db: DatabaseSync) {
       }
       const before = account(id)?.balance_cents;
       if (before === undefined) fail('Account unavailable.');
+      const fee = quoteFee('transfer', p.amount_cents);
       const reference = `VYR-${randomUUID().slice(0,12).toUpperCase()}`, at = Date.now();
-      entry(id,-p.amount_cents,p,p.name,reference,at);
+      entry(id,-p.amount_cents,p,p.name,reference,at,fee.feeCents);
       if (p.recipient_id) entry(p.recipient_id,p.amount_cents,p,member(id).name,reference,at);
-      const result: DemoResult = { message: 'Payment recorded in your account.', result: { reference, date: at, amount: p.amount_cents/100, balanceBefore: before/100, balanceAfter: (before-p.amount_cents)/100, reward: 0, scout: 0 } };
+      const result: DemoResult = { message: fee.feeCents ? 'Payment recorded in your account. The transfer fee was debited with the payment.' : 'Payment recorded in your account.', result: { reference, date: at, amount: p.amount_cents/100, fee: fee.feeCents/100, balanceBefore: before/100, balanceAfter: (before-p.amount_cents-fee.feeCents)/100, reward: 0, scout: 0 } };
       db.prepare('UPDATE demo_account_payment_previews SET result_json=? WHERE id=?').run(JSON.stringify(result),p.id);
       return result;
     });

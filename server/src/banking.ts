@@ -5,12 +5,13 @@ import { demoPaymentsEnabled } from "./demoPayments.js";
 import { sendZelleNotification } from "./zelleNotifications.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Request, Response } from "express";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { validWallet } from "../../shared/walletAddress.js";
 export { validWallet } from "../../shared/walletAddress.js";
 import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider } from "../../shared/funding.js";
 import { ASSETS } from "../../shared/catalog.js";
-import { BadInputError, dollarsToCents, getSetting, inTransaction, now, rid } from "./db.js";
+import { BadInputError, centsToDecimal, dollarsToCents, getSetting, inTransaction, now, rid } from "./db.js";
+import { applyFee, quoteFee } from "../../shared/fees.js";
 import { assetByCode, tradingEnabled } from "./assets.js";
 import { formatUnitsTrimmed, parseUnits } from "./money.js";
 
@@ -31,7 +32,7 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
     return row;
   };
   const methods = (id: string) => db.prepare("SELECT * FROM funding_methods WHERE user_id = ? ORDER BY updated_at DESC").all(id);
-  const externalColumns = "id,bank_name,account_name,last4,account_type,status,verification_kind,verification_note,created_at";
+  const externalColumns = "id,kind,bank_name,account_name,last4,account_type,card_brand,card_exp_month,card_exp_year,billing_address_json,status,verification_kind,verification_note,created_at";
   const externalAccounts = (id: string) => db.prepare(`SELECT ${externalColumns} FROM external_accounts WHERE user_id=? ORDER BY created_at DESC`).all(id) as ExternalAccount[];
   const linkedAccounts = (id: string) => externalAccounts(id).filter(account => account.status === "verified");
   const directDeposit = (id: string) => {
@@ -46,10 +47,20 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       instructions: "Add funds directly to your account balance. External bank and card processing is not connected.",
       bank_name: "", routing_number: "", account_number: "", account_type: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0, demo: true, ledgerOnly: true,
       linkedAccountId: "", unavailable: option.kind === "direct_deposit" && !receiving, ...receiving };
-    if (option.kind !== "ach") return [base];
-    const linked = linkedAccounts(id);
-    return linked.length ? linked.map(account => ({ ...base, id: `linked_${id}_${account.id}`, linkedAccountId: account.id,
-      label: `${account.bank_name} ${account.account_type} •••• ${account.last4}${account.verification_kind === "staff_reference" ? " · Account reference" : " · ACH"}` })) : [{ ...base, unavailable: true }];
+    if (option.kind !== "ach" && option.kind !== "card") return [base];
+    const linked = linkedAccounts(id).filter(account => (account.kind ?? "bank") === (option.kind === "card" ? "card" : "bank"));
+    if (!linked.length) return [{ ...base, unavailable: true }];
+    return linked.map(account => ({
+      ...base,
+      id: `linked_${id}_${account.id}`,
+      linkedAccountId: account.id,
+      label: account.kind === "card"
+        ? `${account.card_brand ? `${account.card_brand} ` : "Debit card "}•••• ${account.last4} · Card funding`
+        : `${account.bank_name} ${account.account_type} •••• ${account.last4}${account.verification_kind === "staff_reference" ? " · Account reference" : " · ACH"}`,
+      instructions: account.kind === "card"
+        ? "Fund your Veyra account from this debit card reference. The card number and security code are validated in your browser and never stored."
+        : base.instructions,
+    }));
   });
   const fundingRequests = (id: string) => db.prepare("SELECT * FROM funding_requests WHERE user_id = ? ORDER BY (status='pending') DESC, created_at DESC LIMIT 100").all(id);
   const withdrawOut = (row: any) => ({ ...row, quantity: formatUnitsTrimmed(BigInt(row.units), assetByCode(db, row.asset)!.decimals) });
@@ -83,26 +94,72 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       res.json({ ok: true });
     },
     externalAccountsGet(req: Request, res: Response) {
-      res.json({ accounts: linkedAccounts(req.user!.id), requests: externalAccounts(req.user!.id).filter(account => account.status !== "verified"), linkingAvailable: false,
+      res.json({ accounts: linkedAccounts(req.user!.id), requests: externalAccounts(req.user!.id).filter(account => account.status !== "verified"), linkingAvailable: true,
         referenceRequestsAvailable: req.user!.role === "user" && !req.user!.loginId && req.user!.status === "active" });
     },
     requestExternalAccount(req: Request, res: Response) {
       if (req.user!.role !== "user" || req.user!.loginId || req.user!.status !== "active") return void res.status(403).json({ error: "Only an active account owner can submit a funding reference." });
       const body = req.body ?? {}, id = req.user!.id, key = requestKey(body);
-      if (Object.keys(body).some(field => !["bankName","accountName","last4","accountType","ownershipConfirmed","requestKey"].includes(field))) throw new BadInputError("Only a bank name, display name, type and last four digits are accepted. Never submit bank credentials or a full account number.");
-      const bank = text(body.bankName,120,true), name = text(body.accountName,120,true), last4 = text(body.last4,4,true);
-      if (!/^\d{4}$/.test(last4) || !["Checking","Savings"].includes(body.accountType) || body.ownershipConfirmed !== true) throw new BadInputError("Confirm ownership and provide the account type and exactly four final digits.");
+      const forbidden = ["cardNumber", "pan", "cvv", "cvc", "securityCode", "fullNumber", "routingNumber", "accountNumber"];
+      if (Object.keys(body).some(field => forbidden.includes(field))) throw new BadInputError("Never submit a full card number, security code, bank account number or routing number.");
+      const kind = body.kind === "card" ? "card" : body.kind === "bank" || body.kind === undefined ? "bank" : null;
+      if (!kind) throw new BadInputError("Select either a bank account reference or a debit card.");
+      if (kind === "bank") {
+        if (Object.keys(body).some(field => !["kind","bankName","accountName","last4","accountType","ownershipConfirmed","requestKey"].includes(field))) throw new BadInputError("Only a bank name, display name, type and last four digits are accepted. Never submit bank credentials or a full account number.");
+        const bank = text(body.bankName,120,true), name = text(body.accountName,120,true), last4 = text(body.last4,4,true);
+        if (!/^\d{4}$/.test(last4) || !["Checking","Savings"].includes(body.accountType) || body.ownershipConfirmed !== true) throw new BadInputError("Confirm ownership and provide the account type and exactly four final digits.");
+        const result = inTransaction(db, () => {
+          const prior = db.prepare("SELECT * FROM external_accounts WHERE user_id=? AND request_key=?").get(id,key) as any;
+          if (prior) {
+            if (prior.kind !== "bank" || prior.bank_name !== bank || prior.account_name !== name || prior.last4 !== last4 || prior.account_type !== body.accountType) throw new BadInputError("This request identifier was already used for different details.");
+            return { id: prior.id, replayed: true };
+          }
+          if (!rateLimit(`bank-reference:${id}`,10,3600000)) throw new BadInputError("Too many account-reference requests. Try again later.");
+          if (externalAccounts(id).length >= 25) throw new BadInputError("Contact support to manage your existing account references before adding more.");
+          if (db.prepare("SELECT 1 FROM external_accounts WHERE user_id=? AND kind='bank' AND bank_name=? COLLATE NOCASE AND last4=? AND account_type=? AND status IN ('pending','verified')").get(id,bank,last4,body.accountType)) throw new BadInputError("An account with this bank, type and ending is already listed. Review its existing status.");
+          const accountId = rid("external"), at = now();
+          db.prepare("INSERT INTO external_accounts(id,user_id,kind,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at,verification_kind,request_key) VALUES(?,?,'bank',?,?,?,?,'pending',NULL,?,?,'staff_reference',?)").run(accountId,id,bank,name,last4,body.accountType,at,at,key);
+          return { id: accountId, replayed: false };
+        });
+        res.status(result.replayed ? 200 : 201).json({ account: externalAccounts(id).find(account => account.id === result.id), replayed: result.replayed });
+        return;
+      }
+      // Debit-card funding reference. The browser validates the PAN/expiry and
+      // sends only an opaque token plus last-four; Veyra stores a hash of that
+      // token, never the token itself, and never stores a PAN or CVV.
+      if (Object.keys(body).some(field => !["kind","cardToken","cardBrand","cardLast4","cardExpMonth","cardExpYear","cardholderName","billingName","billingAddressLine1","billingAddressLine2","billingCity","billingState","billingPostalCode","billingCountry","ownershipConfirmed","requestKey"].includes(field))) throw new BadInputError("Only a masked card token, card brand, last four digits, expiry, cardholder name and billing address are accepted.");
+      if (body.ownershipConfirmed !== true) throw new BadInputError("Confirm that you own this debit card.");
+      const token = text(body.cardToken, 160, true);
+      if (!/^[A-Za-z0-9_-]{16,120}$/.test(token)) throw new BadInputError("This card reference token is invalid. Reload the form and try again.");
+      const brandRaw = text(body.cardBrand, 20, true).toLowerCase().replace(/[^a-z]/g, "");
+      const brands: Record<string, string> = { visa: "Visa", mastercard: "Mastercard", mc: "Mastercard", amex: "American Express", americanexpress: "American Express", discover: "Discover" };
+      const brand = brands[brandRaw];
+      if (!brand) throw new BadInputError("Select Visa, Mastercard, American Express or Discover.");
+      const last4 = text(body.cardLast4, 4, true);
+      if (!/^\d{4}$/.test(last4)) throw new BadInputError("Provide exactly the last four digits of the card.");
+      const month = Number(body.cardExpMonth), year = Number(body.cardExpYear);
+      if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year)) throw new BadInputError("Provide a valid card expiry month and year.");
+      const nowDate = new Date(), currentYear = nowDate.getFullYear(), currentMonth = nowDate.getMonth() + 1;
+      if (year < currentYear || year > currentYear + 30 || (year === currentYear && month < currentMonth)) throw new BadInputError("This card expiry has passed. Use an unexpired card.");
+      const cardholder = text(body.cardholderName, 120, true), billingName = text(body.billingName ?? cardholder, 120);
+      const line1 = text(body.billingAddressLine1, 160, true), line2 = text(body.billingAddressLine2 ?? "", 160);
+      const city = text(body.billingCity, 100, true), state = text(body.billingState, 60, true), postal = text(body.billingPostalCode, 20, true), country = text(body.billingCountry, 60, true).toUpperCase();
+      const billing = { name: billingName, line1, line2, city, state, postalCode: postal, country };
+      const tokenHash = createHash("sha256").update(token).digest("hex");
+      const providerReference = `card-token:${tokenHash}`;
       const result = inTransaction(db, () => {
         const prior = db.prepare("SELECT * FROM external_accounts WHERE user_id=? AND request_key=?").get(id,key) as any;
         if (prior) {
-          if (prior.bank_name !== bank || prior.account_name !== name || prior.last4 !== last4 || prior.account_type !== body.accountType) throw new BadInputError("This request identifier was already used for different details.");
+          if (prior.kind !== "card" || prior.provider_reference !== providerReference || prior.last4 !== last4 || prior.card_brand !== brand || prior.card_exp_month !== month || prior.card_exp_year !== year || prior.account_name !== cardholder || prior.billing_address_json !== JSON.stringify(billing)) throw new BadInputError("This request identifier was already used for different card details.");
           return { id: prior.id, replayed: true };
         }
-        if (!rateLimit(`bank-reference:${id}`,10,3600000)) throw new BadInputError("Too many account-reference requests. Try again later.");
-        if (externalAccounts(id).length >= 25) throw new BadInputError("Contact support to manage your existing account references before adding more.");
-        if (db.prepare("SELECT 1 FROM external_accounts WHERE user_id=? AND bank_name=? COLLATE NOCASE AND last4=? AND account_type=? AND status IN ('pending','verified')").get(id,bank,last4,body.accountType)) throw new BadInputError("An account with this bank, type and ending is already listed. Review its existing status.");
+        if (!rateLimit(`card-reference:${id}`,10,3600000)) throw new BadInputError("Too many card-reference requests. Try again later.");
+        if (externalAccounts(id).length >= 25) throw new BadInputError("Contact support to manage your existing funding references before adding more.");
+        if (db.prepare("SELECT 1 FROM external_accounts WHERE user_id=? AND kind='card' AND card_brand=? AND last4=? AND card_exp_month=? AND card_exp_year=? AND status IN ('pending','verified')").get(id,brand,last4,month,year)) throw new BadInputError("This card is already linked. Review its existing status.");
         const accountId = rid("external"), at = now();
-        db.prepare("INSERT INTO external_accounts(id,user_id,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at,verification_kind,request_key) VALUES(?,?,?,?,?,?,'pending',NULL,?,?,'staff_reference',?)").run(accountId,id,bank,name,last4,body.accountType,at,at,key);
+        db.prepare(`INSERT INTO external_accounts(id,user_id,kind,bank_name,account_name,last4,account_type,card_brand,card_exp_month,card_exp_year,billing_address_json,status,provider_reference,created_at,updated_at,verification_kind,verification_note,request_key)
+          VALUES(?,?,'card',?,?,?,'Checking',?,?,?,?,'verified',?,?,?,'card_token','Card details validated in the browser; only a masked reference is stored.',?)`).run(accountId,id,brand,cardholder,last4,brand,month,year,JSON.stringify(billing),providerReference,at,at,key);
+        audit(req, "external_account.card", "Financial", `user:${id}`, `Debit-card funding reference added: ${brand} •••• ${last4}.`, undefined, JSON.stringify({ kind: "card", brand, last4, expMonth: month, expYear: year }));
         return { id: accountId, replayed: false };
       });
       res.status(result.replayed ? 200 : 201).json({ account: externalAccounts(id).find(account => account.id === result.id), replayed: result.replayed });
@@ -180,21 +237,25 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
           const prior = db.prepare("SELECT * FROM funding_requests WHERE user_id=? AND request_key=?").get(id, key) as any;
           if (prior) {
             if (prior.amount_cents !== amount || prior.method_id !== req.body.methodId || prior.note !== note || !JSON.parse(prior.method_snapshot).demo) throw new BadInputError("This request identifier was already used for different details.");
-            return prior;
+            const replayFee = quoteFee(JSON.parse(prior.method_snapshot).kind === "card" ? "card_deposit" : "deposit", prior.amount_cents);
+            return { request: prior, feeCents: replayFee.feeCents, creditCents: applyFee(prior.amount_cents, replayFee.feeCents) };
           }
           const m = accountMethods(id).find(method => method.id === req.body.methodId);
           if (!m || m.unavailable) throw new BadInputError("Choose an available funding method. Bank funding requires a verified linked account; Direct Deposit requires configured receiving details.");
+          const fee = quoteFee(m.kind === "card" ? "card_deposit" : "deposit", amount);
+          const credit = applyFee(amount, fee.feeCents);
+          if (credit <= 0) throw new BadInputError("This amount is too small to cover the card deposit fee.");
           const a = db.prepare("SELECT * FROM accounts WHERE user_id=?").get(id) as any;
-          if (!a || !Number.isSafeInteger(a.balance_cents + amount) || a.balance_cents + amount > 1000000000) throw new BadInputError("Account cannot accept this credit (maximum balance $10,000,000).");
+          if (!a || !Number.isSafeInteger(a.balance_cents + credit) || a.balance_cents + credit > 1000000000) throw new BadInputError("Account cannot accept this credit (maximum balance $10,000,000).");
           // Disabled internal fixture: turning demo mode off never exposes it as a live method.
           db.prepare("INSERT INTO funding_methods(id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at,recipient_contact) VALUES(?,?,?,?,?,'','','',?,0,?,'') ON CONFLICT(id) DO NOTHING").run(m.id,id,m.label,m.kind,m.instructions,m.recipient,now());
           const requestId = rid("deposit"), reference = `VYR-${randomUUID().slice(0,12).toUpperCase()}`, at = now();
-          db.prepare("INSERT INTO funding_requests(id,user_id,method_id,amount_cents,status,reference,method_snapshot,note,evidence,request_key,created_at,reviewed_at) VALUES(?,?,?,?,'confirmed',?,?,?,?,?,?,?)").run(requestId,id,m.id,amount,reference,JSON.stringify(m),note,"Account credit; external processing not connected.",key,at,at);
-          db.prepare("UPDATE accounts SET balance_cents=balance_cents+?,updated_at=? WHERE id=?").run(amount,at,a.id);
-          db.prepare("INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,status,reference,note,created_at,performed_by) VALUES(?,?,?,?,'Funding',?,?,'cleared',?,?,?,?)").run(rid("txn"),a.id,id,m.label,m.kind,amount,reference,"Account credit — external processing not connected.",at,id);
-          return db.prepare("SELECT * FROM funding_requests WHERE id=?").get(requestId);
+          db.prepare("INSERT INTO funding_requests(id,user_id,method_id,amount_cents,status,reference,method_snapshot,note,evidence,request_key,created_at,reviewed_at) VALUES(?,?,?,?,'confirmed',?,?,?,?,?,?,?)").run(requestId,id,m.id,amount,reference,JSON.stringify(m),note,fee.feeCents ? `Account credit less ${fee.label}; external processing not connected.` : "Account credit; external processing not connected.",key,at,at);
+          db.prepare("UPDATE accounts SET balance_cents=balance_cents+?,updated_at=? WHERE id=?").run(credit,at,a.id);
+          db.prepare("INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,fee_cents,status,reference,note,created_at,performed_by) VALUES(?,?,?,?,'Funding',?, ?,?,'cleared',?,?,?,?)").run(rid("txn"),a.id,id,m.label,m.kind,amount,fee.feeCents,reference,fee.feeCents ? `Account credit less ${fee.label.toLowerCase()} — external processing not connected.` : "Account credit — external processing not connected.",at,id);
+          return { request: db.prepare("SELECT * FROM funding_requests WHERE id=?").get(requestId), feeCents: fee.feeCents, creditCents: credit };
         });
-        res.status(201).json({ request, status: "confirmed", message: "Funds added to your account immediately." });
+        res.status(201).json({ request: request.request, status: "confirmed", fee: centsToDecimal(request.feeCents), amountCredited: centsToDecimal(request.creditCents), message: request.feeCents ? `Funds added after a ${centsToDecimal(request.feeCents)} card deposit fee.` : "Funds added to your account immediately." });
         return;
       }
       if (req.body?.accountEntry || req.body?.demo) throw new BadInputError("Immediate account funding is unavailable. Reload your funding methods.");

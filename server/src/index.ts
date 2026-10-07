@@ -64,7 +64,7 @@ if (!isProduction) {
   process.env.ADMIN_NAME ??= "System Admin";
 }
 
-// Test balances must never share the ordinary or production database.
+// Preview balances must never share the ordinary or production database.
 const previewDb = resolve(process.cwd(), "server/preview-crypto.db");
 if (isProduction && (process.env.PREVIEW_CRYPTO_DATA === "1" || basename(process.env.DB_PATH ?? "") === "preview-crypto.db")) {
   throw new Error("Preview crypto data/database cannot be used in production.");

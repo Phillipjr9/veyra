@@ -2,6 +2,7 @@ import { confirmFunding } from "./funding-helpers";
 import { test, expect, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
 import { FUNDING_OPTIONS } from "../../shared/funding";
+import { quoteFee } from "../../shared/fees";
 
 test.skip((process.env.ACCOUNT_LEDGER_ENABLED || process.env.DEMO_PAYMENTS_ENABLED) !== "1", "Requires account-ledger funding.");
 const password = "Account-Interface-2026!";
@@ -25,7 +26,7 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
   await expect(page.locator(".dx-kicker")).toHaveText("LEDGER INTELLIGENCE");
   await page.getByRole("button", { name: "7D", exact: true }).click();
   await page.getByRole("button", { name: "Bar chart", exact: true }).click();
-  let total = 0;
+  let total = 0, fees = 0;
   for (const option of FUNDING_OPTIONS) {
     await page.getByRole("button", { name: "Add funds", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
@@ -51,6 +52,9 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
     await ordinaryInterface(page);
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     total += 14.25;
+    // The ledger chart plots cleared principal; card fees reduce cash but are
+    // tracked separately on the transaction.
+    if (option.kind === "card") fees += quoteFee("card_deposit", 1425).feeCents / 100;
     await expect(page.locator('[data-flow="in"]')).toHaveText(`$${total.toFixed(2)}`);
     await expect(page.locator('[data-flow="out"]')).toHaveText("$0.00");
     await expect(page.locator(".dx-flow")).toHaveCount(1);
@@ -58,8 +62,10 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
     await expect(page.locator(".dx-breakdown")).toHaveCount(0);
   }
   const account = (await (await request.get("/api/me/state", { headers: { authorization: `Bearer ${user.token}` } })).json()).account;
-  expect(account.balance).toBe(85.5);
+  expect(Math.round(account.balance * 100)).toBe(Math.round((total - fees) * 100));
   expect(account.transactions).toHaveLength(6);
+  expect(account.transactions.filter((row: { fee?: number }) => (row.fee ?? 0) > 0)).toHaveLength(1);
+  expect(Math.round(account.transactions.reduce((sum: number, row: { fee?: number }) => sum + (row.fee ?? 0), 0) * 100)).toBe(21);
   for (const row of account.transactions) { expect(row.status).toBe("cleared"); expect(row.reference).toMatch(/^VYR-/); expect(row.merchant).not.toMatch(/\bdemo\b/i); }
   await expect(page.getByRole("button", { name: "7D", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Bar chart", exact: true })).toHaveAttribute("aria-pressed", "true");

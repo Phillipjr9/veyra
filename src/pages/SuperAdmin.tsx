@@ -1231,7 +1231,7 @@ export function SuperAdminPage() {
             <div className="admin-table-wrap">
               <table className="admin-table">
                 <thead>
-                  <tr><th>Date</th><th>Member</th><th>Merchant / counterparty</th><th>Category</th><th>Method</th><th>Amount</th><th>Status</th><th>Reference</th></tr>
+                  <tr><th>Date</th><th>Member</th><th>Merchant / counterparty</th><th>Category</th><th>Method</th><th>Amount</th><th>Fee</th><th>Status</th><th>Reference</th></tr>
                 </thead>
                 <tbody>
                   {filteredTxns.slice(0, 120).map(t => (
@@ -1242,6 +1242,7 @@ export function SuperAdminPage() {
                       <td><small>{t.category}</small></td>
                       <td><small>{t.method ?? "Card"}</small></td>
                       <td><strong style={{ color: t.amount < 0 ? "#9d4040" : "#2f7a4c" }}>{t.amount < 0 ? "−" : "+"}{money(Math.abs(t.amount))}</strong></td>
+                      <td>{(t.fee ?? 0) > 0 ? money(t.fee ?? 0) : "—"}</td>
                       <td><span className={`status-pill ${t.status === "pending" ? "open" : "active"}`}><span className="dot" />{t.status ?? "cleared"}</span></td>
                       <td><code>{t.reference ?? "—"}</code></td>
                     </tr>
