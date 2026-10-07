@@ -2526,7 +2526,7 @@ function CryptoStat({ index }: { index: number }) {
   const { data, loading } = useHoldings();
   const reduce = useReducedMotion();
 
-  const held = data?.holdings.filter(h => h.units !== "0" || (h.reservedUnits && h.reservedUnits !== "0")) ?? [];
+  const held = data?.holdings.filter(h => h.units !== "0") ?? [];
   const unpricedHeld = held.filter(h => h.valueUsd === null).length;
   const everythingDark = held.length > 0 && unpricedHeld === held.length;
 
@@ -2593,7 +2593,7 @@ export function HoldingsPanel({ catalog = false }: { catalog?: boolean }) {
   const { data, loading, reload } = useHoldings();
   const navigate = useNavigate();
   if (loading || !data) return null;
-  const owned = data.holdings.filter(h => h.units !== "0" || (h.reservedUnits && h.reservedUnits !== "0"));
+  const owned = data.holdings.filter(h => h.units !== "0");
 
   return (
     <>
@@ -2630,7 +2630,7 @@ export function HoldingsPanel({ catalog = false }: { catalog?: boolean }) {
             <div className="holding-price">
               {holding.priceUsd ? <>{holding.priceUsd} per {holding.asset} <em>{quoteAge(holding.quotedAt)}</em></> : <>No current quote</>}
             </div>
-            <p className="holding-price">Available: {holding.quantity} {holding.asset}{holding.reservedUnits && holding.reservedUnits !== "0" ? ` · ${holding.reservedQuantity} reserved (pending)` : ""}</p>
+            <p className="holding-price">Available: {holding.quantity} {holding.asset}</p>
             <div className="holding-actions">
               {data.tradingEnabled ? (
                 <>
@@ -2650,7 +2650,7 @@ export function HoldingsPanel({ catalog = false }: { catalog?: boolean }) {
         ))}
       </div>
 
-      {!catalog && <CryptoWithdrawalHistory revision={revision} changed={() => { void reload(); }} />}
+      {!catalog && <CryptoWithdrawalHistory revision={revision} />}
       {sending && <CryptoSendDialog holding={sending} close={() => setSending(null)} submitted={() => { void reload(); setRevision(r => r+1); }} />}
 
 

@@ -1124,7 +1124,6 @@ export function createApp(dbPath?: string) {
   app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
   app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
   app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, wrap(banking.withdraw));
-  app.post("/api/me/crypto-withdrawals/:id/cancel", requireAuth, wrap(banking.cancelWithdrawal));
 
   app.post("/api/me/transfers", requireAuth, requireApproved, guardDemoLedger, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
@@ -1234,16 +1233,15 @@ export function createApp(dbPath?: string) {
       .all(req.user!.id) as unknown as { asset: string; units: string; updated_at: number }[];
     const held = new Map(rows.map((row) => [row.asset, row]));
 
-    const pending = new Map<string, bigint>();
-    for (const r of db.prepare("SELECT asset, units FROM crypto_withdrawals WHERE user_id=? AND status='pending'").all(req.user!.id) as { asset: string; units: string }[]) pending.set(r.asset,(pending.get(r.asset) ?? 0n)+BigInt(r.units));
+    // A withdrawal debits on request, so holdings are simply what is left —
+    // there is no pending reservation to add back.
     let totalCents = 0;
     let priced = true;
     const holdings = assets.map((asset) => {
       const row = held.get(asset.code);
       const units = BigInt(row?.units ?? "0");
       const quote = quotes.get(asset.code) ?? null;
-      const reserved = pending.get(asset.code) ?? 0n;
-      const totalUnits = units + reserved;
+      const totalUnits = units;
       // A missing quote yields null, never 0 — a zero would be silently summed
       // into the total and render as a confident, wrong valuation.
       const valueCents = quote ? valueInCents(totalUnits, asset.decimals, quote.cents) : null;
@@ -1254,8 +1252,6 @@ export function createApp(dbPath?: string) {
         kind: asset.kind,
         decimals: asset.decimals,
         units: units.toString(),
-        reservedUnits: reserved.toString(),
-        reservedQuantity: formatUnitsTrimmed(reserved, asset.decimals),
         totalQuantity: formatUnitsTrimmed(totalUnits, asset.decimals),
         withdrawalNetwork: ASSETS.find(a => a.code === asset.code)?.network ?? null,
         quantity: formatUnitsTrimmed(units, asset.decimals),

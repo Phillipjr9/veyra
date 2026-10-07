@@ -242,7 +242,7 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       res.json({ ok: true });
     },
     withdrawalsGet(req: Request, res: Response) {
-      res.json({ withdrawals: db.prepare("SELECT * FROM crypto_withdrawals WHERE user_id=? ORDER BY (status='pending') DESC, created_at DESC LIMIT 100").all(req.user!.id).map(withdrawOut) });
+      res.json({ withdrawals: db.prepare("SELECT * FROM crypto_withdrawals WHERE user_id=? ORDER BY created_at DESC LIMIT 100").all(req.user!.id).map(withdrawOut) });
     },
     withdraw(req: Request, res: Response) {
       if (getSetting(db,"payment_rails") === "halted") return void res.status(503).json({error:"Outgoing payment requests are temporarily halted."});
@@ -262,9 +262,8 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       try { request = inTransaction(db, () => {
         const prior = db.prepare("SELECT * FROM crypto_withdrawals WHERE user_id=? AND request_key=?").get(id,key) as any;
         if (prior) { if (prior.asset !== asset.code || prior.units !== units.toString() || prior.network !== spec.network || prior.address !== address) throw new BadInputError("Request identifier already used with different details."); return prior; }
-        if ((db.prepare("SELECT COUNT(*) AS n FROM crypto_withdrawals WHERE user_id=? AND status='pending'").get(id) as {n:number}).n >= 20) throw new BadInputError("Resolve existing withdrawal requests before adding more.");
         const current = BigInt((db.prepare("SELECT units FROM holdings WHERE user_id=? AND asset=?").get(id,asset.code) as any)?.units ?? "0");
-        if (units > current) throw new BadInputError("Insufficient available asset units. Pending requests are already reserved.");
+        if (units > current) throw new BadInputError("Insufficient available asset units.");
         db.prepare("UPDATE holdings SET units=?,updated_at=? WHERE user_id=? AND asset=?").run((current-units).toString(),now(),id,asset.code);
         const requestId = rid("withdraw");
         db.prepare("INSERT INTO crypto_withdrawals(id,user_id,asset,units,network,address,reference,request_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(requestId,id,asset.code,units.toString(),spec.network,address,ref(),key,now());
@@ -276,24 +275,9 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
         throw error;
       }
       const recorded = withdrawOut(request);
-      if (recorded.status === "pending") sendCryptoNotification(db, id, { activity: "withdrawal", status: "pending", reference: recorded.reference, occurredAt: recorded.created_at,
+      sendCryptoNotification(db, id, { activity: "withdrawal", status: "recorded", reference: recorded.reference, occurredAt: recorded.created_at,
         asset: recorded.asset, quantity: recorded.quantity, network: recorded.network, settlement: "request" });
-      res.status(201).json({ withdrawal: recorded, message: "Pending request only. No transaction has been broadcast; network fees and execution are not confirmed." });
-    },
-    cancelWithdrawal(req: Request, res: Response) {
-      if (req.user!.loginId) return void res.status(403).json({ error: "Only the account owner can cancel." });
-      const cancelled = inTransaction(db, () => {
-        const r = db.prepare("SELECT * FROM crypto_withdrawals WHERE id=? AND user_id=?").get(String(req.params.id),req.user!.id) as any;
-        if (!r) throw new BadInputError("Withdrawal not found.");
-        if (r.status !== "pending") return null;
-        const holding = db.prepare("SELECT units FROM holdings WHERE user_id=? AND asset=?").get(req.user!.id,r.asset) as any;
-        db.prepare("UPDATE holdings SET units=?,updated_at=? WHERE user_id=? AND asset=?").run((BigInt(holding.units)+BigInt(r.units)).toString(),now(),req.user!.id,r.asset);
-        db.prepare("UPDATE crypto_withdrawals SET status='cancelled',cancelled_at=? WHERE id=?").run(now(),r.id);
-        return withdrawOut(r);
-      });
-      if (cancelled) sendCryptoNotification(db, req.user!.id, { activity: "withdrawal", status: "cancelled", reference: cancelled.reference, occurredAt: now(),
-        asset: cancelled.asset, quantity: cancelled.quantity, network: cancelled.network, settlement: "request" });
-      res.json({ ok: true });
+      res.status(201).json({ withdrawal: recorded, message: "Request recorded and units debited. No transaction has been broadcast; network fees and execution are not confirmed." });
     },
   };
 }

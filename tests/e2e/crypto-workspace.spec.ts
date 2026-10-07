@@ -93,7 +93,7 @@ test("lost confirmation response recovers the same completed order across reload
   expect(orders.orders).toHaveLength(1);
 });
 
-test("pending send reserves units, can be cancelled, and never masquerades as a blockchain transfer", async ({ page, request }) => {
+test("send debits units immediately, cannot be cancelled, and never masquerades as a blockchain transfer", async ({ page, request }) => {
   await owner(page, request);
   const buy = await reviewBuy(page, "25");
   await buy.getByRole("button", { name: "Confirm buy" }).click();
@@ -104,17 +104,17 @@ test("pending send reserves units, can be cancelled, and never masquerades as a 
   await send.getByLabel("Destination wallet address").fill("0x1111111111111111111111111111111111111111");
   await send.getByLabel("Quantity (USDC)").fill("10.123456");
   await send.getByRole("button", { name: "Review withdrawal" }).click();
-  await send.getByRole("button", { name: "Confirm pending withdrawal" }).click();
-  await expect(send.getByRole("status")).toContainText("Pending · not broadcast");
+  await send.getByRole("button", { name: "Confirm withdrawal" }).click();
+  await expect(send.getByRole("status")).toContainText("Request recorded · not broadcast");
   await send.getByRole("button", { name: "Close", exact: true }).click();
   const usdc = page.getByRole("article", { name: "USD Coin account holding" });
   await expect(usdc).toContainText("14.876544 USDC");
-  await expect(usdc).toContainText("10.123456 reserved");
+  await expect(usdc).not.toContainText("reserved");
   await page.getByRole("button", { name: "Activity", exact: true }).click();
-  await page.getByRole("button", { name: "Cancel and release units" }).click();
-  await expect(page.locator(".crypto-request-history")).toContainText("cancelled");
+  await expect(page.locator(".crypto-request-history")).toContainText("recorded");
+  await expect(page.getByRole("button", { name: "Cancel and release units" })).toHaveCount(0);
   await page.getByRole("button", { name: "Account assets" }).click();
-  await expect(usdc).toContainText("25 USDC");
+  await expect(usdc).toContainText("14.876544 USDC");
 });
 
 async function installWalletFixtures(page: Page, settings: { ethereumChain?: string; bitcoinChain?: string; reject?: boolean; unavailable?: boolean; delay?: boolean } = {}) {

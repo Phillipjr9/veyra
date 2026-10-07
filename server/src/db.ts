@@ -1065,6 +1065,30 @@ ALTER TABLE cards ADD COLUMN provider_status TEXT NOT NULL DEFAULT '';
 CREATE UNIQUE INDEX idx_cards_provider_card ON cards(provider_card_id) WHERE provider_card_id IS NOT NULL;
 `,
   },
+  {
+    version: 26,
+    sql: `
+-- Crypto withdrawal requests are recorded, not pending. A request debits the
+-- units when it is made, so there is no reservation to release and nothing to
+-- cancel: one terminal status instead of a pending/cancelled lifecycle.
+-- Requests already on file are relabelled — their units were debited at the
+-- time they were made, so nothing about their balances changes here.
+CREATE TABLE crypto_withdrawals_v26 (
+ id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), asset TEXT NOT NULL REFERENCES crypto_assets(code),
+ units TEXT NOT NULL CHECK(units NOT LIKE '-%'), network TEXT NOT NULL, address TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'recorded' CHECK(status IN ('recorded','cancelled')),
+ reference TEXT NOT NULL, request_key TEXT NOT NULL, created_at INTEGER NOT NULL, cancelled_at INTEGER,
+ UNIQUE(user_id, request_key)
+);
+INSERT INTO crypto_withdrawals_v26 (id,user_id,asset,units,network,address,status,reference,request_key,created_at,cancelled_at)
+ SELECT id,user_id,asset,units,network,address,
+        CASE WHEN status='pending' THEN 'recorded' ELSE status END,
+        reference,request_key,created_at,cancelled_at FROM crypto_withdrawals;
+DROP TABLE crypto_withdrawals;
+ALTER TABLE crypto_withdrawals_v26 RENAME TO crypto_withdrawals;
+CREATE INDEX idx_crypto_withdrawals_user ON crypto_withdrawals(user_id, status);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

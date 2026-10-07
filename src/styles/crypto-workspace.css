@@ -64,7 +64,6 @@
 .cw-asset-row small{display:block;font-size:10px;line-height:1.75;color:#8f829c}
 .cw-asset-value{text-align:right}
 .cw-asset-quantity{min-width:0}
-.cw-asset-quantity .cw-reserved{color:#a17443}
 .cw-row-actions{display:flex;gap:7px;align-items:center;justify-content:flex-end}
 .cw-row-actions .ghost-btn{font-size:10px;padding:7px 12px}
 .cw-icon-button{display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:#9d89b0;padding:7px;border-radius:6px;cursor:pointer}

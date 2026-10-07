@@ -36,7 +36,7 @@ test("customer UI never relabels generated fixtures as live prices", async ({ pa
   await expect(page.getByRole("dialog").getByRole("button", { name: "Check order status" })).toBeVisible();
 });
 
-test("business preview can use its test holdings for the animated request and cancel", async ({ page }) => {
+test("business preview can use its test holdings for the animated request", async ({ page }) => {
   await login(page, "business");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator(".cw-action-bar").getByRole("button", { name: /^Send/ }).click();
@@ -46,13 +46,13 @@ test("business preview can use its test holdings for the animated request and ca
   await send.getByLabel("Destination wallet address").fill("0x1111111111111111111111111111111111111111");
   await send.getByLabel("Quantity (USDC)").fill("10");
   await send.getByRole("button", { name: "Review withdrawal" }).click(); await fits(page);
-  await send.getByRole("button", { name: "Confirm pending withdrawal" }).click();
+  await send.getByRole("button", { name: "Confirm withdrawal" }).click();
   await expect(send.locator(".flow-processing")).toBeVisible();
-  await expect(send.getByRole("status")).toContainText("Pending · not broadcast"); await fits(page);
+  await expect(send.getByRole("status")).toContainText("Request recorded · not broadcast"); await fits(page);
   await send.getByRole("button", { name: "Done" }).click();
   await page.getByRole("button", { name: "Activity", exact: true }).click();
-  await page.getByRole("button", { name: "Cancel and release units" }).click();
-  await expect(page.locator(".crypto-request-history")).toContainText("cancelled");
+  await expect(page.locator(".crypto-request-history")).toContainText("recorded");
+  await expect(page.getByRole("button", { name: "Cancel and release units" })).toHaveCount(0);
   await page.getByRole("button", { name: "Account assets", exact: true }).click();
-  await expect(page.getByRole("article", { name: "USD Coin account holding" })).toContainText("500 USDC");
+  await expect(page.getByRole("article", { name: "USD Coin account holding" })).toContainText("490 USDC");
 });

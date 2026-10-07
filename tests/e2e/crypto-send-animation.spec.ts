@@ -31,7 +31,7 @@ async function withdrawals(request: APIRequestContext, headers: Record<string, s
   return (await (await request.get("/api/me/crypto-withdrawals", { headers })).json()).withdrawals;
 }
 
-test("shared send animation has real movement, waits for response, reserves once and fits mobile", async ({ page, request }, testInfo) => {
+test("shared send animation has real movement, waits for response, debits once and fits mobile", async ({ page, request }, testInfo) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   const { dialog, headers } = await fixture(page, request);
   for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 844 }); await fits(page); }
@@ -68,7 +68,7 @@ test("shared send animation has real movement, waits for response, reserves once
     await expect(dialog.getByRole("button", { name: "Close", exact: true })).toBeDisabled();
     await page.keyboard.press("Escape"); await expect(dialog).toBeVisible();
     const rows = await withdrawals(request, headers);
-    expect(rows).toHaveLength(1); expect(rows[0].quantity).toBe("10.123456"); expect(rows[0].status).toBe("pending"); expect(posts).toBe(1);
+    expect(rows).toHaveLength(1); expect(rows[0].quantity).toBe("10.123456"); expect(rows[0].status).toBe("recorded"); expect(posts).toBe(1);
     await page.waitForTimeout(4000);
     await expect(dialog.getByRole("heading", { name: "Waiting for request confirmation…" })).toBeVisible();
     await expect(dialog.locator(".crypto-send-recorded")).toHaveCount(0);
@@ -77,21 +77,21 @@ test("shared send animation has real movement, waits for response, reserves once
     await page.setViewportSize({ width: 390, height: 844 });
     await dialog.screenshot({ path: testInfo.outputPath("crypto-processing-mobile.png") });
     release();
-    await expect(dialog.getByRole("status")).toContainText("Pending · not broadcast");
+    await expect(dialog.getByRole("status")).toContainText("Request recorded · not broadcast");
     await expect(dialog.locator(".crypto-send-recorded .crypto-send-quantity")).toHaveText("10.123456 USDC");
     await expect(dialog.locator(".confetti,.check-wrap")).toHaveCount(0);
     await expect(dialog.locator(".receipt")).toContainText(rows[0].reference);
     for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 844 }); await fits(page); }
-    await dialog.screenshot({ path: testInfo.outputPath("crypto-pending-desktop.png") });
+    await dialog.screenshot({ path: testInfo.outputPath("crypto-recorded-desktop.png") });
     const download = page.waitForEvent("download");
     await dialog.getByRole("button", { name: "Request record" }).click();
     const file = await download;
     const text = await readFile((await file.path())!, "utf8");
     expect(text).toContain(destination); expect(text).toContain("10.123456 USDC"); expect(text).toContain("Not broadcast");
     await dialog.getByRole("button", { name: "Done" }).click();
-    await expect(page.locator(".crypto-request-history")).toContainText("pending");
-    await page.getByRole("button", { name: "Cancel and release units" }).click();
-    await expect(page.locator(".holding-card")).toContainText("Available: 25 USDC");
+    await expect(page.locator(".crypto-request-history")).toContainText("recorded");
+    await expect(page.locator(".holding-card")).toContainText("Available: 14.876544 USDC");
+    await expect(page.getByRole("button", { name: "Cancel and release units" })).toHaveCount(0);
   } finally { release(); }
 });
 
@@ -106,7 +106,7 @@ test("reduced motion remains visible and preserves all eighteen ETH decimal plac
   await expect(dialog.locator(".flow-processing .flow-sub b")).toHaveText(`${amount} ETH`);
   await expect(dialog.locator(".flow-dot,.flow-travelling-token")).toHaveCount(0);
   expect(await dialog.locator(".flow-orbit > img").evaluate(el => getComputedStyle(el).animationName)).toBe("none");
-  await expect(dialog.getByRole("status")).toContainText("Pending · not broadcast");
+  await expect(dialog.getByRole("status")).toContainText("Request recorded · not broadcast");
   expect(Date.now() - start).toBeGreaterThanOrEqual(2300);
   await expect(dialog.locator(".crypto-send-quantity")).toHaveText(`${amount} ETH`);
   expect((await withdrawals(request, headers))[0].units).toBe("123");
@@ -114,7 +114,7 @@ test("reduced motion remains visible and preserves all eighteen ETH decimal plac
   expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
 });
 
-test("refusal and lost response are retryable without a second reservation", async ({ page, request }) => {
+test("refusal and lost response are retryable without a second debit", async ({ page, request }) => {
   const { dialog, headers } = await fixture(page, request);
   let calls = 0; const keys: string[] = [];
   await page.route("**/api/me/crypto-withdrawals", async route => {
@@ -134,27 +134,29 @@ test("refusal and lost response are retryable without a second reservation", asy
   await expect(dialog.locator(".flow-confirm")).toBeVisible();
   expect(await withdrawals(request, headers)).toHaveLength(1);
   await dialog.locator(".flow-confirm").click();
-  await expect(dialog.getByRole("status")).toContainText("Pending · not broadcast");
+  await expect(dialog.getByRole("status")).toContainText("Request recorded · not broadcast");
   expect(new Set(keys).size).toBe(1); expect(calls).toBe(3);
   expect(await withdrawals(request, headers)).toHaveLength(1);
 });
 
-test("a cancelled request replay is not presented as reserved or sent", async ({ page, request }) => {
+test("a lost response replay debits the units exactly once", async ({ page, request }) => {
   const { dialog, headers } = await fixture(page, request);
+  const usdc = page.locator(".holding-card").filter({ has: page.locator(".holding-code", { hasText: /^USDC$/ }) });
   let first = true;
   await page.route("**/api/me/crypto-withdrawals", async route => {
     if (route.request().method() !== "POST" || !first) return route.continue();
     first = false;
-    const response = await route.fetch(), body = await response.json();
+    const response = await route.fetch();
     expect(response.status()).toBe(201);
-    expect((await request.post(`/api/me/crypto-withdrawals/${body.withdrawal.id}/cancel`, { headers })).status()).toBe(200);
     await route.abort("failed");
   });
   await dialog.getByRole("button", { name: "Review withdrawal" }).click();
   await dialog.locator(".flow-confirm").click();
   await expect(dialog.getByRole("alert")).toBeVisible();
   await dialog.locator(".flow-confirm").click();
-  await expect(dialog.getByRole("status")).toContainText("Previously cancelled request");
-  await expect(dialog).not.toContainText("Units are reserved, not sent");
+  await expect(dialog.getByRole("status")).toContainText("Request recorded · not broadcast");
   expect(await withdrawals(request, headers)).toHaveLength(1);
+  await dialog.getByRole("button", { name: "Done" }).click();
+  // 25 USDC held, 10.123456 requested once — the replay must not debit twice.
+  await expect(usdc).toContainText("Available: 14.876544 USDC");
 });

@@ -77,17 +77,16 @@ try {
   const sell = await quote({ action: "sell", fromAsset: "ETH", toAsset: "USD", amount: "0.016666666666666666" });
   check("sell quote exposes exact rounding to USD cents", sell.toQuantity === "49.99");
   check("sell credits checking and consumes exact base units", (await confirm(sell.id)).status === 200 && held("ETH") === 0n && cash() === 94999);
-  const reservedQuote = await quote({ action: "swap", fromAsset: "BTC", toAsset: "SOL", amount: "0.001" });
-  const withdrawal = { asset: "BTC", network: "Bitcoin", address: "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", amount: "0.0008", requestKey: randomUUID() };
+  const staleQuote = await quote({ action: "swap", fromAsset: "BTC", toAsset: "SOL", amount: "0.001" });
+  const withdrawal = { asset: "BTC", network: "Bitcoin", address: "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", amount: "0.0002", requestKey: randomUUID() };
   const send = await api("POST", "/api/me/crypto-withdrawals", alice.token, withdrawal);
-  check("send only reserves available holdings and never broadcasts", send.status === 201 && send.json.withdrawal.status === "pending" && held("BTC") === 20000n && !send.json.withdrawal.transaction_hash);
-  check("new reservation invalidates a previously affordable quote at confirmation", (await confirm(reservedQuote.id)).status === 400 && held("SOL") === 0n && held("BTC") === 20000n);
+  check("send debits the available units and never broadcasts", send.status === 201 && send.json.withdrawal.status === "recorded" && held("BTC") === 80000n && !send.json.withdrawal.transaction_hash);
+  check("a quote the debit has made unaffordable is refused at confirmation", (await confirm(staleQuote.id)).status === 400 && held("SOL") === 0n && held("BTC") === 80000n);
   const repeatedSend = await api("POST", "/api/me/crypto-withdrawals", alice.token, withdrawal);
-  check("withdrawal replay cannot reserve twice", repeatedSend.json.withdrawal.id === send.json.withdrawal.id && held("BTC") === 20000n);
-  await api("POST", `/api/me/crypto-withdrawals/${send.json.withdrawal.id}/cancel`, alice.token);
-  await api("POST", `/api/me/crypto-withdrawals/${send.json.withdrawal.id}/cancel`, alice.token);
-  check("withdrawal cancellation restores reserved units once", held("BTC") === 100000n);
-  check("the still-valid quote can execute after reservations are released", (await confirm(reservedQuote.id)).status === 200 && held("BTC") === 0n && held("SOL") === 250000000n);
+  check("withdrawal replay cannot debit twice", repeatedSend.json.withdrawal.id === send.json.withdrawal.id && held("BTC") === 80000n);
+  check("a recorded withdrawal cannot be cancelled", (await api("POST", `/api/me/crypto-withdrawals/${send.json.withdrawal.id}/cancel`, alice.token)).status === 404);
+  const affordableQuote = await quote({ action: "swap", fromAsset: "BTC", toAsset: "SOL", amount: "0.0008" });
+  check("the debit is permanent and only the remaining units stay spendable", (await confirm(affordableQuote.id)).status === 200 && held("BTC") === 0n && held("SOL") === 200000000n);
   const invalid = [
     { ...buy, amount: "1e2" }, { ...buy, amount: 100 }, { ...buy, amount: "-1" }, { ...buy, amount: "1.001" }, { ...buy, amount: "0" }, { ...buy, amount: "250000.01" },
     { ...buy, price: 1 }, { ...buy, toAsset: "UNKNOWN" }, { ...buy, action: "swap" }, { action: "swap", fromAsset: "SOL", toAsset: "SOL", amount: "1" },
@@ -117,7 +116,7 @@ try {
   const creditLimitQuote = await quote({ action: "sell", fromAsset: "SOL", toAsset: "USD", amount: "0.01" });
   const restoreCash = cash();
   db.prepare("UPDATE accounts SET balance_cents=1000000000 WHERE user_id=?").run(alice.id);
-  check("sell checks the checking balance ceiling again at confirmation", (await confirm(creditLimitQuote.id)).status === 400 && held("SOL") === 250000000n && cash() === 1000000000);
+  check("sell checks the checking balance ceiling again at confirmation", (await confirm(creditLimitQuote.id)).status === 400 && held("SOL") === 200000000n && cash() === 1000000000);
   db.prepare("UPDATE accounts SET balance_cents=? WHERE user_id=?").run(restoreCash, alice.id);
   const competing = await Promise.all([quote({ ...buy, amount: "600" }), quote({ ...buy, amount: "600" })]);
   const competingResults = await Promise.all(competing.map(q => confirm(q.id)));
@@ -135,7 +134,7 @@ try {
   check("verified Solana mainnet read returns exact lamports", (await readSol()).json.units === "1234567891");
   solUnits = Number.MAX_SAFE_INTEGER + 1;
   check("unsafe numeric RPC balances are unavailable instead of rounded", (await readSol()).json.units === null);
-  check("wallet balance lookup does not mutate account holdings", held("SOL") === 250000000n);
+  check("wallet balance lookup does not mutate account holdings", held("SOL") === 200000000n);
   check("all financial foreign keys remain valid", db.prepare("PRAGMA foreign_key_check").all().length === 0);
   console.log(`\n${checks} crypto workspace checks passed.`);
 } finally {

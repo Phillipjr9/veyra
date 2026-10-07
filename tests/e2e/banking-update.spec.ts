@@ -62,7 +62,7 @@ test('personal category is optional, business category required and transaction 
  await page.evaluate(()=>{localStorage.clear();sessionStorage.clear();});await page.reload();await signIn(page,'demo.business@veyra.dev','veyra-demo-2026');await page.goto('/#/app/transfers');await expect(page.locator('#pay-cat')).toHaveAttribute('required','');
 });
 
-test('catalog is separate from holdings; animated crypto request remains pending and can be cancelled',async({page,request})=>{
+test('catalog is separate from holdings; animated crypto request is recorded and debits units immediately',async({page,request})=>{
  const u=await fixture(request);await request.post(`/api/admin/members/${u.id}/adjust`,{headers:{authorization:`Bearer ${u.admin}`},data:{direction:'credit',amount:100,memo:'Crypto fixture'}});
  await signIn(page,u.email);await page.goto('/#/app/accounts');await expect(page.locator('.holding-card')).toHaveCount(0);await page.getByRole('link',{name:'Browse assets'}).click();await expect(page.locator('.cw-asset-row')).toHaveCount(24);
  const usdc=page.locator('.holding-card').filter({has:page.locator('.holding-code',{hasText:/^USDC$/})});await page.getByRole('article',{name:'USD Coin account holding'}).getByRole('button',{name:'Buy',exact:true}).click();const buy=page.getByRole('dialog',{name:'Buy crypto',exact:true});await buy.getByLabel('Amount to spend (USD)').fill('25');await buy.getByRole('checkbox').check();await buy.getByRole('button',{name:'Review order'}).click();await buy.getByRole('button',{name:'Confirm buy'}).click();await buy.getByRole('button',{name:'Done'}).click();await expect(buy).toBeHidden();
@@ -73,9 +73,11 @@ test('catalog is separate from holdings; animated crypto request remains pending
  // Hold the real server response briefly to check the processing animation.
  let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
  await page.route('**/api/me/crypto-withdrawals',async route=>{if(route.request().method()!=='POST')return route.continue();const response=await route.fetch();await gate;await route.fulfill({response});});
- await send.getByRole('button',{name:'Confirm pending withdrawal'}).click();await expect(send.getByText('Submitting withdrawal request…',{exact:true})).toBeVisible();await expect(send.locator('.flow-track')).toBeVisible();release();
- await expect(send.getByText('Pending · not broadcast',{exact:true})).toBeVisible();await expect(send.getByText(/No transaction hash or blockchain confirmation exists/)).toBeVisible();await send.getByRole('button',{name:'Close',exact:true}).click();
- await expect(usdc).toContainText('10.123456 reserved (pending)');await page.reload();await expect(page.locator('.crypto-request-history')).toContainText('pending');await page.getByRole('button',{name:'Cancel and release units'}).click();await expect(usdc).toContainText('Available: 25 USDC');await expect(page.locator('.crypto-request-history')).toContainText('cancelled');
+ await send.getByRole('button',{name:'Confirm withdrawal'}).click();await expect(send.getByText('Submitting withdrawal request…',{exact:true})).toBeVisible();await expect(send.locator('.flow-track')).toBeVisible();release();
+ await expect(send.getByText('Request recorded · not broadcast',{exact:true})).toBeVisible();await expect(send.getByText(/No transaction hash or blockchain confirmation exists/)).toBeVisible();await send.getByRole('button',{name:'Close',exact:true}).click();
+ await expect(usdc).toContainText('Available: 14.876544 USDC');await expect(usdc).not.toContainText('reserved');
+ await page.reload();await expect(page.locator('.crypto-request-history')).toContainText('recorded');await expect(usdc).toContainText('Available: 14.876544 USDC');
+ await expect(page.getByRole('button',{name:'Cancel and release units'})).toHaveCount(0);
 });
 
 test('funding catalog restores choices without collecting unconnected bank or card credentials',async({page,request})=>{

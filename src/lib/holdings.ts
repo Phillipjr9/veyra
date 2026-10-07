@@ -17,8 +17,6 @@ export type Holding = {
   decimals: number;
   /** Integer base units as a decimal string. Not safe as a number. */
   units: string;
-  reservedUnits?: string;
-  reservedQuantity?: string;
   totalQuantity?: string;
   withdrawalNetwork?: string | null;
   /** Human quantity, trailing zeros trimmed — "0.25", not "0.250000000000000000". */
