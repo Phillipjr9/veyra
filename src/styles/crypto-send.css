@@ -95,3 +95,27 @@
 .crypto-send-processing .flow-steplist li { border-radius:10px; padding-left:8px; padding-right:8px; transition:background .3s,color .3s; }
 .crypto-send-processing .flow-steplist li.active { background:linear-gradient(90deg,#ede4fb,#f8f5fc00); }
 .crypto-send-recorded-mark { transition:box-shadow .4s; }
+
+/* Detailed receipt: grouped facts, selectable IDs and full wallet address. */
+.crypto-receipt-section { margin-top:12px; padding:6px 16px 10px; }
+.crypto-receipt-section h3 { margin:0; padding:11px 0 10px; font-size:11px; font-weight:700; color:#684997; border-bottom:1px solid var(--line); }
+.crypto-receipt-section .receipt-row { gap:12px; line-height:1.5; }
+.crypto-receipt-section .receipt-row > span { flex:0 1 40%; min-width:0; overflow-wrap:anywhere; }
+.crypto-receipt-section .receipt-row:last-child { border-bottom:0; }
+.crypto-receipt-value { display:flex; flex-direction:column; align-items:flex-end; gap:4px; flex:1; min-width:0; }
+.crypto-receipt-value b { max-width:100%; font-variant-numeric:tabular-nums; user-select:all; }
+.crypto-receipt-total { color:#684997; background:#eee6fb; margin:0 -8px; padding:10px 8px; border-radius:9px; }
+.crypto-receipt-total > span { color:#684997; font-weight:600; }
+.crypto-receipt-address { margin:10px 0 0; padding:11px 12px; background:var(--white); }
+.crypto-receipt-address-head { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; margin-bottom:7px; }
+.crypto-receipt-address-head > span { font-size:10px; font-weight:600; color:var(--muted); }
+.crypto-receipt-copy { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:32px; padding:5px 8px; border:1px solid #dfd5f5; border-radius:8px; background:var(--white); color:#684997; font-family:inherit; font-size:10px; font-weight:600; line-height:1.4; cursor:pointer; }
+.crypto-receipt-copy:hover { background:#f4efff; }
+.crypto-receipt-copy:focus-visible { outline:2px solid var(--violet); outline-offset:2px; }
+.crypto-receipt-copy-notice { margin:8px 0 0; font-size:11px; line-height:1.5; color:#684997; text-align:left; }
+.crypto-receipt-copy-notice:empty { display:none; }
+@media(max-width:420px) {
+  .crypto-receipt-section { padding-left:12px; padding-right:12px; }
+  .crypto-receipt-section .receipt-row { font-size:12px; }
+  .crypto-receipt-copy { min-width:44px; min-height:44px; }
+}

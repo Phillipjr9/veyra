@@ -86,7 +86,7 @@ test("shared send animation has real movement, waits for response, debits once a
     await expect(dialog.locator(".burst-shard")).not.toHaveCount(0);
     await expect(dialog.locator(".coin3d")).toHaveCount(1);
     await expect(dialog.locator(".coin3d-rim i")).not.toHaveCount(0);
-    await expect(dialog.locator(".receipt")).toContainText(rows[0].reference);
+    await expect(dialog.locator(".crypto-send-receipt")).toContainText(rows[0].reference);
     for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 844 }); await fits(page); }
     await dialog.screenshot({ path: testInfo.outputPath("crypto-recorded-desktop.png") });
     const download = page.waitForEvent("download");
@@ -116,6 +116,8 @@ test("reduced motion remains visible and preserves all eighteen ETH decimal plac
   expect(Date.now() - start).toBeGreaterThanOrEqual(2300);
   await expect(dialog.locator(".crypto-send-quantity")).toHaveText(`${amount} ETH`);
   expect((await withdrawals(request, headers))[0].units).toBe("123");
+  await expect(dialog.locator('.receipt-row').filter({ has: page.locator('span', { hasText: /^Total debited$/ }) })).toContainText(`${amount} ETH`);
+  await expect(dialog.locator('.crypto-send-burst')).toHaveCount(0);
   await dialog.getByRole("button", { name: "Done" }).focus(); await page.keyboard.press("Tab");
   expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
 });
@@ -165,4 +167,70 @@ test("a lost response replay debits the units exactly once", async ({ page, requ
   await dialog.getByRole("button", { name: "Done" }).click();
   // 25 USDC held, 10.123456 requested once — the replay must not debit twice.
   await expect(usdc).toContainText("Available: 14.876544 USDC");
+});
+
+
+test("detailed mobile receipt matches the server record, copies full values and downloads every section", async ({ page, request, context }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const { dialog, headers } = await fixture(page, request);
+  await dialog.getByRole('button', { name: 'Review withdrawal' }).click();
+  await dialog.locator('.flow-confirm').click();
+  await expect(dialog.getByRole('status')).toContainText('Send complete');
+  const [record] = await withdrawals(request, headers);
+  const receipt = dialog.locator('.crypto-send-receipt');
+  await expect(receipt.locator('h3')).toHaveText(['Transfer details', 'Sender & destination', 'Record & settlement']);
+  const values: Record<string, string> = {
+    Type: 'Crypto send', Status: 'Sent', Reference: record.reference,
+    Asset: 'USD Coin · USDC', Quantity: '10.123456 USDC',
+    'Network fee': 'None collected', 'Total debited': '10.123456 USDC',
+    From: 'Your Veyra account', 'Account holder': 'Crypto Animation Owner', 'Account type': 'Personal',
+    To: 'External wallet', Network: record.network, 'Veyra record ID': record.id,
+    Settlement: 'Veyra account record', 'Transaction hash': 'Not available · not broadcast',
+    Confirmations: 'Not applicable · account record only',
+  };
+  for (const [label, value] of Object.entries(values)) {
+    const row = receipt.locator('.receipt-row').filter({ has: page.locator('span').filter({ hasText: new RegExp(`^${label}$`) }) });
+    await expect(row.locator('b')).toHaveText(value);
+  }
+  const date = await page.evaluate(ts => new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }), record.created_at);
+  await expect(receipt.locator('.receipt-row').filter({ has: page.locator('span', { hasText: /^Date$/ }) }).locator('b')).toHaveText(date);
+  await expect(receipt.locator('.crypto-receipt-address code')).toHaveText(record.address);
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 844 }); await fits(page);
+    expect(await receipt.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await dialog.screenshot({ path: testInfo.outputPath('crypto-detailed-receipt-mobile.png') });
+  for (const [label, value] of [['Reference', record.reference], ['Veyra record ID', record.id], ['Destination wallet address', record.address]]) {
+    await dialog.getByRole('button', { name: `Copy ${label.toLowerCase()}`, exact: true }).click();
+    await expect(dialog.locator('.crypto-receipt-copy-notice')).toHaveText(`${label} copied.`);
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(value);
+  }
+  const downloadEvent = page.waitForEvent('download');
+  await dialog.getByRole('button', { name: 'Send receipt' }).click();
+  const download = await downloadEvent;
+  expect(download.suggestedFilename()).toBe(`veyra-crypto-send-${record.reference}.txt`);
+  const text = await readFile((await download.path())!, 'utf8');
+  for (const [label, value] of Object.entries(values)) expect(text).toContain(`${label}: ${value}`);
+  expect(text).toContain(`Date: ${date}`);
+  expect(text).toContain(`Destination wallet address: ${record.address}`);
+  expect(text).toContain('External custody and on-chain execution are not connected.');
+  await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(dialog).toBeHidden();
+});
+
+test("blocked clipboard gives a manual-copy fallback without changing the completed send", async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('Permission denied')) } }));
+  const { dialog, headers } = await fixture(page, request);
+  await dialog.getByRole('button', { name: 'Review withdrawal' }).click();
+  await dialog.locator('.flow-confirm').click();
+  await expect(dialog.getByRole('status')).toContainText('Send complete');
+  await dialog.getByRole('button', { name: 'Copy destination wallet address', exact: true }).click();
+  await expect(dialog.locator('.crypto-receipt-copy-notice')).toContainText('Select the full value to copy it manually, or download the receipt.');
+  await expect(dialog.locator('.crypto-receipt-address code')).toHaveText(destination);
+  await expect(dialog.getByRole('button', { name: 'Copy destination wallet address' })).toHaveText('Copy');
+  await fits(page);
+  expect(await withdrawals(request, headers)).toHaveLength(1);
 });

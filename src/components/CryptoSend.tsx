@@ -1,9 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { LayoutGroup, MotionConfig, motion, useReducedMotion } from "motion/react";
-import { Check, Download, Wallet, X } from "lucide-react";
+import { Check, Copy, Download, Wallet, X } from "lucide-react";
 import { apiGet, apiPost } from "../lib/api";
 import { assetIcon, type Holding } from "../lib/holdings";
-import { downloadFile, longDate } from "../lib/store";
+import { downloadFile } from "../lib/store";
+import { useAuth } from "../lib/auth";
 import { FlowProcessing, FlowTrack, StageDots } from "./MoneyFlow";
 import { useBankingDialog } from "./bankingDialog";
 import "../styles/banking-controls.css";
@@ -83,6 +84,8 @@ function CoinBurst({ asset }: { asset: string }) {
 }
 
 export function CryptoSendDialog({ holding, close, submitted }: { holding: Holding; close: () => void; submitted: () => void | Promise<void> }) {
+  const { user } = useAuth();
+  const [copied, setCopied] = useState(""), [copyNotice, setCopyNotice] = useState("");
   const [amount, setAmount] = useState(""), [address, setAddress] = useState("");
   const [stage, setStage] = useState<'form' | 'review' | 'processing' | 'recorded'>('form');
   const [error, setError] = useState(""), [result, setResult] = useState<Withdrawal | null>(null);
@@ -131,21 +134,59 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
     to: { label: 'Destination wallet', sub: network ?? 'Not supported', icon: <Wallet size={21} /> },
   };
   const cancelled = result?.status === 'cancelled';
+  // Build the visible and downloaded receipts from the same confirmed response.
+  // IDs are Veyra records, never blockchain hashes. No prices, fees or wallet
+  // balances are inferred from the client's pre-send holdings snapshot.
+  const receiptSections = result ? [
+    { title: 'Transfer details', rows: [
+      ['Type', 'Crypto send'],
+      ['Status', cancelled ? 'Cancelled' : result.status === 'recorded' ? 'Sent' : result.status],
+      ['Reference', result.reference],
+      ['Date', new Date(result.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' })],
+      ['Asset', `${holding.name} · ${result.asset}`],
+      ['Quantity', `${result.quantity} ${result.asset}`],
+      ['Network fee', 'None collected'],
+      ['Total debited', `${cancelled ? '0' : result.quantity} ${result.asset}`],
+    ] },
+    { title: 'Sender & destination', rows: [
+      ['From', 'Your Veyra account'],
+      ['Account holder', user?.name ?? 'Unavailable'],
+      ['Account type', user?.accountType === 'business' ? 'Business' : user?.accountType === 'personal' ? 'Personal' : 'Unavailable'],
+      ['To', 'External wallet'],
+      ['Network', result.network],
+    ] },
+    { title: 'Record & settlement', rows: [
+      ['Veyra record ID', result.id],
+      ['Settlement', 'Veyra account record'],
+      ['Transaction hash', 'Not available · not broadcast'],
+      ['Confirmations', 'Not applicable · account record only'],
+    ] },
+  ] : [];
+  async function copyDetail(label: string, value: string) {
+    setCopied(''); setCopyNotice('');
+    try {
+      await navigator.clipboard.writeText(value);
+      if (live.current) { setCopied(label); setCopyNotice(`${label} copied.`); }
+    } catch {
+      if (live.current) setCopyNotice(`Could not copy ${label.toLowerCase()}. Select the full value to copy it manually, or download the receipt.`);
+    }
+  }
+  const copyButton = (label: string, value: string) => <button type="button" className="crypto-receipt-copy" aria-label={`Copy ${label.toLowerCase()}`} onClick={() => void copyDetail(label, value)}>
+    {copied === label ? <Check size={14} /> : <Copy size={14} />}<span>{copied === label ? 'Copied' : 'Copy'}</span>
+  </button>;
   const download = () => {
     if (!result) return;
     downloadFile(`veyra-crypto-send-${result.reference}.txt`, [
-      'VEYRA — CRYPTO SEND RECEIPT', `Reference: ${result.reference}`, `Date: ${longDate(result.created_at)}`,
-      `Asset: ${holding.name} (${result.asset})`, `Quantity: ${result.quantity} ${result.asset}`,
-      `From: Your Veyra account`, `To: ${result.address}`, `Network: ${result.network}`,
-      `Status: ${result.status === 'recorded' ? 'Sent' : result.status}`, `Network fee: None collected`,
-      `Settlement: Veyra account record`,
-      'Settled in your Veyra account record. No blockchain transaction hash or confirmation exists.',
+      'VEYRA — CRYPTO SEND RECEIPT',
+      ...receiptSections.flatMap(section => ['', section.title.toUpperCase(), ...section.rows.map(([label, value]) => `${label}: ${value}`)]),
+      `Destination wallet address: ${result.address}`,
+      '', cancelled ? 'This request was cancelled; it has not been submitted again.' : 'Settled in your Veyra account record. No blockchain transaction hash or confirmation exists.',
       'External custody and on-chain execution are not connected.',
     ].join('\n'));
   };
   return <MotionConfig reducedMotion={reduce ? 'always' : 'never'}><LayoutGroup id={layoutId}>
     <div className="flow-scrim crypto-send-scrim"><section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Send ${holding.asset}`} className="flow-modal crypto-send-flow" data-motion={reduce ? 'reduced' : 'full'}>
-        <div className="flow-head"><StageDots kind="deposit" stage={stage === 'recorded' ? 'success' : stage} completionLabel="Recorded" />
+        <div className="flow-head"><StageDots kind="deposit" stage={stage === 'recorded' ? 'success' : stage} completionLabel="Done" />
         <button type="button" className="flow-close" aria-label="Close" disabled={stage === 'processing'} onClick={close}><X size={16} /></button>
       </div>
       <div className="flow-body">
@@ -194,12 +235,16 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
             <strong className="crypto-send-quantity">{result.quantity} <small>{result.asset}</small></strong>
             <p className="flow-sub">{cancelled ? 'This request is cancelled. It has not been submitted again.' : `${result.quantity} ${result.asset} has been sent from your Veyra holdings.`}</p>
           </div>
-          <div className="receipt">
-            {[['Date', longDate(result.created_at)], ['Asset', `${holding.name} · ${result.asset}`], ['Quantity', `${result.quantity} ${result.asset}`],
-              ['From', 'Your Veyra account'], ['Network', result.network], ['Reference', result.reference],
-              ['Status', 'Sent'], ['Network fee', 'None collected'], ['Settlement', 'Veyra account record']].map(([label, value], i) => <motion.div key={label} className="receipt-row" initial={reduce ? false : { opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * .055 }}><span>{label}</span><b>{value}</b></motion.div>)}
+          <div className="crypto-send-receipt" aria-label="Crypto send receipt">
+            {receiptSections.map((section, sectionIndex) => <section key={section.title} className="receipt crypto-receipt-section" aria-label={section.title}>
+              <h3>{section.title}</h3>
+              {section.rows.map(([label, value], i) => <motion.div key={label} className={`receipt-row${label === 'Total debited' ? ' crypto-receipt-total' : ''}`} initial={reduce ? false : { opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: Math.min(sectionIndex * .12 + i * .035, .45) }}>
+                <span>{label}</span><div className="crypto-receipt-value"><b>{value}</b>{(label === 'Reference' || label === 'Veyra record ID') && copyButton(label, value)}</div>
+              </motion.div>)}
+              {section.title === 'Sender & destination' && <div className="crypto-send-destination crypto-receipt-address"><div className="crypto-receipt-address-head"><span>Destination wallet address</span>{copyButton('Destination wallet address', result.address)}</div><code>{result.address}</code></div>}
+            </section>)}
           </div>
-          <div className="crypto-send-destination"><span>Destination wallet address</span><code>{result.address}</code></div>
+          <p className="crypto-receipt-copy-notice" aria-live="polite">{copyNotice}</p>
           <p className="crypto-send-note">Completed in your Veyra account record. External custody and on-chain execution are not connected, so no network fee or transaction hash is involved.</p>
           <div className="flow-actions"><button type="button" className="ghost-btn" onClick={download}><Download size={15} /> Send receipt</button><button type="button" className="solid-btn" onClick={close}>Done</button></div>
         </motion.div>}
