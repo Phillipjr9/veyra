@@ -274,8 +274,19 @@ test("Bitcoin coin rim surrounds the face instead of crossing the logo", async (
     const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
     return Math.abs(m.m11 - 1) < .0001 && Math.abs(m.m13) < .0001;
   })).toBe(true);
-  // An edge panel's normal must lie in the XY plane: the old rotateY-only
-  // geometry faced the camera and drew a gold strip over the logo at rest.
+  // The coin rotates around the center plane; the obverse and reverse cap a
+  // centered sidewall instead of letting the rim pass through the face.
+  const planes = await coin.evaluate(el => {
+    const face = (selector: string) => new DOMMatrixReadOnly(getComputedStyle(el.querySelector(selector)!).transform).m43;
+    return { origin: getComputedStyle(el).transformOrigin, front: face('.coin3d-front'), back: face('.coin3d-back') };
+  });
+  const originParts = planes.origin.trim().split(/\s+/);
+  expect(originParts.length).toBeLessThanOrEqual(3);
+  if (originParts.length === 3) expect(Number.parseFloat(originParts[2])).toBe(0);
+  expect(planes.front).toBeCloseTo(7, 3);
+  expect(planes.back).toBeCloseTo(-7, 3);
+  // Side panels are tangent to the face plane. A face-on view must not see
+  // any of their normals pointing toward the logo.
   const normals = await coin.locator('.coin3d-rim i').evaluateAll(els => els.map(el => {
     const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
     return { z: m.m33, radial: Math.hypot(m.m31, m.m32) };
@@ -285,6 +296,10 @@ test("Bitcoin coin rim surrounds the face instead of crossing the logo", async (
     expect(Math.abs(normal.z)).toBeLessThan(.0001);
     expect(normal.radial).toBeCloseTo(1, 4);
   }
-  await dialog.locator('.crypto-send-recorded-mark').screenshot({ path: testInfo.outputPath('bitcoin-settled-coin.png') });
+  const forcedAngle = await page.addStyleTag({ content: '.coin3d { transform: rotateY(355deg) !important; }' });
+  await dialog.locator('.crypto-send-recorded-mark').screenshot({ path: testInfo.outputPath('bitcoin-near-front.png') });
+  await forcedAngle.evaluate(style => { style.textContent = '.coin3d { transform: rotateY(5deg) !important; }'; });
+  await dialog.locator('.crypto-send-recorded-mark').screenshot({ path: testInfo.outputPath('bitcoin-front.png') });
+  await forcedAngle.evaluate(style => style.parentNode?.removeChild(style));
   await fits(page);
 });

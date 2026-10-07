@@ -25,11 +25,9 @@ const COIN_THICKNESS = 14;
 const COIN_SEGMENTS = 32;
 
 /**
- * A real coin, not a flat disc: the rim is built from segments laid around a
- * cylinder, so the piece has genuine thickness and a milled edge that reads
- * as it turns. The front face carries no 3D transform of its own, which keeps
- * the shared-element flight of the asset logo undistorted; the rim and the
- * reverse are pushed back behind it instead.
+ * A real coin, not a flat disc: tangent panels form a milled sidewall around
+ * two face caps. All three layers are centered on the coin's thickness plane,
+ * so the rim stays at the edge instead of cutting across the asset mark.
  */
 function Coin3D({ asset, reduce }: { asset: string; reduce: boolean }) {
   const segW = (2 * Math.PI * COIN_RADIUS) / COIN_SEGMENTS;
