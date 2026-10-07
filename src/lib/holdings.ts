@@ -50,12 +50,10 @@ export type TradeResult = {
 };
 
 export async function fetchHoldings(): Promise<HoldingsResponse> {
-  const data = await apiGet<HoldingsResponse>("/api/me/holdings");
-  // Generated server fixtures are never shown as current market prices in the
-  // customer UI. Preserve owned quantities, but mark all valuations unavailable.
-  if (!data.previewData) return data;
-  return { ...data, disclosure: "Current market quotes are unavailable. Digital assets are not deposits or FDIC insured.", quoteStatus: "unavailable", partial: true, tradingEnabled: false, totalUsd: "0.00",
-    holdings: data.holdings.map(holding => ({ ...holding, priceUsd: null, valueUsd: null, quotedAt: null })) };
+  // Generated holdings are rendered in development so the whole product can be
+  // exercised, and the workspace badges them as test data. Sample prices never
+  // stand in for a live feed that failed.
+  return apiGet<HoldingsResponse>("/api/me/holdings");
 }
 
 /**
@@ -180,12 +178,10 @@ export type MarketsResponse = {
 };
 
 export async function fetchMarkets(): Promise<MarketsResponse> {
-  const data = await apiGet<MarketsResponse>("/api/me/markets");
-  // Generated markets are listed only in development, and only beside the
-  // permanent "not live" banner the page renders. Trading stays switched off:
-  // displaying sample prices is one thing, executing an order against them is
-  // quite another, and no receipt should ever rest on a generated quote.
-  return data.previewData ? { ...data, previewData: true, tradingEnabled: false } : data;
+  // Generated markets are listed in development beside the page's permanent
+  // "not live" banner, and may be traded against there so the buy, sell and
+  // swap flows can be exercised end to end. Never a fallback for live data.
+  return apiGet<MarketsResponse>("/api/me/markets");
 }
 
 export function useMarkets() {

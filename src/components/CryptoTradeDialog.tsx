@@ -48,7 +48,6 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
       if (!mounted.current) return;
       if (order.receipt) finish(order.receipt);
       else if (order.status === "expired") { storePending(userId, null); setRecoveryId(null); setQuote(null); setUncertain(false); setError("The previous order expired without execution. You can request a new quote."); }
-      else if (order.quote.previewData) { setQuote(null); setRecoveryId(id); setError("This price quote is unavailable. Wait for it to expire, then check the order status again before starting a new order."); }
       else { setQuote(order.quote); setClock(Date.now()); setUncertain(true); setRecoveryId(null); }
     } catch (e) {
       if (!mounted.current) return;
@@ -62,7 +61,6 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
     active.current = true; setBusy(true); setError("");
     try {
       const result = await apiPost<{ quote: CryptoQuote }>("/api/me/crypto/quote", { action, fromAsset: action === "buy" ? "USD" : source, toAsset: action === "sell" ? "USD" : target, amount });
-      if (result.quote.previewData) throw new Error("Current market prices are unavailable. Please try again later.");
       if (mounted.current) { setQuote(result.quote); setClock(Date.now()); }
     } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : "Could not get a current quote."); }
     finally { active.current = false; if (mounted.current) setBusy(false); }
@@ -89,6 +87,7 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
   const choose = (value: string, which: "source" | "target") => { if (which === "source") { setSource(value); if (value === target) setTarget(holdings.find(h => h.asset !== value)?.asset ?? "ETH"); } else setTarget(value); setAmount(""); };
   return <div className="banking-scrim"><section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label={titles[quote?.action ?? action]} className="banking-panel cw-dialog">
     <span className="cw-eyebrow"><ShieldCheck size={14} /> VEYRA ACCOUNT ORDER</span>
+    {quote?.previewData && <p className="preview-crypto-notice" role="status"><strong>TEST DATA · NOT LIVE</strong>This quote is generated sample data. Confirming it moves test records only — no real funds and no external market.</p>}
     {!processing && <><h2>{receipt ? "Account order completed" : quote ? "Review your order" : titles[action]}</h2>
     <p className="cw-subtle">Account balances only. Custody, cash conversion and external trading providers are not connected. This is not an on-chain transaction.</p></>}
     {error && <p role="alert" className="banking-error">{error}</p>}
