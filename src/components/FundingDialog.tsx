@@ -71,7 +71,7 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
     live.current = true;
     return () => { live.current = false; if (pause.current) { releasePresentation(pause.current); pause.current = null; } };
   }, []);
-  const { refreshAccount } = useAcct();
+  const { account, refreshAccount } = useAcct();
   const [linkedAccounts, setLinkedAccounts] = useState<ExternalAccount[]>([]);
   const [receiving, setReceiving] = useState<ReceivingDetails | null>(null);
   const [methods, setMethods] = useState<Method[]>([]), [requests, setRequests] = useState<Request[]>([]);
@@ -182,7 +182,9 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
       track={{ from: { label: method.label, sub: "Selected funding method", icon: <ArrowDownLeft size={20} /> }, to: { label: "Your Veyra account", sub: "Account entry", icon: <VeyraMark width={20} height={20} /> } }}
       rows={[{ label: "Method", value: method.label }, { label: "To", value: "Your Veyra account" },
         ...(note ? [{ label: "Memo", value: note }] : []), { label: "Available", value: "Immediately after confirmation" },
-        { label: "Fee", value: reviewFee && reviewFee.feeCents > 0 ? `${money(reviewFee.feeCents / 100)} · ${reviewFee.rateBps / 100}%` : "$0.00 · Free", tone: reviewFee && reviewFee.feeCents > 0 ? undefined : "free" }]}
+        { label: "Fee", value: reviewFee && reviewFee.feeCents > 0 ? `${money(reviewFee.feeCents / 100)} · ${reviewFee.rateBps / 100}%` : "$0.00 · Free", tone: reviewFee && reviewFee.feeCents > 0 ? undefined : "free" },
+          // Same closing row as Send money's review, so both show the balance they will leave behind.
+          { label: "Balance after", value: money((account?.balance ?? 0) + Number(amount) - (reviewFee ? reviewFee.feeCents / 100 : 0)) }]}
     />}
     {immediateFunding && phase === "review" && <p className="funding-animation-note">This updates your account. External bank and card processing is not connected.</p>}
     {(phase === "processing" || phase === "receipt") && <FundingAnimation phase={phase} amount={submitted ? submitted.amount_cents / 100 : Number(amount)} source={method?.label ?? "Funding method"} immediate={immediateFunding}
