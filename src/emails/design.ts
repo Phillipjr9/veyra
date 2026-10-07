@@ -159,8 +159,7 @@ export const textLink = (label: string, href = "#"): string =>
 export const note = (html: string): string =>
   `<p style="margin:18px 0 2px;padding:13px 16px;border-radius:11px;background:${T.panelBg};font-family:${FONT_BODY};font-size:12px;line-height:1.6;color:${T.muted};">${html}</p>`;
 
-/** Thin progress bar — mirrors .kyc-progress-track (violet → lilac gradient). */
-export const progress = (pct: number, label?: string): string => `
+/** Thin progress bar — mirrors .kyc-progress-track (violet → lilac gradient). */export const progress = (pct: number, label?: string): string => `
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0 4px;">
   ${label ? `<tr><td colspan="2" style="padding-bottom:8px;font-family:${FONT_BODY};font-size:12px;font-weight:500;color:${T.muted};">${esc(label)}</td></tr>` : ""}
   <tr><td style="height:10px;border-radius:999px;background:#efeaf7;font-size:0;line-height:10px;">
@@ -170,6 +169,23 @@ export const progress = (pct: number, label?: string): string => `
 
 /* ---------- Document shell ---------- */
 
+/**
+ * Full-bleed 3D hero illustration rendered at the top of the card, directly
+ * under the violet accent strip. Heroes live in public/images/email/ (hosted
+ * PNG/JPG — Gmail and Outlook strip SVG) and give each feature family its own
+ * visual reference while the blocks below stay identical everywhere.
+ */
+export interface EmailHero {
+  src: string;
+  alt: string;
+}
+
+/** Points at a hosted illustration in public/images/email/ (e.g. "hero-funding.jpg"). */
+export const hero = (file: string, alt: string): EmailHero => ({
+  src: `${ASSET_BASE}/images/email/${file}`,
+  alt,
+});
+
 export interface EmailOptions {
   subject: string;
   preheader: string;
@@ -177,6 +193,8 @@ export interface EmailOptions {
   content: string;
   /** Extra footer links (e.g. unsubscribe for digests). */
   footerLinks?: string;
+  /** Optional 3D hero illustration for the top of the card. */
+  hero?: EmailHero;
 }
 
 const HEADER = `
@@ -219,7 +237,11 @@ const FOOTER = (extraLinks: string | undefined) => `
  * Full HTML document for an email: hidden preheader, paper background, brand
  * header, white rounded card with a violet accent strip, and the legal footer.
  */
-export function emailShell({ subject, preheader, content, footerLinks }: EmailOptions): string {
+export function emailShell({ subject, preheader, content, footerLinks, hero: heroImg }: EmailOptions): string {
+  // Self-delimiting so templates without a hero render byte-identical to before.
+  const heroRow = heroImg
+    ? `\n              <img src="${esc(heroImg.src)}" width="600" alt="${esc(heroImg.alt)}" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;">`
+    : "";
   return `<!doctype html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -242,7 +264,7 @@ export function emailShell({ subject, preheader, content, footerLinks }: EmailOp
           <tr>
             <td style="background-color:${T.white};border:1px solid ${T.hairline};border-radius:18px;overflow:hidden;">
               <!-- Brand accent strip -->
-              <div style="height:5px;line-height:5px;font-size:0;background-color:${T.violet};background-image:linear-gradient(90deg,${T.violet},${T.violetLilac});">&nbsp;</div>
+              <div style="height:5px;line-height:5px;font-size:0;background-color:${T.violet};background-image:linear-gradient(90deg,${T.violet},${T.violetLilac});">&nbsp;</div>${heroRow}
               <div style="padding:32px 36px 30px;">${content}</div>
             </td>
           </tr>
