@@ -95,7 +95,7 @@ export function CryptoTradeAnimation({ quote, onPresented }: { quote: CryptoQuot
           to: { label: quote.toAsset === "USD" ? "Veyra checking" : quote.toAsset, sub: `${quote.toQuantity} ${quote.toAsset}`, icon: mark(quote.toAsset) } }}
         renderTrack={(progress, finished) => <CryptoRoute processing transitIcon={travelling} progress={progress} arrived={finished}
           from={{ asset: quote.fromAsset, quantity: quote.fromQuantity }} to={{ asset: quote.toAsset, quantity: quote.toQuantity }} />}
-        note={quote.action === "swap" ? "Crypto to crypto. Your checking balance stays unchanged. No blockchain broadcast." : "Account update only. No external trade or blockchain broadcast."} />
+        note={quote.action === "swap" ? `Crypto to crypto. A $${quote.feeUsd} swap fee is debited from checking. No blockchain broadcast.` : "Account update only. No external trade or blockchain broadcast."} />
     </motion.section>
   </MotionConfig>;
 }

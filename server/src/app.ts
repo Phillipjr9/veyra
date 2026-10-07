@@ -1,5 +1,5 @@
 import { sendCryptoNotification } from "./cryptoNotifications.js";
-import { previewCryptoEnabled, PREVIEW_CRYPTO_NOTICE } from "./previewCrypto.js";
+import { previewCryptoEnabled } from "./previewCrypto.js";
 import { createPreviewAccess } from "./previewAccess.js";
 import { createCryptoWorkspace } from "./cryptoWorkspace.js";
 import { readLedgerAnalytics } from "./ledgerAnalytics.js";
@@ -48,6 +48,7 @@ import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
 import { loadPrices, loadMarkets, quoteIsFresh, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
 import { OTHER_REASON_CODE, SUSPENSION_REASONS, resolveSuspensionReason } from "./suspension.js";
 import { authenticatorUri, decryptTotpSecret, encryptTotpSecret, generateRecoveryCodes, generateTotpSecret, hashRecoveryCode, verifyTotp } from "./totp.js";
+import { applyFee, quoteFee } from "../../shared/fees.js";
 
 export type AuthedUser = {
   id: string; name: string; email: string; role: string;
@@ -1124,7 +1125,6 @@ export function createApp(dbPath?: string) {
   app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
   app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
   app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, wrap(banking.withdraw));
-  app.post("/api/me/crypto-withdrawals/:id/cancel", requireAuth, wrap(banking.cancelWithdrawal));
 
   app.post("/api/me/transfers", requireAuth, requireApproved, guardDemoLedger, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
@@ -1145,6 +1145,8 @@ export function createApp(dbPath?: string) {
     const method = String(req.body?.method ?? "ACH");
     const note = String(req.body?.note ?? `${method} payment`);
     const cardId = typeof req.body?.cardId === "string" ? req.body.cardId : null;
+    const fee = quoteFee("transfer", cents);
+    const debit = cents + fee.feeCents;
     const reward = Math.round(cents * rewardRate(category));
     // No funded savings provider is connected. Preferences cannot authorize
     // creating money; Scout analysis never changes the ledger.
@@ -1155,7 +1157,7 @@ export function createApp(dbPath?: string) {
           | { id: number; balance_cents: number; rewards_cents: number; lifetime_rewards_cents: number; scout_saved_cents: number }
           | undefined;
         if (!account) throw new Error("No account found.");
-        if (account.balance_cents < cents) throw new Error("Insufficient funds for this transfer.");
+        if (account.balance_cents < debit) throw new Error("Insufficient funds for this transfer and its fee.");
         // Card spending honours the card's own controls. Freeze, limits and
         // locks are security controls the member sets in the UI — the server is
         // the system of record, so it enforces them instead of trusting that
@@ -1190,23 +1192,23 @@ export function createApp(dbPath?: string) {
         const before = account.balance_cents;
         const at = now();
         enforceTeamSpend(db, req.user!.id, personOf(req.user!), cents, at);
-        const after = before - cents;
-        if (after < 0) throw new Error("Insufficient funds for this transfer.");
+        const after = before - debit;
+        if (after < 0) throw new Error("Insufficient funds for this transfer and its fee.");
         db.prepare("UPDATE accounts SET balance_cents = ?, rewards_cents = ?, lifetime_rewards_cents = ?, scout_saved_cents = ?, updated_at = ? WHERE id = ?")
           .run(after, account.rewards_cents + reward, account.lifetime_rewards_cents + reward, account.scout_saved_cents + scout, now(), account.id);
         const txn = { id: rid("txn"), reference: makeReference() };
         db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, reward_cents, scout_cents, card_id, status, reference, note, created_at, performed_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?)`,
-        ).run(txn.id, account.id, req.user!.id, counterparty, category, method, -cents, reward, scout, cardId, txn.reference, note, at, personOf(req.user!));
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, fee_cents, reward_cents, scout_cents, card_id, status, reference, note, created_at, performed_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, ?)`,
+        ).run(txn.id, account.id, req.user!.id, counterparty, category, method, -cents, fee.feeCents, reward, scout, cardId, txn.reference, note, at, personOf(req.user!));
         if (cardId) db.prepare("UPDATE cards SET spent_cents = spent_cents + ? WHERE id = ? AND user_id = ?").run(cents, cardId, req.user!.id);
         notify(req.user!.id, "transfer", `Sent ${(cents / 100).toFixed(2)} to ${counterparty}`, `${method} · +${(reward / 100).toFixed(2)} rewards earned.`);
         return { id: txn.id, reference: txn.reference, before, after };
       });
       if (method.trim().toLowerCase() === "zelle") sendZelleNotification(db,req.user!.id,{event:"outgoing_recorded",amountCents:cents,reference:result.reference,occurredAt:now(),counterparty});
       res.status(201).json({
-        result: { reference: result.reference, date: now(), amount: cents / 100, balanceBefore: result.before / 100, balanceAfter: result.after / 100, reward: reward / 100, scout: scout / 100 },
-        transaction: { id: result.id, merchant: counterparty, amount: money(-cents), reference: result.reference, status: "cleared" },
+        result: { reference: result.reference, date: now(), amount: cents / 100, fee: fee.feeCents / 100, balanceBefore: result.before / 100, balanceAfter: result.after / 100, reward: reward / 100, scout: scout / 100 },
+        transaction: { id: result.id, merchant: counterparty, amount: money(-cents), fee: money(fee.feeCents), reference: result.reference, status: "cleared" },
         balance: money(result.after),
       });
     } catch (err) {
@@ -1234,16 +1236,15 @@ export function createApp(dbPath?: string) {
       .all(req.user!.id) as unknown as { asset: string; units: string; updated_at: number }[];
     const held = new Map(rows.map((row) => [row.asset, row]));
 
-    const pending = new Map<string, bigint>();
-    for (const r of db.prepare("SELECT asset, units FROM crypto_withdrawals WHERE user_id=? AND status='pending'").all(req.user!.id) as { asset: string; units: string }[]) pending.set(r.asset,(pending.get(r.asset) ?? 0n)+BigInt(r.units));
+    // A withdrawal debits on request, so holdings are simply what is left —
+    // there is no pending reservation to add back.
     let totalCents = 0;
     let priced = true;
     const holdings = assets.map((asset) => {
       const row = held.get(asset.code);
       const units = BigInt(row?.units ?? "0");
       const quote = quotes.get(asset.code) ?? null;
-      const reserved = pending.get(asset.code) ?? 0n;
-      const totalUnits = units + reserved;
+      const totalUnits = units;
       // A missing quote yields null, never 0 — a zero would be silently summed
       // into the total and render as a confident, wrong valuation.
       const valueCents = quote ? valueInCents(totalUnits, asset.decimals, quote.cents) : null;
@@ -1254,8 +1255,6 @@ export function createApp(dbPath?: string) {
         kind: asset.kind,
         decimals: asset.decimals,
         units: units.toString(),
-        reservedUnits: reserved.toString(),
-        reservedQuantity: formatUnitsTrimmed(reserved, asset.decimals),
         totalQuantity: formatUnitsTrimmed(totalUnits, asset.decimals),
         withdrawalNetwork: ASSETS.find(a => a.code === asset.code)?.network ?? null,
         quantity: formatUnitsTrimmed(units, asset.decimals),
@@ -1275,7 +1274,7 @@ export function createApp(dbPath?: string) {
       quoteStatus: quotes.size === 0 ? "unavailable" : [...quotes.values()].every(q => quoteIsFresh(q.fetchedAt)) ? "current" : "stale",
       partial: !priced,
       tradingEnabled: tradingEnabled(),
-      disclosure: previewCryptoEnabled() ? PREVIEW_CRYPTO_NOTICE : "Digital assets are not FDIC insured and can lose value.",
+      disclosure: "Digital assets are not FDIC insured and can lose value.",
     });
   }));
 
@@ -1318,7 +1317,7 @@ export function createApp(dbPath?: string) {
       return void res.status(400).json({ error: "Invalid amount." });
     }
 
-    let event: { reference: string; at: number };
+    let event: { reference: string; at: number; feeCents: number };
     try {
       event = inTransaction(db, () => {
         const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?")
@@ -1327,9 +1326,10 @@ export function createApp(dbPath?: string) {
         const current = BigInt((db.prepare("SELECT units FROM holdings WHERE user_id = ? AND asset = ?")
           .get(req.user!.id, asset.code) as unknown as { units: string } | undefined)?.units ?? "0");
 
+        const fee = quoteFee(side === "buy" ? "crypto_buy" : "crypto_sell", cents);
         const nextUnits = side === "buy" ? current + units : current - units;
-        const nextCents = side === "buy" ? account.balance_cents - cents : account.balance_cents + cents;
-        if (side === "buy" && nextCents < 0) throw new BadInputError("Insufficient funds in checking.");
+        const nextCents = side === "buy" ? account.balance_cents - cents - fee.feeCents : account.balance_cents + applyFee(cents, fee.feeCents);
+        if (side === "buy" && nextCents < 0) throw new BadInputError("Insufficient funds in checking for this order and its fee.");
         if (nextUnits < 0n) throw new BadInputError(`Insufficient ${asset.code}.`);
         const at = now();
         if (side === "buy") enforceTeamSpend(db, req.user!.id, personOf(req.user!), cents, at);
@@ -1350,15 +1350,15 @@ export function createApp(dbPath?: string) {
         // The deposit leg also lands in the member's statement. Money leaving a
         // checking balance with no matching line is how support tickets start.
         db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at, performed_by)
-           VALUES (?, ?, ?, ?, 'Investing', 'Internal', ?, 'cleared', ?, ?, ?, ?)`,
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, fee_cents, status, reference, note, created_at, performed_by)
+           VALUES (?, ?, ?, ?, 'Investing', 'Internal', ?, ?, 'cleared', ?, ?, ?, ?)`,
         ).run(
           rid("txn"), account.id, req.user!.id, `${side === "buy" ? "Bought" : "Sold"} ${asset.code}`,
-          side === "buy" ? -cents : cents, reference,
-          `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} at ${centsToDecimal(Number(quote.cents))}/${asset.code}`,
+          side === "buy" ? -cents : cents, fee.feeCents, reference,
+          `${formatUnitsTrimmed(units, asset.decimals)} ${asset.code} at ${centsToDecimal(Number(quote.cents))}/${asset.code}${fee.feeCents ? `; fee ${centsToDecimal(fee.feeCents)}` : ""}`,
           at, personOf(req.user!),
         );
-        return { reference, at };
+        return { reference, at, feeCents: fee.feeCents };
       });
     } catch (err) {
       return void fail(res, err, "Trade failed.");
@@ -1373,6 +1373,7 @@ export function createApp(dbPath?: string) {
       side,
       quantity: formatUnitsTrimmed(units, asset.decimals),
       amountUsd: centsToDecimal(cents),
+      feeUsd: centsToDecimal(event.feeCents),
       priceUsd: centsToDecimal(Number(quote.cents)),
     });
   }));
@@ -1418,7 +1419,7 @@ export function createApp(dbPath?: string) {
       quoteStatus: !fetchedAt ? "unavailable" : quoteIsFresh(fetchedAt) ? "current" : "stale",
       quotedAt: fetchedAt || null,
       tradingEnabled: tradingEnabled(),
-      disclosure: previewCryptoEnabled() ? PREVIEW_CRYPTO_NOTICE : "Market data is indicative. Digital assets are not FDIC insured and can lose value.",
+      disclosure: "Market data is indicative. Digital assets are not FDIC insured and can lose value.",
     });
   }));
 
@@ -2197,8 +2198,9 @@ export function createApp(dbPath?: string) {
         if (!payment) throw new Error("Payment not found.");
         if (payment.status === "completed") throw new Error("This payment is already completed.");
         const cents = payment.amount_cents as number;
+        const fee = quoteFee("bill", cents);
         const account = db.prepare("SELECT id, balance_cents FROM accounts WHERE user_id = ?").get(req.user!.id) as { id: number; balance_cents: number };
-        if (account.balance_cents < cents) throw new Error("Insufficient funds for this payment.");
+        if (account.balance_cents < cents + fee.feeCents) throw new Error("Insufficient funds for this payment and its fee.");
         const at = now();
         enforceTeamSpend(db, req.user!.id, personOf(req.user!), cents, at);
         const base = Number(payment.next_date);
@@ -2207,14 +2209,14 @@ export function createApp(dbPath?: string) {
           : payment.frequency === "monthly"
             ? new Date(base).setMonth(new Date(base).getMonth() + 1)
             : base;
-        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents - cents, now(), account.id);
+        db.prepare("UPDATE accounts SET balance_cents = ?, updated_at = ? WHERE id = ?").run(account.balance_cents - cents - fee.feeCents, now(), account.id);
         db.prepare("UPDATE scheduled_payments SET next_date = ?, status = ? WHERE id = ?")
           .run(nextDate, payment.frequency === "once" ? "completed" : String(payment.status), id);
         const txn = rid("txn");
         db.prepare(
-          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, status, reference, note, created_at, performed_by)
-           VALUES (?, ?, ?, ?, ?, 'ACH', ?, 'cleared', ?, ?, ?, ?)`,
-        ).run(txn, account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents,
+          `INSERT INTO transactions (id, account_id, user_id, merchant, category, method, amount_cents, fee_cents, status, reference, note, created_at, performed_by)
+           VALUES (?, ?, ?, ?, ?, 'ACH', ?, ?, 'cleared', ?, ?, ?, ?)`,
+        ).run(txn, account.id, req.user!.id, String(payment.payee_name), String(payment.category), -cents, fee.feeCents,
           makeReference(), String(payment.memo ?? "Scheduled payment"), at, personOf(req.user!));
         notify(req.user!.id, "transfer", `${centsToDecimal(cents)} paid to ${String(payment.payee_name)}`,
           payment.frequency === "once" ? "One-time payment completed." : "Next payment scheduled.");
@@ -2915,9 +2917,9 @@ export function createApp(dbPath?: string) {
             r.card_count, r.frozen_count, r.txn_count, r.pending_count, r.kyc_status ?? "not_started", r.status,
             r.last_activity ? new Date(r.last_activity).toISOString() : "Never"])];
     } else if (kind === "transactions") {
-      rows = [["Date", "Member", "Merchant", "Category", "Method", "Amount", "Status", "Reference"],
+      rows = [["Date", "Member", "Merchant", "Category", "Method", "Amount", "Fee", "Status", "Reference"],
         ...db.prepare(`SELECT t.*, u.name AS member FROM transactions t JOIN users u ON u.id = t.user_id ORDER BY t.created_at DESC`).all()
-          .map((r: any) => [new Date(r.created_at).toISOString(), r.member, r.merchant, r.category, r.method, centsToDecimal(r.amount_cents), r.status, r.reference])];
+          .map((r: any) => [new Date(r.created_at).toISOString(), r.member, r.merchant, r.category, r.method, centsToDecimal(r.amount_cents), centsToDecimal(r.fee_cents ?? 0), r.status, r.reference])];
     } else if (kind === "kyc") {
       // Status columns plus the columns the review queue shows for a submitted
       // case (submitted date, legal name, document, file count, source of
@@ -3392,6 +3394,7 @@ export function createApp(dbPath?: string) {
     `).all() as Array<Record<string, unknown>>).map(t => ({
       id: String(t.id), merchant: String(t.merchant), category: String(t.category),
       amount: Math.round(t.amount_cents as number) / 100,
+      fee: Math.round((t.fee_cents as number ?? 0)) / 100,
       reward: Math.round((t.reward_cents as number ?? 0)) / 100,
       scout: Math.round((t.scout_cents as number ?? 0)) / 100,
       date: t.created_at as number, cardId: t.card_id ? String(t.card_id) : undefined,
@@ -3507,7 +3510,7 @@ const money = (cents: number) => ({ cents, amount: centsToDecimal(cents) });
 function txnOut(t: any) {
   return {
     id: t.id, merchant: t.merchant, category: t.category, method: t.method,
-    amount: money(t.amount_cents), status: t.status, reference: t.reference,
+    amount: money(t.amount_cents), fee: money(t.fee_cents ?? 0), status: t.status, reference: t.reference,
     note: t.note, date: t.created_at, memberName: t.member_name ?? undefined,
   };
 }

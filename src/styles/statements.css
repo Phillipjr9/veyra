@@ -236,17 +236,17 @@
 
 .stmt-pdf-table {
   width: 100%;
-  min-width: 640px;
+  min-width: 0;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 11px;
   text-align: left;
 }
 
 .stmt-pdf-table th {
-  padding: 10px 12px;
+  padding: 8px 9px;
   background: #f7f4fc;
   border-bottom: 1.5px solid #dfd8ec;
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -254,7 +254,7 @@
 }
 
 .stmt-pdf-table td {
-  padding: 12px 12px;
+  padding: 9px 9px;
   border-bottom: 1px solid #f0ecf6;
   vertical-align: middle;
 }
@@ -286,6 +286,7 @@
 .stmt-col-cat { width: 100px; }
 .stmt-cat-pill { display: inline-block; padding: 2px 7px; border-radius: 5px; background: var(--paper); font-size: 11px; }
 .stmt-col-rewards { width: 90px; }
+.stmt-col-fee { width: 72px; font-variant-numeric: tabular-nums; color: #6a6472; }
 .stmt-col-amount { width: 105px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .stmt-col-bal { width: 100px; font-variant-numeric: tabular-nums; }
 
@@ -619,7 +620,12 @@
   border: 1px solid var(--line);
 }
 
-/* Print CSS - Full page vector styling ensuring statement is completely filled */
+/* Print CSS - A4 portrait, compact audit type scale */
+@page {
+  size: A4 portrait;
+  margin: 12mm;
+}
+
 @media print {
   html, body {
     background: #ffffff !important;
@@ -647,7 +653,7 @@
     width: 100% !important;
     max-width: 100% !important;
     margin: 0 !important;
-    padding: 28px 32px !important;
+    padding: 10mm 12mm !important;
     border: none !important;
     box-shadow: none !important;
     background: #ffffff !important;
@@ -680,25 +686,40 @@
     visibility: hidden !important;
   }
 
-  /* Table styles in print */
+  /* Table styles in print: A4 gets a smaller, denser type scale */
   .stmt-pdf-table {
     width: 100% !important;
+    min-width: 0 !important;
     border-collapse: collapse !important;
-    font-size: 10.5pt !important;
+    font-size: 8pt !important;
+    line-height: 1.25 !important;
   }
 
   .stmt-pdf-table th {
     background: #f1ecfa !important;
     color: #111 !important;
-    border-bottom: 2px solid #20192e !important;
+    border-bottom: 1.5pt solid #20192e !important;
+    font-size: 7pt !important;
+    padding: 4px 5px !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
 
   .stmt-pdf-table td {
-    border-bottom: 1px solid #ddd !important;
-    padding: 8px 6px !important;
+    border-bottom: 0.5pt solid #ddd !important;
+    padding: 4px 5px !important;
   }
+
+  .stmt-merchant-name { font-size: 8.5pt !important; }
+  .stmt-col-ref { font-size: 7pt !important; }
+  .stmt-method-pill, .stmt-cat-pill { font-size: 7pt !important; }
+  .stmt-sum-row { font-size: 8.5pt !important; padding: 3px 0 !important; }
+  .stmt-sum-row.highlight { font-size: 10pt !important; }
+  .stmt-customer-name { font-size: 11pt !important; }
+  .stmt-customer-addr, .stmt-partner-bank, .stmt-meta-line { font-size: 8pt !important; }
+  .stmt-fine-print { font-size: 7pt !important; }
+  .stmt-fdic-seal strong { font-size: 9pt !important; }
+  .stmt-fdic-seal p { font-size: 7pt !important; }
 
   .stmt-sum-row,
   .stmt-customer-box,

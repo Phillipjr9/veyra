@@ -48,7 +48,6 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
       if (!mounted.current) return;
       if (order.receipt) finish(order.receipt);
       else if (order.status === "expired") { storePending(userId, null); setRecoveryId(null); setQuote(null); setUncertain(false); setError("The previous order expired without execution. You can request a new quote."); }
-      else if (order.quote.previewData) { setQuote(null); setRecoveryId(id); setError("This price quote is unavailable. Wait for it to expire, then check the order status again before starting a new order."); }
       else { setQuote(order.quote); setClock(Date.now()); setUncertain(true); setRecoveryId(null); }
     } catch (e) {
       if (!mounted.current) return;
@@ -62,7 +61,6 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
     active.current = true; setBusy(true); setError("");
     try {
       const result = await apiPost<{ quote: CryptoQuote }>("/api/me/crypto/quote", { action, fromAsset: action === "buy" ? "USD" : source, toAsset: action === "sell" ? "USD" : target, amount });
-      if (result.quote.previewData) throw new Error("Current market prices are unavailable. Please try again later.");
       if (mounted.current) { setQuote(result.quote); setClock(Date.now()); }
     } catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : "Could not get a current quote."); }
     finally { active.current = false; if (mounted.current) setBusy(false); }
@@ -98,7 +96,7 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
         from={action === "buy" ? { asset: "USD", accountLast4: account?.bankDetails.accountNumber.slice(-4) } : { asset: source, choices: holdings, onChange: value => choose(value, "source") }}
         to={action === "sell" ? { asset: "USD", accountLast4: account?.bankDetails.accountNumber.slice(-4) } : { asset: target, choices: holdings.filter(h => action === "buy" || h.asset !== source), onChange: value => choose(value, "target") }} />
       <label>{action === "buy" ? "Amount to spend (USD)" : `Quantity (${source})`}<input required inputMode="decimal" maxLength={72} pattern="[0-9]+(\.[0-9]+)?" autoComplete="off" placeholder={action === "buy" ? "0.00" : "0.00000000"} value={amount} onChange={e => setAmount(e.target.value)} /></label>
-      <p className="cw-subtle">Available: {action === "buy" ? (account ? `$${account.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} in checking` : "Checking balance unavailable") : `${available?.quantity ?? "Unavailable"} ${source}`}{available?.reservedUnits && available.reservedUnits !== "0" && action !== "buy" ? ` · ${available.reservedQuantity} reserved, excluded above` : ""}</p>
+      <p className="cw-subtle">Available: {action === "buy" ? (account ? `$${account.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} in checking` : "Checking balance unavailable") : `${available?.quantity ?? "Unavailable"} ${source}`}</p>
       <div className="cw-quick">{action === "buy" ? [25, 100, 250].map(value => <button type="button" className="ghost-btn sm" key={value} onClick={() => setAmount(String(value))}>${value}</button>) : <button type="button" className="ghost-btn sm" disabled={!available || available.units === "0"} onClick={() => setAmount(available?.quantity ?? "")}>Use available amount</button>}</div>
       <label className="cw-checkbox"><input type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)} required /><span>I understand this updates Veyra account records, not externally held coins. Digital assets are not deposits or FDIC insured.</span></label>
       <button className="solid-btn" disabled={busy || !accepted || !amount}>{busy ? "Getting current quote…" : "Review order"}</button>

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useState, type ReactNode } from "react";
 import { ArrowRight } from "lucide-react";
 import { money } from "../lib/store";
+import { quoteFee } from "../../shared/fees";
 
 export function validFundingAmount(value: string) {
   return /^\d+(?:\.\d{1,2})?$/.test(value) && Number(value) >= 10 && Number(value) <= 100_000;
@@ -9,7 +10,7 @@ export function validFundingAmount(value: string) {
 
 /** The same short details → review interaction as an outgoing payment. */
 export function FundingDetails({ methods, selected, amount, note, busy, onMethod, onAmount, onNote, onReview, onCancel, children, linkedAccountCount = 0 }: {
-  children?: ReactNode; linkedAccountCount?: number; methods: { id: string; label: string; unavailable?: boolean }[]; selected: string; amount: string; note: string; busy: boolean;
+  children?: ReactNode; linkedAccountCount?: number; methods: { id: string; label: string; kind?: string; unavailable?: boolean }[]; selected: string; amount: string; note: string; busy: boolean;
   onMethod: (id: string) => void; onAmount: (value: string) => void; onNote: (value: string) => void;
   onReview: () => void; onCancel: () => void;
 }) {
@@ -18,6 +19,8 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
   const currentMethod = methods.find(method => method.id === selected);
   const available = !!currentMethod && !currentMethod.unavailable;
   const invalid = (attempted || amount !== "") && !valid;
+  const amountCents = valid ? Math.round(Number(amount) * 100) : 0;
+  const fee = quoteFee(currentMethod?.kind === "card" ? "card_deposit" : "deposit", amountCents);
   return <form className="flow-pane funding-details" noValidate onSubmit={e => {
     e.preventDefault(); setAttempted(true);
     if (!busy && available && valid) onReview();
@@ -30,6 +33,9 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
         {!methods.length && <option value="">No funding methods available</option>}
         {methods.map(method => <option key={method.id} value={method.id}>{method.label}</option>)}
       </select>
+      {/* A dead method used to look identical to a working one: the only
+          symptom was a disabled button further down the form. */}
+      {currentMethod?.unavailable && <p className="funding-method-warning" aria-live="polite">{currentMethod.label} isn’t ready to use yet. Choose another funding method to continue.</p>}
       <div className="funding-linked-action"><p>{linkedAccountCount ? "Your linked accounts and approved references are available in the dropdown." : "No bank account is available yet. Add an account reference for review, or choose another available method."}</p><Link className="text-link" to="/app/external-accounts" onClick={onCancel}>{linkedAccountCount ? "Manage linked accounts" : "Link an external account"} <ArrowRight size={14} /></Link></div>
       {children}
       <label className="flow-label" htmlFor="funding-amount">Amount (USD)</label>
@@ -39,13 +45,13 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
           value={amount} onChange={e => onAmount(e.target.value)} aria-invalid={invalid} aria-describedby="funding-amount-hint" />
       </div>
       <p id="funding-amount-hint" className={invalid ? "flow-field-error" : "flow-field-note"} role={invalid ? "alert" : undefined}>
-        {invalid ? "Enter $10–$100,000 with no more than two decimal places." : "$10–$100,000 per deposit. No fee."}
+        {invalid ? "Enter $10–$100,000 with no more than two decimal places." : currentMethod?.kind === "card" ? "$10–$100,000 per deposit. Card-funded deposits include a 1.5% fee." : "$10–$100,000 per deposit. No fee."}
       </p>
       <div className="quick-row">{[250, 1000, 5000].map(value => <button type="button" key={value} className={Number(amount) === value ? "on" : ""} onClick={() => onAmount(String(value))}>{money(value, false)}</button>)}</div>
       <label className="flow-label" htmlFor="funding-note">Memo (optional)</label>
       <input id="funding-note" maxLength={500} value={note} onChange={e => onNote(e.target.value)} placeholder="A short note — no passwords or card details" />
       <div className="flow-rows compact">
-        <div className="flow-row free"><span>Deposit fee</span><b>$0.00</b></div>
+        <div className={`flow-row ${fee.feeCents > 0 ? "" : "free"}`}><span>Deposit fee</span><b>{fee.feeCents > 0 ? money(fee.feeCents / 100) : "$0.00"}</b></div>
         <div className="flow-row"><span>To</span><b>Your Veyra account</b></div>
       </div>
     </fieldset>

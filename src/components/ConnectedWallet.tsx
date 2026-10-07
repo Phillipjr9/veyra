@@ -5,6 +5,7 @@ import QRCode from "qrcode";
 import { connectWallet, discoverWallets, disconnectWallet, readWallet, watchWallet, type WalletChoice, type WalletSession } from "../lib/web3";
 import { copyText } from "../lib/store";
 import { useBankingDialog } from "./bankingDialog";
+import { SepoliaSendDialog } from "./SepoliaSendDialog";
 
 function WalletPicker({ close, choices, select, busy, error }: { close: () => void; choices: WalletChoice[]; select: (choice: WalletChoice) => void; busy: boolean; error: string }) {
   const dialog = useBankingDialog(close, busy);
@@ -32,8 +33,8 @@ function ReceiveWallet({ session, close }: { session: WalletSession; close: () =
   </section></div>;
 }
 
-export function ConnectedWallet() {
-  const [choices, setChoices] = useState<WalletChoice[]>([]), [picker, setPicker] = useState(false), [wallet, setWallet] = useState<WalletSession | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState(""), [receive, setReceive] = useState(false);
+export function ConnectedWallet({ sepoliaTestnetSend = false }: { sepoliaTestnetSend?: boolean }) {
+  const [choices, setChoices] = useState<WalletChoice[]>([]), [picker, setPicker] = useState(false), [wallet, setWallet] = useState<WalletSession | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState(""), [receive, setReceive] = useState(false), [sepoliaSend, setSepoliaSend] = useState(false);
   const sequence = useRef(0), stopWatching = useRef<(() => void) | null>(null), running = useRef(false);
   useEffect(() => { const stop = discoverWallets(setChoices); return () => { stop(); sequence.current++; stopWatching.current?.(); }; }, []);
   function invalidate() { sequence.current++; running.current = false; setBusy(false); stopWatching.current?.(); stopWatching.current = null; setWallet(null); setReceive(false); setError("Your wallet account or network changed. Reconnect to verify the new address and balances."); }
@@ -74,10 +75,12 @@ export function ConnectedWallet() {
       <div className="cw-wallet-actions"><button type="button" className="ghost-btn sm" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} /> {busy ? "Reading…" : "Refresh"}</button><button type="button" className="ghost-btn sm" disabled={busy} onClick={() => setReceive(true)}>Receive / QR</button><button type="button" className="ghost-btn sm" disabled={busy} onClick={disconnect}><Unplug size={14} /> Disconnect</button></div>
       <p className="cw-subtle">Disconnecting removes this Veyra connection. Revoke site permissions in your wallet settings if needed.</p>
     </>}
-    <div className="cw-provider-note"><Cable size={18} /><div><b>External execution not connected</b><p>Wallet buy/sell needs a cash gateway; swaps need a routing provider; sends need a reviewed network fee and broadcasting integration. Use your wallet directly for now. Connecting never authorizes these operations.</p></div></div>
-    <div className="cw-wallet-locked" aria-label="External wallet actions awaiting integration">{["Buy", "Swap", "Sell", "Send"].map(action => <button type="button" className="ghost-btn sm" disabled key={action} title="External execution provider is not connected">{action}</button>)}</div>
+    <div className="cw-provider-note"><Cable size={18} /><div><b>Mainnet and partner execution are not connected</b><p>Veyra account buy/sell/swap remain internal. Mainnet sends, wallet swaps and cash rails need reviewed, integrated providers. Connecting a wallet never authorizes those operations.</p></div></div>
+    <div className="cw-wallet-locked" aria-label="External wallet actions awaiting integration">{["Buy", "Swap", "Sell", "Send"].map(action => <button type="button" className="ghost-btn sm" disabled key={action} title="Mainnet execution provider is not connected">{action}</button>)}</div>
+    {sepoliaTestnetSend && <div className="cw-testnet-send-card"><small><b>TESTNET ONLY</b> · Sepolia ETH has no real-world value and never changes Veyra account balances.</small><button type="button" className="ghost-btn" onClick={() => setSepoliaSend(true)}>Send Sepolia test ETH</button></div>}
     <small className="cw-safety"><ShieldCheck size={14} /> Never share a private key or recovery phrase.</small>
     {picker && <WalletPicker close={() => setPicker(false)} choices={choices} select={choice => void connect(choice)} busy={busy} error={error} />}
     {receive && wallet && <ReceiveWallet session={wallet} close={() => setReceive(false)} />}
+    {sepoliaSend && <SepoliaSendDialog choices={choices} close={() => setSepoliaSend(false)} />}
   </section>;
 }

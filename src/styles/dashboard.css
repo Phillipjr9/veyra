@@ -532,7 +532,7 @@
    Transactions table
    ========================================================================== */
 .table-panel { padding: 6px 10px; }
-.txn-table-head, .txn-trow { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr) 84px 96px 92px 120px; align-items: center; gap: 14px; }
+.txn-table-head, .txn-trow { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr) 84px 96px 92px 92px 120px; align-items: center; gap: 14px; }
 .txn-table-head { padding: 12px 10px; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .ta-r { text-align: right; }
 .txn-trow { width: 100%; padding: 11px 10px; border: 0; border-bottom: 1px solid rgba(24,23,29,.06); border-radius: 0; background: transparent; color: inherit; text-align: left; transition: background .2s; }
@@ -546,6 +546,7 @@
 .cat-pill { max-width: 100%; display: inline-block; overflow: hidden; padding: 3px 9px; border-radius: 7px; background: var(--paper); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .tcol-date { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .tcol-reward { font-size: 12.5px; font-weight: 600; color: #2f7a4c; text-align: right; font-variant-numeric: tabular-nums; }
+.tcol-fee { font-size: 12.5px; font-weight: 600; color: #6a6472; text-align: right; font-variant-numeric: tabular-nums; }
 .tcol-amt { font-size: 13.5px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* Drawer */
@@ -762,6 +763,27 @@
 .pocket-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: auto; padding-top: 16px; }
 .pocket-actions button { height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--line); border-radius: 9px; background: transparent; font-size: 12px; font-weight: 600; }
 .pocket-actions button:hover { background: var(--paper); }
+.savings-activity-panel { margin-top: 34px; padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: var(--white); }
+.savings-activity-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+.savings-activity-kicker { color: #55745b; font-size: 9px; font-weight: 700; letter-spacing: .13em; }
+.savings-activity-head h2 { margin: 4px 0 0; font: 500 20px/1.2 var(--display); letter-spacing: -.035em; }
+.savings-activity-head p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.savings-activity-list { display: flex; flex-direction: column; margin-top: 12px; }
+.savings-activity-row { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 12px 0; }
+.savings-activity-row + .savings-activity-row { border-top: 1px solid var(--line); }
+.savings-activity-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; }
+.savings-activity-icon.to-savings { color: #56775d; background: #eaf1e8; }
+.savings-activity-icon.to-checking { color: #66538c; background: #f0ebf7; }
+.savings-activity-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.savings-activity-copy strong { overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.savings-activity-copy small { color: var(--muted); font-size: 10.5px; }
+.savings-activity-amount { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.savings-activity-amount.to-savings { color: #66538c; }
+.savings-activity-amount.to-checking { color: #287447; }
+.savings-activity-empty { display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 14px; border-radius: 12px; background: #f8f8f6; }
+.savings-activity-empty > span { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: 11px; background: #eaf1e8; color: #56775d; }
+.savings-activity-empty strong { font-size: 12px; font-weight: 600; }
+.savings-activity-empty p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .color-row { display: flex; gap: 10px; }
 .color-row button { width: 32px; height: 32px; display: grid; place-items: center; border: 3px solid #fff; border-radius: 50%; color: #fff; box-shadow: 0 0 0 1px var(--line); }
 .color-row button.on { box-shadow: 0 0 0 2px var(--ink); }
@@ -982,7 +1004,7 @@
   .tcol-merchant { grid-area: merchant; }
   .tcol-amt { grid-area: amount; }
   .tcol-date { grid-area: date; text-align: right; font-size: 11.5px; }
-  .tcol-cat, .tcol-status, .tcol-reward { display: none; }
+  .tcol-cat, .tcol-status, .tcol-reward, .tcol-fee { display: none; }
   .inv-row { grid-template-columns: 36px minmax(0, 1fr) auto; grid-template-areas: "icon main amount" "icon status action"; }
   .inv-status { justify-self: start; }
   .inv-action { min-width: 0; }
@@ -1060,6 +1082,9 @@
   .checking-account-card { min-height: 220px; padding: 21px; }
   .account-big-money { font-size: 38px; }
   .pocket-grid { grid-template-columns: minmax(0,1fr); }
+  .savings-activity-panel { padding: 18px 16px; }
+  .savings-activity-head { align-items: flex-start; flex-wrap: wrap; }
+  .savings-activity-head .ghost-btn { margin-left: auto; }
   .session-row { grid-template-columns: 38px minmax(0,1fr); }
   .trust-btn { grid-column: 2; justify-self: start; }
 }
@@ -1171,40 +1196,9 @@
    passkey and a session are the same shape of thing on screen. */
 .passkey-empty { margin: 4px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
 
-/* Digital assets ---------------------------------------------------------- */
-/* Visually quieter than the savings pockets above: a holding is a market
-   position, not money the bank owes you, and the card should not borrow the
-   confidence of a deposit balance. Hence no color wash, flatter surface, and
-   the quote timestamp printed in plain sight. */
-.holdings-head > span { background: #eef1f6; color: var(--muted); }
+/* Market data warnings ---------------------------------------------------- */
 .holdings-warning { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 10px 13px; border: 1px solid #f0d9a8; border-radius: 11px; background: #fdf7e8; color: #8a6414; font-size: 12.5px; }
 .holdings-warning svg { flex: none; }
-.holdings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px,1fr)); gap: 16px; }
-.holding-card { display: flex; flex-direction: column; min-height: 186px; padding: 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--white); }
-.holding-top { display: flex; align-items: center; gap: 11px; }
-.holding-id { min-width: 0; margin-right: auto; display: flex; flex-direction: column; gap: 1px; }
-.holding-code { font: 600 13px var(--display); letter-spacing: .04em; }
-.holding-name { font: 500 12px var(--display); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* The mark carries a drop-shadow rather than sitting in a tinted chip: these
-   are rendered 3D objects with their own lighting, and a flat background
-   plate behind them reads as a sticker on a sticker. */
-.holding-mark { flex: none; width: 38px; height: 38px; display: block; }
-.holding-mark img { width: 100%; height: 100%; display: block; filter: drop-shadow(0 3px 6px rgba(24,23,29,.22)); transition: transform .35s var(--ease); }
-.holding-card:hover .holding-mark img { transform: translateY(-2px) scale(1.07); }
-
-.holding-value { margin-top: 14px; min-height: 40px; }
-.holding-value b { display: block; font: 600 24px var(--display); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
-.holding-value small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-/* An absent price is stated, never rendered as a zero a member would believe. */
-.holding-unpriced { display: inline-block; margin-top: 7px; font-size: 13px; font-weight: 600; color: #8a6414; }
-.holding-price { margin-top: 10px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.holding-price em { font-style: normal; opacity: .75; }
-.holding-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: auto; padding-top: 14px; }
-.holding-actions button { width: 100%; justify-content: center; }
-.holding-actions button:disabled { opacity: .45; cursor: not-allowed; }
-.holding-locked { margin: auto 0 0; padding-top: 14px; font-size: 11.5px; color: var(--muted); }
-.holding-disclosure { margin: 2px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
 
 /* Asset confirmation row at the top of the buy/sell dialog. */
 .trade-asset { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); }
@@ -1213,10 +1207,8 @@
 .trade-asset small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* Price history ----------------------------------------------------------- */
-.holding-actions { align-items: center; }
 .holding-chart-btn { grid-column: 1 / -1; justify-content: center; }
 .holding-chart-btn.on { border-color: var(--violet); color: var(--violet); background: #f4f1fe; }
-.holding-locked { margin: 0; align-self: center; font-size: 11.5px; color: var(--muted); }
 
 .holding-chart-panel { overflow: hidden; margin-top: 16px; border: 1px solid var(--line); border-radius: 18px; background: var(--white); }
 .holding-chart-head { display: flex; align-items: center; gap: 14px; padding: 15px 16px; border-bottom: 1px solid var(--line); }
@@ -1349,7 +1341,6 @@
    Anything dropped reappears in .market-stats inside the expanded row.
 --------------------------------------------------------------------------- */
 .markets-page { container-type: inline-size; container-name: markets; }
-
 @container markets (max-width: 1100px) {
   .market-table thead th:nth-child(4),
   .market-table tbody tr:not(.market-chart-row) > td:nth-child(4),   /* 1H     */

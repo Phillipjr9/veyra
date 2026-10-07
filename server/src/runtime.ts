@@ -30,6 +30,7 @@ export function productionRuntimeReport(env: NodeJS.ProcessEnv = process.env): R
   if (env.PREVIEW_LOGIN_SHORTCUTS === "1" || env.PREVIEW_CRYPTO_DATA === "1" || env.DEMO_PAYMENTS_ENABLED === "1" || env.ACCOUNT_LEDGER_ENABLED === "1") {
     errors.push("Preview/demo money and login switches cannot be enabled in production.");
   }
+  if (env.CRYPTO_TESTNET_SEND === "1") errors.push("The Ethereum Sepolia testnet-send switch cannot be enabled in production.");
 
   const appUrl = String(env.APP_URL ?? "").replace(/\/$/, "");
   if (!validHttpsOrigin(appUrl)) errors.push("APP_URL must be one canonical HTTPS origin in production (for email and Stripe return links).");

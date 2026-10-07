@@ -235,7 +235,7 @@ export async function tradableQuote(code: string): Promise<Quote | null> {
 }
 
 export function describePrices(): string {
-  if (previewCryptoEnabled()) return "Asset prices: TEST DATA · 24 sample markets and charts · NOT LIVE";
+  if (previewCryptoEnabled()) return "Asset prices: development fixtures enabled";
   return `Asset prices: ${describeMarketFeed()} · cache ${ttlMs() / 1000}s · trades refuse quotes older than ${maxAgeMs() / 1000}s`;
 }
 

@@ -17,6 +17,7 @@ import { createPriceFixture } from "../server/scripts/price-fixture.js";
 const port = Number(process.env.PORT || 8877);
 const temp = mkdtempSync(join(tmpdir(), "veyra-e2e-"));
 process.env.NODE_ENV = "development";
+process.env.CRYPTO_TESTNET_SEND = "1"; // Separate user-signed Sepolia path; never production or Veyra ledger.
 process.env.DEMO_SEED = "1";
 process.env.TOKEN_SECRET = randomBytes(32).toString("hex");
 process.env.ADMIN_EMAIL = DEMO_ADMIN_EMAIL;

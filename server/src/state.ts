@@ -80,6 +80,7 @@ export function buildMemberState(db: DatabaseSync, userId: string, currentTokenI
     merchant: String(t.merchant),
     category: String(t.category),
     amount: dollars(t.amount_cents as number),
+    fee: dollars((t.fee_cents as number) ?? 0),
     reward: dollars(t.reward_cents as number),
     scout: dollars(t.scout_cents as number),
     date: t.created_at as number,

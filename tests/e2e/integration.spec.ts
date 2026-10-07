@@ -1,6 +1,7 @@
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { applicationFor } from "../../server/scripts/fixtures";
+import { quoteFee } from "../../shared/fees";
 
 type Actor = "personal" | "business" | "admin";
 const credentials = (actor: Actor) => ({
@@ -51,7 +52,7 @@ async function authenticator(page: Page) {
 const memberRoutes = [
   ["accounts", "Accounts & savings"], ["cards", "Cards"], ["transactions", "Transactions"],
   ["transfers", "Transfers"], ["bills", "Bills & scheduled payments"], ["scout", "Scout AI"],
-  ["markets", "Markets"], ["rewards", "Rewards"], ["perks", "Perks"],
+  ["assets", "Crypto, on your terms."], ["markets", "Markets"], ["rewards", "Rewards"], ["perks", "Perks"],
   ["statements", "Official Statements & Reports"], ["disputes", "Disputes & Fraud Resolution"],
   ["kyc", "Identity verification"], ["security", "Security center"],
   ["support-desk", "Support & messages"], ["settings", "Settings"],
@@ -88,6 +89,15 @@ test("public marketing, legal, and auth pages render without runtime errors", as
 });
 
 for (const actor of ["personal", "business"] as const) {
+  if (actor === "personal") {
+    test("personal overview sends Manage assets to the Crypto workspace", async ({ page }) => {
+      await login(page, actor);
+      await page.getByRole("link", { name: "Manage assets", exact: true }).click();
+      await expect(page).toHaveURL(/#\/app\/assets$/);
+      await expect(page.getByRole("heading", { name: "Crypto, on your terms.", exact: true })).toBeVisible();
+    });
+  }
+
   for (const width of [1440, 768, 390]) {
     test(`${actor} navigation works at ${width}px, including the merged features`, async ({ page }) => {
       await page.setViewportSize({ width, height: 1000 });
@@ -100,7 +110,15 @@ for (const actor of ["personal", "business"] as const) {
           await page.goto(`/#/app/${path}`);
           await expect(page).toHaveURL(new RegExp(`#/app/${path}$`));
           await expect(page.locator("h1").first()).toHaveText(heading);
-          if (path === "accounts") await expect(page.getByRole("heading", { name: "Your digital assets", exact: true })).toBeVisible();
+          if (path === "accounts") {
+            await expect(page.getByRole("heading", { name: "Recent pocket activity", exact: true })).toBeVisible();
+            await expect(page.locator(".cw-asset-row")).toHaveCount(0);
+          }
+          if (path === "assets") {
+            await expect(page.getByRole("heading", { name: "Your asset directory", exact: true })).toBeVisible();
+            await expect(page.locator(".cw-asset-row")).toHaveCount(24);
+            await expect(page.locator(".app-nav a[href=\"#/app/assets\"]")).toHaveCount(1);
+          }
           if (path === "security") await expect(page.getByRole("heading", { name: "Passkeys", exact: true })).toBeVisible();
           await noOverflow(page);
         });
@@ -185,13 +203,14 @@ for (const actor of ["personal", "business"] as const) {
   test(`${actor} crypto trades reconcile checking, holdings, and persisted transactions`, async ({ page, request }) => {
     const { token } = await login(page, actor);
     await page.goto("/#/app/accounts");
-    const usdc = page.locator(".holding-card").filter({ has: page.locator(".holding-code", { hasText: /^USDC$/ }) });
-    await expect(usdc).toHaveCount(0);
-    await page.getByRole("link", { name: "Browse assets" }).click();
-    const directory = page.getByRole("article", { name: "USD Coin account holding" });
-    await expect(directory).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Recent pocket activity", exact: true })).toBeVisible();
+    await expect(page.locator(".cw-asset-row")).toHaveCount(0);
+
+    await page.goto("/#/app/assets");
+    const usdc = page.getByRole("article", { name: "USD Coin account holding" });
+    await expect(usdc).toBeVisible();
     const before = await account(request, token);
-    await directory.getByRole("button", { name: "Buy", exact: true }).click();
+    await usdc.getByRole("button", { name: "Buy", exact: true }).click();
     const buy = page.getByRole("dialog", { name: "Buy crypto", exact: true });
     await buy.getByLabel("Amount to spend (USD)", { exact: true }).fill("25.50");
     await buy.getByRole("checkbox").check();
@@ -199,24 +218,33 @@ for (const actor of ["personal", "business"] as const) {
     await buy.getByRole("button", { name: "Confirm buy" }).click();
     await buy.getByRole("button", { name: "Done" }).click();
     await expect(buy).toBeHidden();
+    await expect(usdc).toContainText("25.5 USDC");
+
     await page.goto("/#/app/accounts");
-    // Confirm the persisted checking balance after the catalog trade.
-    await expect(page.locator(".checking-account-card .account-big-money")).toHaveText(cash(before.balance - 25.50));
-    await expect.poll(async () => (await account(request, token)).balance).toBeCloseTo(before.balance - 25.50, 2);
-    await page.reload();
-    await expect(usdc.getByRole("button", { name: "Sell", exact: true })).toBeEnabled();
-    await usdc.getByRole("button", { name: "Sell", exact: true }).click();
+    // Confirm the persisted checking balance without showing holdings here.
+    const buyFee = quoteFee("crypto_buy", 2550).feeCents / 100;
+    await expect(page.locator(".checking-account-card .account-big-money")).toHaveText(cash(before.balance - 25.50 - buyFee));
+    await expect(page.locator(".cw-asset-row")).toHaveCount(0);
+    await expect.poll(async () => (await account(request, token)).balance).toBeCloseTo(before.balance - 25.50 - buyFee, 2);
+
+    await page.goto("/#/app/assets");
+    const heldUsdc = page.getByRole("article", { name: "USD Coin account holding" });
+    await expect(heldUsdc).toContainText("25.5 USDC");
+    await heldUsdc.getByRole("button", { name: "Sell", exact: true }).click();
     const sell = page.getByRole("dialog", { name: "Sell crypto", exact: true });
+    await sell.getByLabel("From", { exact: true }).selectOption("USDC");
     await sell.getByRole("button", { name: "Use available amount", exact: true }).click();
     await sell.getByRole("checkbox").check();
     await sell.getByRole("button", { name: "Review order" }).click();
     await sell.getByRole("button", { name: "Confirm sell" }).click();
     await sell.getByRole("button", { name: "Done" }).click();
     await expect(sell).toBeHidden();
+    await expect(heldUsdc.getByRole("button", { name: "Buy", exact: true })).toBeEnabled();
     await page.goto("/#/app/accounts");
-    await expect(page.locator(".checking-account-card .account-big-money")).toHaveText(cash(before.balance));
-    await expect.poll(async () => (await account(request, token)).balance).toBeCloseTo(before.balance, 2);
-    await expect(usdc).toHaveCount(0);
+    const sellFee = quoteFee("crypto_sell", 2550).feeCents / 100;
+    await expect(page.locator(".checking-account-card .account-big-money")).toHaveText(cash(before.balance - buyFee - sellFee));
+    await expect(page.locator(".cw-asset-row")).toHaveCount(0);
+    await expect.poll(async () => (await account(request, token)).balance).toBeCloseTo(before.balance - buyFee - sellFee, 2);
     await page.goto("/#/app/transactions");
     await expect(page.getByText(/USDC/).first()).toBeVisible();
   });

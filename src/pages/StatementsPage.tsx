@@ -105,19 +105,21 @@ export function StatementsPage() {
   const stmtTxns = activeStatement?.txns || [];
   const depositsTotal = stmtTxns.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
   const withdrawalsTotal = stmtTxns.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+  const feesTotal = stmtTxns.reduce((s, t) => s + (t.fee ?? 0), 0);
   const rewardsEarnedTotal = stmtTxns.reduce((s, t) => s + (t.reward || 0), 0);
   const scoutSavedTotal = stmtTxns.reduce((s, t) => s + (t.scout || 0), 0);
-  
-  // Starting balance calculation
+
+  // Starting balance calculation. The cash effect of every ledger row is
+  // amount - fee, so fees are added back when reconstructing the opening balance.
   const endingBalance = account.balance;
-  const startingBalance = Math.max(0, endingBalance - depositsTotal + withdrawalsTotal);
+  const startingBalance = Math.max(0, endingBalance - depositsTotal + withdrawalsTotal + feesTotal);
 
   // Reconcile balances chronologically, then display the selected statement order.
   const runningBalances = useMemo(() => {
     let running = startingBalance;
     const values = new Map<string, number>();
     [...stmtTxns].sort((a, b) => a.date - b.date).forEach(txn => {
-      running += txn.amount;
+      running += txn.amount - (txn.fee ?? 0);
       values.set(txn.id, running);
     });
     return values;
@@ -129,59 +131,69 @@ export function StatementsPage() {
 
   const handleDownloadPDF = () => {
     if (!activeStatement) return;
-    const document = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+    // A4 portrait: the whole statement is designed to print on one page width
+    // with a compact, audit-ready type scale instead of a landscape letter sheet.
+    const document = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
     const pageWidth = document.internal.pageSize.getWidth();
-    const right = pageWidth - 42;
+    const pageHeight = document.internal.pageSize.getHeight();
+    const margin = 32;
+    const right = pageWidth - margin;
 
     document.setFillColor(33, 24, 45);
-    document.rect(0, 0, pageWidth, 72, "F");
+    document.rect(0, 0, pageWidth, 58, "F");
     document.setTextColor(255, 255, 255);
     document.setFont("helvetica", "bold");
-    document.setFontSize(22);
-    document.text("VEYRA", 42, 36);
-    document.setFontSize(8.5);
+    document.setFontSize(18);
+    document.text("VEYRA", margin, 28);
+    document.setFontSize(7);
     document.setFont("helvetica", "normal");
-    document.text("Northfield Bank, Member FDIC | Commercial Treasury Operations", 42, 53);
+    document.text("Northfield Bank, Member FDIC | Commercial Treasury Operations", margin, 43);
     document.setFont("helvetica", "bold");
-    document.setFontSize(12);
-    document.text("OFFICIAL ACCOUNT STATEMENT", right, 31, { align: "right" });
+    document.setFontSize(10.5);
+    document.text("OFFICIAL ACCOUNT STATEMENT", right, 25, { align: "right" });
     document.setFont("helvetica", "normal");
-    document.setFontSize(8.5);
-    document.text(activeStatement.label, right, 47, { align: "right" });
+    document.setFontSize(7.5);
+    document.text(activeStatement.label, right, 40, { align: "right" });
 
     document.setTextColor(24, 23, 29);
-    document.setFontSize(9);
+    document.setFontSize(7.5);
     document.setFont("helvetica", "bold");
-    document.text("ACCOUNT HOLDER", 42, 96);
+    document.text("ACCOUNT HOLDER", margin, 82);
     document.setFont("helvetica", "normal");
-    document.text(isPersonal ? user.name : (user.business || user.name), 42, 112);
-    document.text(`Attn: ${user.name}`, 42, 126);
-    document.text(`Phone: ${user.phone || "Not provided"}`, 42, 140);
-    document.text(user.email, 42, 154);
+    document.setFontSize(10);
+    document.text(isPersonal ? user.name : (user.business || user.name), margin, 95);
+    document.setFontSize(7.5);
+    document.text(`Attn: ${user.name}`, margin, 107);
+    document.text(`Phone: ${user.phone || "Not provided"}`, margin, 118);
+    document.text(user.email, margin, 129);
 
     document.setFont("helvetica", "bold");
-    document.text("ACCOUNT DETAILS", 310, 96);
+    document.text("ACCOUNT DETAILS", 300, 82);
     document.setFont("helvetica", "normal");
-    document.text(`Account: XXXX XXXX ${account.bankDetails.accountNumber.slice(-4)}`, 310, 112);
-    document.text(`Routing (ABA): ${account.bankDetails.routingNumber}`, 310, 126);
-    document.text(`Type: ${account.bankDetails.accountType}`, 310, 140);
-    document.text(`Statement ID: VYR-${activeStatement.key.replace("-", "")}-${account.bankDetails.accountNumber.slice(-4)}`, 310, 154);
+    document.setFontSize(7.5);
+    document.text(`Account: XXXX XXXX ${account.bankDetails.accountNumber.slice(-4)}`, 300, 95);
+    document.text(`Routing (ABA): ${account.bankDetails.routingNumber}`, 300, 107);
+    document.text(`Type: ${account.bankDetails.accountType}`, 300, 118);
+    document.text(`Statement ID: VYR-${activeStatement.key.replace("-", "")}-${account.bankDetails.accountNumber.slice(-4)}`, 300, 129);
 
     document.setFillColor(247, 244, 252);
-    document.roundedRect(540, 91, pageWidth - 582, 69, 7, 7, "F");
+    document.roundedRect(300, 142, pageWidth - 300 - margin, 72, 6, 6, "F");
     document.setFont("helvetica", "bold");
-    document.text("ACCOUNT SUMMARY", 552, 107);
+    document.setFontSize(7);
+    document.text("ACCOUNT SUMMARY", 310, 156);
     document.setFont("helvetica", "normal");
-    document.text(`Starting balance: ${money(startingBalance)}`, 552, 122);
-    document.text(`Deposits / credits: +${money(depositsTotal)}`, 552, 136);
-    document.text(`Withdrawals / debits: -${money(withdrawalsTotal)}`, 552, 150);
+    document.setFontSize(7.5);
+    document.text(`Starting balance: ${money(startingBalance)}`, 310, 169);
+    document.text(`Deposits / credits: +${money(depositsTotal)}`, 310, 181);
+    document.text(`Withdrawals / debits: -${money(withdrawalsTotal)}`, 310, 193);
+    document.text(`Transaction fees: -${money(feesTotal)}`, 310, 205);
     document.setFont("helvetica", "bold");
-    document.text(`Ending balance: ${money(endingBalance)}`, right - 12, 150, { align: "right" });
+    document.text(`Ending balance: ${money(endingBalance)}`, right - 10, 205, { align: "right" });
 
     autoTable(document, {
-      startY: 181,
-      margin: { left: 42, right: 42, bottom: 48 },
-      head: [["Date", "Reference", "Description / Payee", "Method", "Category", "Rewards", "Amount", "Balance"]],
+      startY: 232,
+      margin: { left: margin, right: margin, bottom: 34 },
+      head: [["Date", "Reference", "Description / Payee", "Method", "Category", "Rewards", "Fee", "Amount", "Balance"]],
       body: stmtTxns.map(txn => [
         shortDate(txn.date),
         txn.reference || `REF-${txn.id.slice(0, 7).toUpperCase()}`,
@@ -189,28 +201,29 @@ export function StatementsPage() {
         txn.method || "Debit",
         txn.category,
         txn.reward > 0 ? `+${money(txn.reward)}` : "-",
+        (txn.fee ?? 0) > 0 ? `-${money(txn.fee ?? 0)}` : "-",
         `${txn.amount > 0 ? "+" : "-"}${money(Math.abs(txn.amount))}`,
         money(runningBalances.get(txn.id) ?? startingBalance),
       ]),
       theme: "grid",
-      styles: { font: "helvetica", fontSize: 7.3, cellPadding: 5, lineColor: [232, 228, 238], lineWidth: .45, textColor: [35, 32, 40] },
-      headStyles: { fillColor: [66, 49, 101], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 7.1 },
+      styles: { font: "helvetica", fontSize: 6.4, cellPadding: 3.2, lineColor: [232, 228, 238], lineWidth: .35, textColor: [35, 32, 40] },
+      headStyles: { fillColor: [66, 49, 101], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 6.2 },
       columnStyles: {
-        0: { cellWidth: 51 }, 1: { cellWidth: 82 }, 2: { cellWidth: 168 }, 3: { cellWidth: 65 },
-        4: { cellWidth: 70 }, 5: { cellWidth: 61, halign: "right" }, 6: { cellWidth: 70, halign: "right" }, 7: { cellWidth: 72, halign: "right" },
+        0: { cellWidth: 38 }, 1: { cellWidth: 56 }, 2: { cellWidth: 142 }, 3: { cellWidth: 42 },
+        4: { cellWidth: 52 }, 5: { cellWidth: 38, halign: "right" }, 6: { cellWidth: 36, halign: "right" },
+        7: { cellWidth: 52, halign: "right" }, 8: { cellWidth: 52, halign: "right" },
       },
       didDrawPage: data => {
-        const height = document.internal.pageSize.getHeight();
-        document.setFontSize(7);
+        document.setFontSize(6.2);
         document.setTextColor(105, 100, 112);
-        document.text("Veyra is a financial technology company, not a bank. Banking services are provided by partner institutions.", 42, height - 24);
-        document.text(`Page ${data.pageNumber}`, right, height - 24, { align: "right" });
+        document.text("Veyra is a financial technology company, not a bank. Banking services are provided by partner institutions.", margin, pageHeight - 18);
+        document.text(`Page ${data.pageNumber}`, right, pageHeight - 18, { align: "right" });
       },
     });
 
     if (!stmtTxns.length) {
-      document.setFontSize(10);
-      document.text("No transaction activity was recorded during this statement period.", 42, 205);
+      document.setFontSize(8);
+      document.text("No transaction activity was recorded during this statement period.", margin, 250);
     }
 
     document.save(`Veyra-Statement-${activeStatement.key}.pdf`);
@@ -331,6 +344,7 @@ export function StatementsPage() {
             <div className="stmt-sum-row"><span>Starting Balance</span> <b>{money(startingBalance)}</b></div>
             <div className="stmt-sum-row"><span>Total Deposits & Credits (+{stmtTxns.filter(t => t.amount > 0).length})</span> <b className="in">+{money(depositsTotal)}</b></div>
             <div className="stmt-sum-row"><span>Total Withdrawals & Debits (−{stmtTxns.filter(t => t.amount < 0).length})</span> <b>−{money(withdrawalsTotal)}</b></div>
+            <div className="stmt-sum-row"><span>Transaction Fees ({stmtTxns.filter(t => (t.fee ?? 0) > 0).length})</span> <b>−{money(feesTotal)}</b></div>
             <div className="stmt-sum-row highlight"><span>Ending Reconciled Balance</span> <strong>{money(endingBalance)}</strong></div>
             <div className="stmt-sum-row rewards"><span>Cash Back Rewards Earned</span> <b className="violet-text">+{money(rewardsEarnedTotal)}</b></div>
             {scoutSavedTotal > 0 && (
@@ -375,6 +389,7 @@ export function StatementsPage() {
                   <th>Method</th>
                   <th>Category</th>
                   <th className="ta-r">Rewards</th>
+                  <th className="ta-r">Fee</th>
                   <th className="ta-r">Amount</th>
                   <th className="ta-r">Balance</th>
                 </tr>
@@ -392,6 +407,7 @@ export function StatementsPage() {
                       <td className="stmt-col-method"><span className="stmt-method-pill">{t.method || "Debit"}</span></td>
                       <td className="stmt-col-cat"><span className="stmt-cat-pill">{t.category}</span></td>
                       <td className="ta-r in stmt-col-rewards">{t.reward > 0 ? `+${money(t.reward)}` : "—"}</td>
+                      <td className="ta-r stmt-col-fee">{(t.fee ?? 0) > 0 ? `−${money(t.fee ?? 0)}` : "—"}</td>
                       <td className={`ta-r stmt-col-amount ${t.amount > 0 ? "in" : ""}`}>
                         <strong>{t.amount > 0 ? "+" : "−"}{money(Math.abs(t.amount))}</strong>
                       </td>
@@ -402,7 +418,7 @@ export function StatementsPage() {
 
                 {!stmtTxns.length && (
                   <tr>
-                    <td colSpan={8} className="stmt-empty-td">
+                    <td colSpan={9} className="stmt-empty-td">
                       No transactions recorded during this calendar period.
                     </td>
                   </tr>
@@ -437,6 +453,7 @@ export function StatementsPage() {
                   </div>
                   <div className="stmt-m-bal">
                     {t.reward > 0 && <span className="in">+{money(t.reward)} back</span>}
+                    {(t.fee ?? 0) > 0 && <span>Fee −{money(t.fee ?? 0)}</span>}
                     <small>Bal: {money(runningBalances.get(t.id) ?? startingBalance)}</small>
                   </div>
                 </div>

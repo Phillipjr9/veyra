@@ -16,6 +16,7 @@ export async function downloadTransactionReceipt(txn: Txn, bank?: BankAccountDet
     ["Method", txn.method || "Not recorded"], ["Category", txn.category || "Uncategorized"],
     ...(bank ? [["Account holder", bank.holder], ["Bank", bank.bankName], ["Account type", bank.accountType], ["Account", `Ending ${bank.accountNumber.slice(-4)}`]] : []),
     ...(txn.note ? [["Memo", txn.note]] : []),
+    ...((txn.fee ?? 0) > 0 ? [["Fee", currency.format(txn.fee ?? 0)]] : []),
     ...(txn.reward > 0 ? [["Recorded rewards", currency.format(txn.reward)]] : []),
   ];
   autoTable(doc, { startY: 172, head: [["Details", "Recorded value"]], body: rows, margin: { left: 40, right: 40, bottom: 75 }, styles: { fontSize: 10, cellPadding: 9, overflow: "linebreak" }, headStyles: { fillColor: [88, 62, 123] }, columnStyles: { 0: { cellWidth: 130 } } });

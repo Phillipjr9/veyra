@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ASSETS } from "../../shared/catalog.js";
+import { quoteFee } from "../../shared/fees.js";
 /**
  * API integration tests — boots the real server on an ephemeral port with a
  * fresh database and exercises the full surface over HTTP:
@@ -42,6 +43,8 @@ const expect = (label: string, cond: boolean, extra?: string) => {
   console.log(`${cond ? "✓" : "✗ FAIL:"} ${label}${extra && !cond ? ` — ${extra}` : ""}`);
   if (!cond) failures++;
 };
+const feeCents = (kind: "transfer" | "bill" | "crypto_buy" | "crypto_sell", amountDollars: number) =>
+  quoteFee(kind, Math.round(amountDollars * 100)).feeCents;
 
 /** Parses one CSV line into cells (handles the exports' quoted fields). */
 const csvCells = (line: string): string[] => {
@@ -399,7 +402,7 @@ try {
 
   /* ---------- member transfers & restrictions ---------- */
   const transfer = await api("POST", "/api/me/transfers", rae, { counterparty: "Harbor Studio", amount: 100, category: "Operations", method: "ACH" });
-  expect("member transfer succeeds and debits balance (+rewards)", transfer.status === 201 && transfer.json.balance.amount === ((concurrentEnd - 10000) / 100).toFixed(2) && transfer.json.result.reward === 2.5);
+  expect("member transfer succeeds and debits balance (+rewards)", transfer.status === 201 && transfer.json.balance.amount === ((concurrentEnd - 10000 - feeCents("transfer", 100)) / 100).toFixed(2) && transfer.json.result.reward === 2.5 && transfer.json.result.fee === (feeCents("transfer", 100) / 100));
 
   const overdraftTransfer = await api("POST", "/api/me/transfers", rae, { counterparty: "X", amount: 99_999_999 });
   expect("transfer beyond balance rejected", overdraftTransfer.status === 400);
@@ -605,6 +608,8 @@ try {
   const ledgerByTxnExport = await api("GET", "/api/admin/reports/transactions.csv", support);
   const directoryByTxnExport = await api("GET", "/api/admin/reports/customers.csv", support);
   expect("transactions.export opens the ledger export (200)", ledgerByTxnExport.status === 200 && ledgerByTxnExport.text.includes(","));
+  const ledgerHeader = ledgerByTxnExport.text.split("\n")[0] ?? "";
+  expect("transactions export includes the fee column", ledgerHeader.includes("\"Fee\""));
   expect("transactions.export does not open the other reports (403)", directoryByTxnExport.status === 403);
   await api("POST", "/api/admin/roles/reset", admin, { role: "support" });
 
@@ -671,7 +676,7 @@ try {
   const juneCard = await api("POST", "/api/me/cards", juneToken, { label: "Everyday", type: "virtual", limit: 500, cardholder: "June Okafor" });
   await api("POST", "/api/me/transfers", juneToken, { counterparty: "Acme Supplies", amount: 180, category: "Operations", method: "Card", cardId: juneCard.json.card.id });
   const juneAfter = (await api("GET", "/api/me/state", juneToken)).json.account;
-  expect("member builds real history through the API", juneAfter.balance === 1200 - 180 &&
+  expect("member builds real history through the API", juneAfter.balance === 1200 - 180 - feeCents("transfer", 180) / 100 &&
     juneAfter.transactions.length === 2 && juneAfter.cards.length === 1 &&
     juneAfter.cards[0].spent === 180 && juneAfter.team[0].name === "June Okafor");
 
@@ -735,7 +740,7 @@ try {
   const balPreSched = (await api("GET", "/api/me/state", rae)).json.account.balance;
   const payNow = await api("POST", `/api/me/scheduled/${sched.json.payment.id}/pay`, rae);
   expect("pay-now debits and advances next date", payNow.status === 200 &&
-    (await api("GET", "/api/me/state", rae)).json.account.balance === balPreSched - 250);
+    (await api("GET", "/api/me/state", rae)).json.account.balance === balPreSched - 250 - feeCents("bill", 250) / 100);
   // The response carries the id of the ledger row the server just wrote, so a
   // dispute filed before the snapshot refreshes still links to that row.
   const paidTxnId = payNow.json.transaction?.id as string | undefined;
@@ -1874,12 +1879,12 @@ try {
       expect("buying debits checking and credits the holding", buy.status === 201 &&
         buy.json.quantity === "0.0025" && buy.json.amountUsd === "250.00");
       const afterBuy = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
-      expect("the deposit leg left checking exactly once", start - afterBuy === 25000);
+      expect("the deposit leg left checking exactly once", start - afterBuy === 25000 + feeCents("crypto_buy", 250));
       // A balance that moves with no matching statement line is how support
       // tickets start, so the USD leg must be visible in transactions too.
       const statement = (await api("GET", "/api/me/transactions", rae)).json.transactions;
       expect("the purchase appears in the member's statement", statement.some((t: any) =>
-        t.merchant === "Bought BTC" && t.amount.cents === -25000));
+        t.merchant === "Bought BTC" && t.amount.cents === -25000 && t.fee.cents === feeCents("crypto_buy", 250)));
 
       const held = await api("GET", "/api/me/holdings", rae);
       const btc = held.json.holdings.find((h: any) => h.asset === "BTC");
@@ -1909,7 +1914,7 @@ try {
       expect("selling the full quantity empties the position", sellAll.status === 201 &&
         (await api("GET", "/api/me/holdings", rae)).json.holdings.find((h: any) => h.asset === "BTC").units === "0");
       const afterSell = (await api("GET", "/api/me/account", rae)).json.balance.cents as number;
-      expect("a round trip at one price returns the money exactly", afterSell === start);
+      expect("a round trip at one price returns the money exactly", afterSell === start - feeCents("crypto_buy", 250) - feeCents("crypto_sell", 250));
 
       // 18-decimal asset end to end — the case an INTEGER column could not hold.
       await api("POST", "/api/me/holdings/trade", rae, { asset: "ETH", side: "buy", amount: "40" });

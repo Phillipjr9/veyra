@@ -13,6 +13,6 @@ export function buildCryptoEmail(data: CryptoNotification & { accountLast4?: str
     ...(data.transactionHash ? [["Transaction hash", data.transactionHash] as [string, string]] : []),
     ...(data.confirmations !== undefined ? [["Confirmations", String(data.confirmations)] as [string, string]] : []),
   ];
-  const html = emailShell({ subject, preheader: content.detail, content: `${eyebrow("Crypto activity")}${h1(content.title)}${p(content.outcome)}${pill(data.status, data.status === "failed" ? "red" : data.status === "pending" ? "amber" : "violet")}${details(rows)}${p(content.scope)}${btn("View crypto activity", link)}${note("Don’t recognize this activity? Open Veyra and contact support. Never share your password, recovery phrase or private keys.")}` });
+  const html = emailShell({ subject, preheader: content.detail, content: `${eyebrow("Crypto activity")}${h1(content.title)}${p(content.outcome)}${pill(data.status, data.status === "failed" ? "red" : data.status === "recorded" ? "amber" : "violet")}${details(rows)}${p(content.scope)}${btn("View crypto activity", link)}${note("Don’t recognize this activity? Open Veyra and contact support. Never share your password, recovery phrase or private keys.")}` });
   return { subject, html, text: `${content.title}\n\n${content.detail}\n${rows.map(([key,value]) => `${key}: ${value}`).join("\n")}\n\nView activity: ${link}\nNever share your password, recovery phrase or private keys.` };
 }
