@@ -234,3 +234,25 @@ test("blocked clipboard gives a manual-copy fallback without changing the comple
   await fits(page);
   expect(await withdrawals(request, headers)).toHaveLength(1);
 });
+
+
+test("receipt actions remain visible while scrolling on short mobile screens", async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 640 });
+  const { dialog } = await fixture(page, request);
+  await dialog.getByRole('button', { name: 'Review withdrawal' }).click();
+  await dialog.locator('.flow-confirm').click();
+  await expect(dialog.getByRole('status')).toContainText('Send complete');
+  const footer = dialog.getByRole('group', { name: 'Receipt actions' });
+  await expect(footer.getByRole('button')).toHaveText(['Done', 'Send receipt']);
+  for (const width of [320, 390, 768]) {
+    await page.setViewportSize({ width, height: 640 });
+    for (const bottom of [false, true]) {
+      await dialog.locator('.flow-body').evaluate((el, bottom) => { el.scrollTop = bottom ? el.scrollHeight : 0; }, bottom);
+      await expect(footer.getByRole('button', { name: 'Done', exact: true })).toBeInViewport({ ratio: 1 });
+      await expect(footer.getByRole('button', { name: 'Send receipt', exact: true })).toBeInViewport({ ratio: 1 });
+      await fits(page);
+    }
+  }
+  await footer.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(dialog).toBeHidden();
+});

@@ -246,9 +246,12 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
           </div>
           <p className="crypto-receipt-copy-notice" aria-live="polite">{copyNotice}</p>
           <p className="crypto-send-note">Completed in your Veyra account record. External custody and on-chain execution are not connected, so no network fee or transaction hash is involved.</p>
-          <div className="flow-actions"><button type="button" className="ghost-btn" onClick={download}><Download size={15} /> Send receipt</button><button type="button" className="solid-btn" onClick={close}>Done</button></div>
         </motion.div>}
       </div>
+      {stage === 'recorded' && result && <footer role="group" className="crypto-send-receipt-footer" aria-label="Receipt actions">
+        <button type="button" className="solid-btn" onClick={close}>Done</button>
+        <button type="button" className="ghost-btn" onClick={download}><Download size={15} /> Send receipt</button>
+      </footer>}
     </section></div>
   </LayoutGroup></MotionConfig>;
 }
