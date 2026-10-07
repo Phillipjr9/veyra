@@ -213,6 +213,10 @@
 
 .cw-wallet-asset{display:inline-flex;align-items:center;gap:7px}.cw-wallet-asset img{object-fit:contain;flex-shrink:0}
 
+.cw-dialog .cw-notice[role="status"] { animation: cw-receipt-in .5s cubic-bezier(.2,.7,.3,1.15) both; transform-origin: top center; }
+@keyframes cw-receipt-in { from { opacity: 0; transform: translateY(12px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@media (prefers-reduced-motion: reduce) { .cw-dialog .cw-notice[role="status"] { animation: none; } }
+
 .cw-review-route { margin: 20px 0; }
 .cw-review-route > .cw-route { margin: 0; }
 

@@ -11,8 +11,10 @@ type Endpoint = {
   onChange?: (asset: string) => void;
 };
 /** One aligned route, shared by selection, review and order preparation. */
-export function CryptoRoute({ from, to, editable = false, busy = false, processing = false, transitIcon }: {
+export function CryptoRoute({ from, to, editable = false, busy = false, processing = false, transitIcon, progress = 0, arrived = false }: {
   from: Endpoint; to: Endpoint; editable?: boolean; busy?: boolean; processing?: boolean; transitIcon?: ReactNode;
+  /** 0–1 presentation progress; fills the journey rail while preparing. */
+  progress?: number; arrived?: boolean;
 }) {
   const id = useId(), reduce = useReducedMotion() !== false;
   const row = (endpoint: Endpoint, side: "From" | "To") => {
@@ -37,12 +39,21 @@ export function CryptoRoute({ from, to, editable = false, busy = false, processi
       </div>
     </div>;
   };
-  return <div className={`cw-route ${editable ? "is-editable" : "is-summary"} ${processing ? "is-processing" : ""}`} role="group" aria-label="From and to accounts">
+  return <div className={`cw-route ${editable ? "is-editable" : "is-summary"} ${processing ? "is-processing" : ""} ${processing && arrived ? "is-arrived" : ""}`} role="group" aria-label="From and to accounts">
     {row(from, "From")}
     <div className="cw-route-divider" aria-hidden="true"><motion.span className="cw-route-direction"
       animate={processing && !reduce ? { y: [-2, 2, -2] } : { y: 0 }} transition={processing && !reduce ? { duration: 1.6, repeat: Infinity, ease: "easeInOut" } : { duration: 0 }}>
       {processing && !reduce && transitIcon ? transitIcon : <ArrowDown size={14} />}
-    </motion.span></div>
+    </motion.span>
+      {processing && !reduce && transitIcon && (
+        <span className="cw-route-journey">
+          <span className="cw-route-journey-rail" />
+          <motion.span className="cw-route-journey-fill" initial={false}
+            animate={{ scaleY: Math.max(0.03, Math.min(1, progress)) }} transition={{ duration: 0.5, ease: "easeOut" }} />
+          <span className="cw-route-journey-coin">{transitIcon}</span>
+        </span>
+      )}
+    </div>
     {row(to, "To")}
   </div>;
 }
