@@ -9,13 +9,15 @@ const CATEGORY_COLORS: Record<EmailCategory, string> = {
   crypto: "#356aaf",
   security: "#9d4040",
   transfers: "#2f7a4c",
+  funding: "#2a7f7f",
   cards: "#7558dc",
   invoices: "#8a6420",
   scout: "#aa95ed",
   account: "#443173",
+  support: "#b0506e",
 };
 
-const CATEGORY_ORDER: EmailCategory[] = ["security", "transfers", "crypto", "cards", "invoices", "scout", "account"];
+const CATEGORY_ORDER: EmailCategory[] = ["security", "transfers", "funding", "crypto", "cards", "invoices", "scout", "account", "support"];
 
 /**
  * Public gallery of the transactional email templates defined in src/emails.
@@ -66,8 +68,8 @@ export function EmailTemplatesPage() {
           <span className="eyebrow">Design system</span>
           <h1>Email notifications</h1>
           <p>
-            Preview {emailTemplates.length} Veyra email designs across security, transfers, cards, invoicing,
-            Scout and account lifecycle. Some are design examples; live delivery requires a configured provider.
+            Preview {emailTemplates.length} Veyra email designs across security, transfers, funding, cards,
+            invoicing, Scout, support and account lifecycle. Some are design examples; live delivery requires a configured provider.
           </p>
         </div>
       </header>

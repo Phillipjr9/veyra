@@ -26,6 +26,24 @@
 .crypto-trade-animation .cw-route-direction { width: 30px; height: 30px; top: -15px; }
 .crypto-trade-animation .cw-route-direction .trade-asset-mark, .crypto-trade-animation .cw-route-direction .trade-cash-mark { width: 24px; height: 24px; font-size: 16px; }
 .crypto-trade-animation .cw-route-direction .trade-swap-pair { transform: scale(.72); }
+
+/* Processing journey: a coin descends the icon gutter from the From row to the
+   To row while a rail fills with real presentation progress. When the view is
+   prepared, the destination row glows and the source quantity settles. */
+.cw-route-journey { position: absolute; left: -43px; top: -32px; z-index: 2; width: 26px; height: 65px; pointer-events: none; }
+@media (max-width: 420px) { .cw-route-journey { left: -41px; } }
+.cw-route-journey-rail, .cw-route-journey-fill { position: absolute; left: 50%; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; border-radius: 2px; }
+.cw-route-journey-rail { background: #ece5f3; }
+.cw-route-journey-fill { background: var(--route-accent); transform-origin: top center; }
+.cw-route-journey-coin { position: absolute; left: 50%; top: 0; width: 26px; height: 26px; margin-left: -13px; display: grid; place-items: center; border: 1px solid #e0d4ec; border-radius: 50%; background: #fffdfb; box-shadow: 0 5px 12px #62418d33; animation: cw-journey 1.7s ease-in-out infinite; }
+.cw-route-journey-coin .trade-asset-mark { width: 20px; height: 20px; }
+.cw-route-journey-coin .trade-cash-mark { width: 20px; height: 20px; font-size: 13px; }
+.cw-route-journey-coin .trade-swap-pair { transform: scale(.5); transform-origin: center; }
+@keyframes cw-journey { 0% { top: 0; opacity: 0; transform: scale(.75); } 14% { opacity: 1; transform: scale(1); } 80% { opacity: 1; } 100% { top: 39px; opacity: 0; transform: scale(.85); } }
+.cw-route.is-processing .cw-route-field { transition: background .5s, opacity .5s; }
+.cw-route.is-arrived .cw-route-field:last-of-type { background: linear-gradient(180deg, color-mix(in srgb, var(--route-accent) 9%, transparent), transparent); }
+.cw-route.is-arrived .cw-route-field:last-of-type .cw-route-mark { box-shadow: 0 0 0 3px color-mix(in srgb, var(--route-accent) 22%, transparent); }
+.cw-route.is-arrived .cw-route-field:first-of-type .cw-route-quantity { opacity: .55; }
 @media (max-width: 420px) {
   .cw-route .cw-route-field { padding: 15px 13px; column-gap: 10px; grid-template-columns: 36px minmax(0,1fr); }
   .cw-route-mark { width: 36px; height: 36px; }

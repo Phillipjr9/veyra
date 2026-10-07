@@ -1,6 +1,9 @@
 import { CRYPTO_ACTIVITIES, CRYPTO_STATUSES } from "../../shared/cryptoNotifications";
 import { buildCryptoEmail } from "./crypto";
 import { buildZelleEmail, type ZelleEvent } from "./zelle";
+import { buildFundingEmail, type FundingEvent, type FundingMailData } from "./funding";
+import { buildAccessEmail, type AccessEvent, type AccessMailData } from "./access";
+import { buildLifecycleEmail, type LifecycleEvent, type LifecycleMailData } from "./lifecycle";
 /**
  * Veyra transactional email templates.
  *
@@ -16,7 +19,7 @@ import {
   APP_BASE, emailShell, eyebrow, h1, p, amount, pill, details, btn, textLink, note, progress,
 } from "./design";
 
-export type EmailCategory = "security" | "transfers" | "cards" | "invoices" | "scout" | "account" | "crypto";
+export type EmailCategory = "security" | "transfers" | "funding" | "cards" | "invoices" | "scout" | "account" | "support" | "crypto";
 
 export interface EmailTemplate {
   id: string;
@@ -205,6 +208,54 @@ const transferSent = zellePreview('transfer-sent','Zelle outgoing · ledger reco
 const zellePending = zellePreview('zelle-incoming-pending','Zelle incoming · pending review','incoming_pending');
 const zelleConfirmed = zellePreview('zelle-incoming-confirmed','Zelle incoming · funds credited','incoming_confirmed');
 const zelleRejected = zellePreview('zelle-incoming-rejected','Zelle incoming · request declined','incoming_rejected');
+
+/* ---- Funding, access and lifecycle previews (data-driven builders) ---- */
+
+const PREVIEW_AT = Date.UTC(2026, 9, 6, 14, 30);
+
+const fundingPreview = (id: string, name: string, event: FundingEvent, data: Partial<FundingMailData> = {}): EmailTemplate => {
+  const mail = buildFundingEmail({ event, reference: "VYR-FND-0001", occurredAt: PREVIEW_AT, accountLast4: "9014", ...data }, APP);
+  return { id, name, category: "funding", subject: mail.subject, preheader: mail.preheader, html: mail.html };
+};
+
+const accessPreview = (id: string, name: string, event: AccessEvent, data: Partial<AccessMailData> = {}): EmailTemplate => {
+  const mail = buildAccessEmail({ event, occurredAt: PREVIEW_AT, ...data }, APP);
+  return { id, name, category: "security", subject: mail.subject, preheader: mail.preheader, html: mail.html };
+};
+
+const lifecyclePreview = (id: string, name: string, category: EmailCategory, event: LifecycleEvent, data: Partial<LifecycleMailData> = {}): EmailTemplate => {
+  const mail = buildLifecycleEmail({ event, occurredAt: PREVIEW_AT, accountLast4: "9014", ...data }, APP);
+  return { id, name, category, subject: mail.subject, preheader: mail.preheader, html: mail.html };
+};
+
+/* Funding */
+const fundingPending = fundingPreview("funding-request-pending", "Funding request received", "request_pending", { methodLabel: "Bank transfer", amountCents: 250000, reference: "VYR-FND-8841" });
+const fundingConfirmed = fundingPreview("funding-request-confirmed", "Funding confirmed", "request_confirmed", { methodLabel: "Wire transfer", amountCents: 1250000, reference: "VYR-FND-8839" });
+const fundingRejected = fundingPreview("funding-request-rejected", "Funding request declined", "request_rejected", { methodLabel: "Bank transfer", amountCents: 900000, reference: "VYR-FND-8840", reason: "The sending account name doesn't match your Veyra account name." });
+const externalSubmitted = fundingPreview("external-account-submitted", "External account submitted", "external_submitted", { bankName: "Northfield Bank", accountType: "Checking", externalLast4: "4471", reference: "VYR-EXT-2204" });
+const externalApproved = fundingPreview("external-account-approved", "External account approved", "external_approved", { bankName: "Northfield Bank", accountType: "Checking", externalLast4: "4471", reference: "VYR-EXT-2204" });
+const externalRejected = fundingPreview("external-account-rejected", "External account declined", "external_rejected", { bankName: "Meridian Credit Union", externalLast4: "8820", reference: "VYR-EXT-2207", reason: "We couldn't verify this account belongs to your business." });
+const checkReceived = fundingPreview("check-deposit-received", "Check deposit received", "check_received", { amountCents: 184050, reference: "VYR-CHK-3310" });
+const checkCleared = fundingPreview("check-deposit-cleared", "Check cleared", "check_cleared", { amountCents: 184050, reference: "VYR-CHK-3310" });
+const directDepositSetup = fundingPreview("direct-deposit-setup", "Direct deposit setup", "direct_deposit_setup", { reference: "VYR-DD-1102" });
+
+/* Access */
+const passwordChanged = accessPreview("password-changed", "Password changed", "password_changed", { deviceLabel: "MacBook Pro", browser: "Chrome 141", location: "San Francisco, CA" });
+const twoFactorEnabled = accessPreview("two-factor-enabled", "Two-factor enabled", "two_factor_enabled", { deviceLabel: "MacBook Pro", browser: "Chrome 141", location: "San Francisco, CA" });
+const twoFactorDisabled = accessPreview("two-factor-disabled", "Two-factor disabled", "two_factor_disabled", { deviceLabel: "iPhone 17 Pro", location: "San Francisco, CA" });
+const passkeyAdded = accessPreview("passkey-added", "Passkey added", "passkey_added", { passkeyName: "Rae's MacBook Pro", deviceLabel: "MacBook Pro", location: "San Francisco, CA" });
+const passkeyRemoved = accessPreview("passkey-removed", "Passkey removed", "passkey_removed", { passkeyName: "Old iPhone", deviceLabel: "MacBook Pro", location: "San Francisco, CA" });
+
+/* Money automation + workspace */
+const billScheduled = lifecyclePreview("bill-scheduled", "Autopay scheduled", "transfers", "bill_scheduled", { payee: "Commons Coworking", amountCents: 59900, frequency: "Monthly", dateLabel: "Nov 1, 2026" });
+const billFailed = lifecyclePreview("bill-failed", "Bill payment failed", "transfers", "bill_failed", { payee: "Northstar Ads", amountCents: 124050, failureReason: "Insufficient available balance" });
+const savingsCreated = lifecyclePreview("savings-pocket-created", "Savings pocket opened", "account", "savings_created", { pocketName: "Tax reserve", targetCents: 2000000 });
+const savingsMoved = lifecyclePreview("savings-transfer", "Pocket transfer", "account", "savings_moved", { pocketName: "Tax reserve", amountCents: 150000, pocketBalanceCents: 875000 });
+const teamLimit = lifecyclePreview("team-limit-reached", "Teammate limit reached", "account", "team_limit", { memberName: "June Park", role: "Admin", limitCents: 200000, spentCents: 200000, resetsLabel: "Nov 1, 2026 (UTC)" });
+const teamRemoved = lifecyclePreview("team-member-removed", "Team member removed", "account", "team_removed", { memberName: "Alex Rivera", role: "Team member" });
+const applicationReceived = lifecyclePreview("application-received", "Application received", "account", "application_received", { businessName: "Rae & Co Studio" });
+const supportReceived = lifecyclePreview("support-received", "Support request received", "support", "support_received", { reference: "VYR-88213", subject: "Routing number for wire transfers" });
+const supportReply = lifecyclePreview("support-reply", "Support reply", "support", "support_reply", { reference: "VYR-88213", subject: "Routing number for wire transfers", message: "Hi Rae — your routing number for incoming wires is 091408735, and your account number is in the app under Accounts → Details. Wires usually arrive the same business day when sent before 2 PM PT. Let me know if you'd like help with anything else!" });
 
 const billPaid: EmailTemplate = {
   id: "bill-paid",
@@ -730,6 +781,11 @@ export const emailTemplates: EmailTemplate[] = [
   // Security
   signinAlert,
   passwordReset,
+  passwordChanged,
+  twoFactorEnabled,
+  twoFactorDisabled,
+  passkeyAdded,
+  passkeyRemoved,
   disputeOpened,
   disputeResolved,
   cardsFrozenAll,
@@ -740,7 +796,19 @@ export const emailTemplates: EmailTemplate[] = [
   zelleConfirmed,
   zelleRejected,
   billPaid,
+  billScheduled,
+  billFailed,
   rewardsRedeemed,
+  // Funding
+  fundingPending,
+  fundingConfirmed,
+  fundingRejected,
+  externalSubmitted,
+  externalApproved,
+  externalRejected,
+  checkReceived,
+  checkCleared,
+  directDepositSetup,
   // Cards
   cardIssued,
   cardShipped,
@@ -755,23 +823,33 @@ export const emailTemplates: EmailTemplate[] = [
   scoutDigest,
   // Account lifecycle
   welcome,
+  applicationReceived,
   kycApproved,
   kycAction,
   kycChanges,
   teamInvite,
+  teamLimit,
+  teamRemoved,
   statementReady,
   savingsGoal,
+  savingsCreated,
+  savingsMoved,
+  // Support
+  supportReceived,
+  supportReply,
 ];
 
 export const emailCategories: Array<{ id: EmailCategory | "all"; label: string }> = [
   { id: "all", label: "All" },
   { id: "security", label: "Security" },
   { id: "transfers", label: "Transfers" },
+  { id: "funding", label: "Funding" },
   { id: "crypto", label: "Crypto" },
   { id: "cards", label: "Cards" },
   { id: "invoices", label: "Invoices" },
   { id: "scout", label: "Scout" },
   { id: "account", label: "Account" },
+  { id: "support", label: "Support" },
 ];
 
 /** Convenience for a backend: fetch one template by id. */

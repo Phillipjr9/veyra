@@ -352,9 +352,9 @@ function Processing({ flow, track, onDone }: { flow: FlowState; track: Track; on
 }
 
 /** Shared presentation for outgoing payments and incoming account entries. */
-export function FlowProcessing({ title, amount, steps, track, onDone, minimumStepMs = 0, note, awaitingConfirmation = false, centerIcon, movingIcon, showProgressRing = false, waitingTitle = "Waiting for confirmation…", renderTrack }: {
-  title: string; amount: number | string; steps: string[]; track: Track; onDone: () => void; renderTrack?: () => ReactNode;
-  minimumStepMs?: number; note?: string; awaitingConfirmation?: boolean; centerIcon?: ReactNode; movingIcon?: ReactNode; showProgressRing?: boolean; waitingTitle?: string;
+export function FlowProcessing({ title, amount, steps, track, onDone, minimumStepMs = 0, note, awaitingConfirmation = false, centerIcon, renderCenterIcon, movingIcon, showProgressRing = false, waitingTitle = "Waiting for confirmation…", renderTrack }: {
+  title: string; amount: number | string; steps: string[]; track: Track; onDone: () => void; renderTrack?: (progress: number, finished: boolean) => ReactNode;
+  minimumStepMs?: number; note?: string; awaitingConfirmation?: boolean; centerIcon?: ReactNode; renderCenterIcon?: (progress: number, finished: boolean) => ReactNode; movingIcon?: ReactNode; showProgressRing?: boolean; waitingTitle?: string;
 }) {
   const reduce = useReducedMotion();
   const [index, setIndex] = useState(0);
@@ -377,7 +377,7 @@ export function FlowProcessing({ title, amount, steps, track, onDone, minimumSte
   return (
     <div className="flow-pane flow-processing" aria-live="polite">
       <div className="flow-processing-head">
-        <span className={`flow-orbit ${finished && !awaitingConfirmation ? "is-done" : ""}`}><i />{centerIcon ?? <VeyraMark width={20} height={20} />}
+        <span className={`flow-orbit ${finished && !awaitingConfirmation ? "is-done" : ""}`}><i />{renderCenterIcon ? renderCenterIcon(progress, finished) : (centerIcon ?? <VeyraMark width={20} height={20} />)}
           {showProgressRing && <svg className="flow-orbit-progress" viewBox="0 0 104 104" aria-hidden="true">
             <circle className="flow-orbit-progress-rail" cx="52" cy="52" r="48" />
             <motion.circle className="flow-orbit-progress-fill" cx="52" cy="52" r="48" initial={{ pathLength: 0 }} animate={{ pathLength: progress }} transition={{ duration: reduce ? 0 : .55, ease }} />
@@ -386,7 +386,7 @@ export function FlowProcessing({ title, amount, steps, track, onDone, minimumSte
         <h2 className="flow-title" id="flow-title">{finished ? awaitingConfirmation ? waitingTitle : "Wrapping up…" : title}</h2>
         <p className="flow-sub"><b>{typeof amount === "string" ? amount : money(amount)}</b> · {Math.round(progress * 100)}% {awaitingConfirmation ? "prepared" : "complete"}</p>
       </div>
-      {renderTrack ? renderTrack() : <FlowTrack from={track.from} to={track.to} state={finished && !awaitingConfirmation ? "done" : "moving"} progress={progress} movingIcon={movingIcon} />}
+      {renderTrack ? renderTrack(progress, finished) : <FlowTrack from={track.from} to={track.to} state={finished && !awaitingConfirmation ? "done" : "moving"} progress={progress} movingIcon={movingIcon} />}
       <div className="flow-progress"><motion.i initial={{ scaleX: 0 }} animate={{ scaleX: progress }} transition={{ duration: 0.5, ease }} /></div>
       <ul className="flow-steplist">
         {steps.map((label, i) => {

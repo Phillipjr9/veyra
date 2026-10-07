@@ -11,10 +11,10 @@ import { readFileSync, readdirSync } from "node:fs";
 const APP = "https://app.veyra.com";
 /** Routes that exist in src/App.tsx (hash router paths, without leading #). */
 const KNOWN_ROUTES = new Set([
-  "accounts", "bills", "cards", "disputes", "invoices", "kyc", "payments", "perks",
+  "accounts", "bills", "cards", "disputes", "external-accounts", "invoices", "kyc", "payments", "perks",
   "rewards", "scout", "security", "settings", "statements", "superadmin",
   "support-desk", "team", "transactions", "transfers",
-  "forgot-password", "invite/accept",
+  "application", "forgot-password", "invite/accept",
 ]);
 
 const dir = new URL("../emails/", import.meta.url);
