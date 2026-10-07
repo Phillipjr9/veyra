@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { LayoutGroup, MotionConfig, motion, useReducedMotion } from "motion/react";
 import { Check, Download, Wallet, X } from "lucide-react";
 import { apiGet, apiPost } from "../lib/api";
@@ -19,34 +19,66 @@ export function CryptoWithdrawalHistory({ revision }: { revision: number }) {
 // Presentation steps, not fabricated custody/signing/broadcast progress.
 const REQUEST_STEPS = ["Preparing withdrawal details", "Displaying network and destination", "Preparing the request summary", "Preparing your request receipt"];
 
+const COIN_RADIUS = 46;
+const COIN_THICKNESS = 14;
+const COIN_SEGMENTS = 32;
+
 /**
- * A struck coin pays out: discs that tumble in three dimensions and arcing
- * shards, rather than the flat rectangles the fiat transfer uses. Pieces are
- * generated once per asset so a re-render never restarts the burst.
+ * A real coin, not a flat disc: the rim is built from segments laid around a
+ * cylinder, so the piece has genuine thickness and a milled edge that reads
+ * as it turns. The front face carries no 3D transform of its own, which keeps
+ * the shared-element flight of the asset logo undistorted; the rim and the
+ * reverse are pushed back behind it instead.
+ */
+function Coin3D({ asset, reduce }: { asset: string; reduce: boolean }) {
+  const segW = (2 * Math.PI * COIN_RADIUS) / COIN_SEGMENTS;
+  const shell = { "--segw": `${segW}px`, "--thick": `${COIN_THICKNESS}px` } as CSSProperties;
+  return <motion.div className="coin3d" style={shell}
+    initial={reduce ? false : { y: -24, scale: .9 }}
+    animate={reduce ? { y: 0, scale: 1 } : { y: 0, scale: 1, rotateY: [0, 1080] }}
+    transition={reduce ? { duration: 0 } : {
+      y: { type: 'spring', stiffness: 130, damping: 13 },
+      scale: { type: 'spring', stiffness: 130, damping: 13 },
+      // Three full turns after the coin has landed, then it rests face on.
+      rotateY: { duration: 2.1, delay: .32, ease: [0.16, 1, 0.3, 1] },
+    }}>
+    <span className="coin3d-rim">{Array.from({ length: COIN_SEGMENTS }, (_, i) =>
+      <i key={i} className={i % 2 ? 'reed-dark' : 'reed-light'} style={{ transform: `rotateY(${(360 / COIN_SEGMENTS) * i}deg) translateZ(${COIN_RADIUS}px)` }} />)}</span>
+    <span className="coin3d-face coin3d-front"><motion.img layoutId="crypto-send-hero" src={assetIcon(asset)} alt="" transition={{ type: 'spring', stiffness: 230, damping: 27 }} /></span>
+    <span className="coin3d-face coin3d-back" aria-hidden="true" />
+  </motion.div>;
+}
+
+/**
+ * Coins and shards tumbling on X and Y under perspective, with the further
+ * pieces blurred and shrunk for depth. The fiat transfer throws flat
+ * rectangles on a single axis; this is deliberately heavier than that.
  */
 function CoinBurst({ asset }: { asset: string }) {
   const reduce = useReducedMotion();
-  const pieces = useMemo(() => Array.from({ length: 22 }, (_, i) => {
-    const angle = (i / 22) * Math.PI * 2 + (i % 3) * 0.22;
-    const dist = 74 + ((i * 41) % 62);
+  const pieces = useMemo(() => Array.from({ length: 30 }, (_, i) => {
+    const angle = (i / 30) * Math.PI * 2 + (i % 4) * 0.2;
+    const dist = 80 + ((i * 37) % 76);
+    const depth = (i % 5) / 4;
     return {
       id: i,
       x: Math.cos(angle) * dist,
-      y: Math.sin(angle) * dist * 0.6 - 36,
-      size: 10 + ((i * 13) % 10),
-      spin: 240 + ((i * 107) % 420),
-      tilt: (i % 2 ? 1 : -1) * (150 + ((i * 61) % 240)),
-      delay: (i % 6) * 0.05,
-      coin: i % 3 !== 2,
-      logo: i % 6 === 0,
+      y: Math.sin(angle) * dist * 0.6 - 40,
+      size: (9 + ((i * 11) % 13)) * (1 - depth * 0.3),
+      spin: 260 + ((i * 113) % 460),
+      tilt: (i % 2 ? 1 : -1) * (160 + ((i * 67) % 260)),
+      delay: (i % 7) * 0.045,
+      coin: i % 4 !== 3,
+      logo: i % 7 === 0,
+      blur: depth > 0.6 ? 1.1 : 0,
     };
   }), [asset]);
   if (reduce) return null;
   return <div className="crypto-send-burst" aria-hidden="true">{pieces.map(p => <motion.span key={p.id} className={p.coin ? "burst-coin" : "burst-shard"}
-    style={{ width: p.size, height: p.coin ? p.size : p.size * 0.38 }}
+    style={{ width: p.size, height: p.coin ? p.size : p.size * 0.38, filter: p.blur ? `blur(${p.blur}px)` : undefined }}
     initial={{ x: 0, y: 0, scale: 0.3, opacity: 0, rotateX: 0, rotateY: 0 }}
-    animate={{ x: [0, p.x, p.x * 1.14], y: [0, p.y, p.y + 128], scale: [0.3, 1, 0.82], opacity: [0, 1, 0], rotateX: [0, p.tilt, p.tilt * 1.5], rotateY: [0, p.spin, p.spin * 1.7] }}
-    transition={{ duration: 1.75, delay: 0.22 + p.delay, times: [0, 0.38, 1], ease: "easeOut" }}
+    animate={{ x: [0, p.x, p.x * 1.14], y: [0, p.y, p.y + 132], scale: [0.3, 1, 0.82], opacity: [0, 1, 0], rotateX: [0, p.tilt, p.tilt * 1.5], rotateY: [0, p.spin, p.spin * 1.7] }}
+    transition={{ duration: 1.85, delay: 0.22 + p.delay, times: [0, 0.38, 1], ease: "easeOut" }}
   >{p.logo && <img src={assetIcon(asset)} alt="" />}</motion.span>)}</div>;
 }
 
@@ -101,12 +133,14 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
   const cancelled = result?.status === 'cancelled';
   const download = () => {
     if (!result) return;
-    downloadFile(`veyra-withdrawal-request-${result.reference}.txt`, [
-      'VEYRA — CRYPTO WITHDRAWAL REQUEST', `Reference: ${result.reference}`, `Date: ${longDate(result.created_at)}`,
-      `Quantity: ${result.quantity} ${result.asset}`, `Network: ${result.network}`, `Destination: ${result.address}`,
-      `Status: ${result.status === 'recorded' ? 'Sent' : result.status}`,
+    downloadFile(`veyra-crypto-send-${result.reference}.txt`, [
+      'VEYRA — CRYPTO SEND RECEIPT', `Reference: ${result.reference}`, `Date: ${longDate(result.created_at)}`,
+      `Asset: ${holding.name} (${result.asset})`, `Quantity: ${result.quantity} ${result.asset}`,
+      `From: Your Veyra account`, `To: ${result.address}`, `Network: ${result.network}`,
+      `Status: ${result.status === 'recorded' ? 'Sent' : result.status}`, `Network fee: None collected`,
+      `Settlement: Veyra account record`,
       'Settled in your Veyra account record. No blockchain transaction hash or confirmation exists.',
-      'No network fee collected. External custody and on-chain execution are not connected.',
+      'External custody and on-chain execution are not connected.',
     ].join('\n'));
   };
   return <MotionConfig reducedMotion={reduce ? 'always' : 'never'}><LayoutGroup id={layoutId}>
@@ -148,10 +182,10 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
           <CoinBurst asset={result.asset} />
           <div role="status">
             <div className="crypto-send-recorded-mark" aria-hidden="true">
-              <motion.span className="coin-face" initial={reduce ? false : { rotateY: -200, scale: .72 }} animate={{ rotateY: 0, scale: 1 }} transition={{ type: 'spring', stiffness: 110, damping: 13 }} />
+              <motion.span className="coin-glow" initial={reduce ? false : { scale: .5, opacity: 0 }} animate={{ scale: 1, opacity: [0, .85, .45] }} transition={{ duration: 1.1, delay: .18 }} />
               <motion.span className="coin-ring" initial={reduce ? false : { scale: .78, opacity: .6 }} animate={{ scale: 1.85, opacity: 0 }} transition={{ duration: 1.25, delay: .22, ease: 'easeOut' }} />
               <motion.span className="coin-ring" initial={reduce ? false : { scale: .78, opacity: .45 }} animate={{ scale: 1.5, opacity: 0 }} transition={{ duration: 1.1, delay: .5, ease: 'easeOut' }} />
-              <motion.img layoutId="crypto-send-hero" src={assetIcon(result.asset)} alt="" transition={{ type: 'spring', stiffness: 230, damping: 27 }} />
+              <Coin3D asset={result.asset} reduce={!!reduce} />
               <motion.span className="coin-sheen" initial={reduce ? false : { x: '-130%' }} animate={{ x: '130%' }} transition={{ duration: .95, delay: .34, ease: 'easeInOut' }} />
               <motion.span className="coin-check" initial={reduce ? false : { scale: .6 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 260, damping: 20, delay: .2 }}><Check size={19} /></motion.span>
             </div>
@@ -161,7 +195,9 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
             <p className="flow-sub">{cancelled ? 'This request is cancelled. It has not been submitted again.' : `${result.quantity} ${result.asset} has been sent from your Veyra holdings.`}</p>
           </div>
           <div className="receipt">
-            {[['Reference', result.reference], ['Network', result.network], ['Status', 'Sent'], ['Network fee', 'None collected']].map(([label, value], i) => <motion.div key={label} className="receipt-row" initial={reduce ? false : { opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * .065 }}><span>{label}</span><b>{value}</b></motion.div>)}
+            {[['Date', longDate(result.created_at)], ['Asset', `${holding.name} · ${result.asset}`], ['Quantity', `${result.quantity} ${result.asset}`],
+              ['From', 'Your Veyra account'], ['Network', result.network], ['Reference', result.reference],
+              ['Status', 'Sent'], ['Network fee', 'None collected'], ['Settlement', 'Veyra account record']].map(([label, value], i) => <motion.div key={label} className="receipt-row" initial={reduce ? false : { opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * .055 }}><span>{label}</span><b>{value}</b></motion.div>)}
           </div>
           <div className="crypto-send-destination"><span>Destination wallet address</span><code>{result.address}</code></div>
           <p className="crypto-send-note">Completed in your Veyra account record. External custody and on-chain execution are not connected, so no network fee or transaction hash is involved.</p>

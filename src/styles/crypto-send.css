@@ -34,13 +34,27 @@
 .crypto-send-recorded { text-align:center; }
 /* Completion: a struck coin landing on its face — milled edge, thickness and a
    specular sweep — rather than a flat gold tile. */
-.crypto-send-recorded-mark { width:104px; height:104px; position:relative; display:grid; place-items:center; margin:10px auto 22px; perspective:620px; }
-.crypto-send-recorded-mark > img { position:relative; z-index:2; width:54px; height:54px; object-fit:contain; filter:drop-shadow(0 3px 4px #7a5312a8); }
-.coin-face { position:absolute; inset:9px; z-index:1; border-radius:50%; transform-style:preserve-3d;
-  background:radial-gradient(circle at 32% 26%,#fff9e8,#f6d589 40%,#e0a93f 70%,#b57c1c 100%);
-  box-shadow:0 0 0 1px #a9761f55, inset 0 -7px 11px #8a5f1575, inset 0 6px 9px #ffffffcc, 0 11px 0 -5px #a9761f, 0 26px 36px #a0844048; }
-.coin-face::after { content:""; position:absolute; inset:8px; border-radius:50%; border:1px dashed #a9761f40; }
-.coin-sheen { position:absolute; inset:9px; z-index:3; border-radius:50%; overflow:hidden; pointer-events:none; }
+.crypto-send-recorded-mark { width:112px; height:112px; position:relative; display:grid; place-items:center; margin:8px auto 22px; perspective:620px; }
+.crypto-send-recorded-mark { border:none; background:none; box-shadow:none; }
+/* A cylinder, not a disc: segments laid around the rim give it thickness and a
+   milled edge, so a turn reads as a solid object catching the light. */
+.coin3d { position:relative; z-index:2; width:92px; height:92px; transform-style:preserve-3d; }
+.coin3d-rim, .coin3d-face { position:absolute; inset:0; transform-style:preserve-3d; }
+.coin3d-rim { transform:translateZ(calc(var(--thick) / -2)); }
+.coin3d-rim i { position:absolute; left:50%; top:50%; width:var(--segw); height:var(--thick); margin:calc(var(--thick) / -2) 0 0 calc(var(--segw) / -2); backface-visibility:hidden; }
+.coin3d-rim i.reed-light { background:linear-gradient(180deg,#fbe7b2,#e5ad48 52%,#a9751c); }
+.coin3d-rim i.reed-dark { background:linear-gradient(180deg,#dfa947,#b8801f 55%,#7b540f); }
+.coin3d-face { border-radius:50%; display:grid; place-items:center; backface-visibility:hidden; }
+/* No transform on the obverse, so the shared-element flight of the logo is
+   never measured through a rotated parent. */
+.coin3d-front { background:radial-gradient(circle at 33% 26%,#fffaf0,#f8dc95 40%,#e3ab45 72%,#b8801f 100%);
+  box-shadow:inset 0 0 0 1px #a9761f66, inset 0 -9px 13px #8a5f1566, inset 0 8px 11px #ffffffd0; }
+.coin3d-front::after { content:""; position:absolute; inset:7px; border-radius:50%; border:1px dashed #a9761f4d; }
+.coin3d-front img { position:relative; z-index:1; width:50px; height:50px; object-fit:contain; filter:drop-shadow(0 2px 3px #7a5312a0); }
+.coin3d-back { transform:rotateY(180deg) translateZ(var(--thick)); background:radial-gradient(circle at 62% 32%,#fff2d4,#eebb58 46%,#b8801f 100%); }
+.coin-glow { position:absolute; inset:2px; z-index:0; border-radius:50%; pointer-events:none;
+  background:radial-gradient(circle,#f2c96b70,#f2c96b00 68%); filter:blur(7px); }
+.coin-sheen { position:absolute; inset:6px; z-index:3; border-radius:50%; overflow:hidden; pointer-events:none; }
 .coin-sheen::after { content:""; position:absolute; top:-45%; left:-55%; width:42%; height:190%; transform:rotate(18deg); background:linear-gradient(90deg,transparent,#fff 52%,transparent); filter:blur(3px); }
 .coin-ring { position:absolute; inset:9px; z-index:0; border-radius:50%; border:2px solid #e0a93f; pointer-events:none; }
 .crypto-send-recorded-mark > .coin-check { position:absolute; right:-4px; bottom:-2px; z-index:4; display:grid; place-items:center; width:34px; height:34px; color:#fff; background:linear-gradient(145deg,#5fae7d,#3d8a5d); border:2px solid #fff; border-radius:50%; box-shadow:0 4px 13px #2f6b4733; }

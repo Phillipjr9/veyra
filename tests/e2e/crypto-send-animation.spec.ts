@@ -84,7 +84,8 @@ test("shared send animation has real movement, waits for response, debits once a
     await expect(dialog.locator(".crypto-send-burst")).toHaveCount(1);
     await expect(dialog.locator(".burst-coin")).not.toHaveCount(0);
     await expect(dialog.locator(".burst-shard")).not.toHaveCount(0);
-    await expect(dialog.locator(".coin-face")).toHaveCount(1);
+    await expect(dialog.locator(".coin3d")).toHaveCount(1);
+    await expect(dialog.locator(".coin3d-rim i")).not.toHaveCount(0);
     await expect(dialog.locator(".receipt")).toContainText(rows[0].reference);
     for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 844 }); await fits(page); }
     await dialog.screenshot({ path: testInfo.outputPath("crypto-recorded-desktop.png") });
