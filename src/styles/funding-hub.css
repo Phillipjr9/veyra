@@ -168,3 +168,7 @@
 .funding-method-summary .funding-badge { background: #e9f5ee; color: #30674e; }
 .funding-method-summary.is-setup .funding-badge { background: #f6ecd6; color: #7a6340; }
 .funding-method-summary-text { line-height: 1.5; }
+
+.funding-refresh-spin { animation: funding-refresh-spin 0.9s linear infinite; }
+@keyframes funding-refresh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .funding-refresh-spin { animation: none; } }

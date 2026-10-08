@@ -56,10 +56,10 @@ test('admin edits account details and per-member funding; member request waits f
 
 test('personal category is optional, business category required and transaction receipt is a real PDF',async({page,request})=>{
  const u=await fixture(request);await request.post(`/api/admin/members/${u.id}/adjust`,{headers:{authorization:`Bearer ${u.admin}`},data:{direction:'credit',amount:100,memo:'Receipt fixture'}});
- await signIn(page,u.email);await page.goto('/#/app/transfers');await expect(page.locator('#pay-cat')).not.toHaveAttribute('required','');await expect(page.locator('#pay-cat')).toHaveValue('');
+ await signIn(page,u.email);await page.goto('/#/app/transfers');await expect(page.locator('#pay-cat')).not.toHaveAttribute('aria-required','true');await expect(page.locator('#pay-cat')).toHaveText(/No category|Choose a category/);
  await page.goto('/#/app/transactions');await page.locator('.txn-trow').first().click();const drawer=page.getByRole('dialog',{name:'Transaction details'});
  const wait=page.waitForEvent('download');await drawer.getByRole('button',{name:'Receipt',exact:true}).click();const download=await wait;expect(download.suggestedFilename()).toMatch(/^veyra-receipt-.+\.pdf$/);const bytes=await readFile((await download.path())!);expect(bytes.subarray(0,5).toString()).toBe('%PDF-');expect(bytes.length).toBeGreaterThan(2000);
- await page.evaluate(()=>{localStorage.clear();sessionStorage.clear();});await page.reload();await signIn(page,'demo.business@veyra.dev','veyra-demo-2026');await page.goto('/#/app/transfers');await expect(page.locator('#pay-cat')).toHaveAttribute('required','');
+ await page.evaluate(()=>{localStorage.clear();sessionStorage.clear();});await page.reload();await signIn(page,'demo.business@veyra.dev','veyra-demo-2026');await page.goto('/#/app/transfers');await expect(page.locator('#pay-cat')).toHaveAttribute('aria-required','true');
 });
 
 test('catalog is separate from holdings; animated crypto request is recorded and debits units immediately',async({page,request})=>{
@@ -85,6 +85,8 @@ test('Accounts & savings shows pocket moves while Crypto owns digital holdings',
  const activity=page.locator('.savings-activity-panel');await expect(activity.getByText('No savings moves yet')).toBeVisible();await expect(page.locator('.cw-asset-row')).toHaveCount(0);
  await page.getByRole('button',{name:'New savings pocket',exact:true}).click();const create=page.getByRole('dialog',{name:'New savings pocket',exact:true});await create.getByLabel('Pocket name').fill('Rainy day');await create.getByLabel('Savings target').fill('500');
  const saved=page.waitForResponse(r=>r.url().endsWith('/api/me/pockets')&&r.request().method()==='POST');await create.getByRole('button',{name:'Create pocket',exact:true}).click();expect((await saved).status()).toBe(201);
+ // The optimistic card is swapped for the server's id once the response lands; its exit animation (about 0.35s) must finish before locating the card.
+ await expect(page.locator('.pocket-card')).toHaveCount(1); await page.waitForTimeout(800);
  const pocket=page.locator('.pocket-card').filter({hasText:'Rainy day'});await expect(pocket).toBeVisible();await pocket.getByRole('button',{name:'Add',exact:true}).click();const move=page.getByRole('dialog',{name:'Add to Rainy day',exact:true});await move.getByLabel('Amount').fill('30');
  const transferred=page.waitForResponse(r=>r.url().includes('/api/me/pockets/')&&r.url().endsWith('/move')&&r.request().method()==='POST');await move.getByRole('button',{name:'Move money',exact:true}).click();expect((await transferred).status()).toBe(200);
  await expect(activity.locator('.savings-activity-row').first()).toContainText('Rainy day');await expect(activity.locator('.savings-activity-row').first()).toContainText('Added to savings');await expect(activity.locator('.savings-activity-amount')).toContainText('$30.00');

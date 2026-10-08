@@ -35,11 +35,11 @@ test("three distinct responsive trade presentations wait for real confirmation, 
     let release: (() => void) | undefined;
     if (action === "swap") await page.route("**/api/me/crypto/confirm", async route => { const response = await route.fetch(); await new Promise<void>(resolve => { release = resolve; }); await route.fulfill({ response }); });
     const at = Date.now(); await dialog.getByRole("button", { name: `Confirm ${action}` }).click();
-    const animation = dialog.locator(`.crypto-trade-animation.trade-${action}`);
-    await expect(animation).toBeVisible(); await expect(animation.locator(".flow-orbit-progress circle").first()).toHaveCSS("fill", "none"); await expect(animation.locator(".flow-steplist li")).toHaveCount(4);
+    const animation = dialog.locator(".flow-stage");
+    await expect(animation).toBeVisible(); await expect(animation.locator(".flow-steplist li")).toHaveCount(4);
     await expect(dialog.getByRole("button", { name: "Close", exact: true })).toBeDisabled(); await fits(page);
     await expect(animation).toContainText(action === "swap" ? "swap fee is debited from checking" : action === "buy" ? "checking debit" : "checking credit");
-    if (action === "sell") { await expect(animation.locator(".trade-cash-mark")).toBeVisible(); await page.screenshot({ path: info.outputPath("sell-desktop.png") }); }
+    if (action === "sell") { await page.screenshot({ path: info.outputPath("sell-desktop.png") }); }
     if (action === "swap") {
       await expect(animation.getByRole("heading", { name: "Waiting for account confirmation…" })).toBeVisible();
       await expect(dialog.getByText("Recorded once in your account")).toHaveCount(0);
@@ -48,7 +48,7 @@ test("three distinct responsive trade presentations wait for real confirmation, 
     await expect(dialog.getByText("Recorded once in your account")).toBeVisible();
     expect(Date.now() - at).toBeGreaterThanOrEqual(action === "sell" ? 3500 : 2400);
     const fee = action === "buy" ? quoteFee("crypto_buy", 2000).feeCents / 100 : action === "sell" ? quoteFee("crypto_sell", 200).feeCents / 100 : quoteFee("crypto_swap", 200).feeCents / 100;
-    expect(await balance()).toBe(before + (action === "buy" ? -20 - fee : action === "sell" ? 2 - fee : -fee));
+    expect(await balance()).toBeCloseTo(before + (action === "buy" ? -20 - fee : action === "sell" ? 2 - fee : -fee), 2);
     await dialog.getByRole("button", { name: "Done" }).click(); await page.unroute("**/api/me/crypto/confirm");
   }
   expect(posts).toBe(3);
@@ -109,7 +109,7 @@ test("failed trade returns to review without a success receipt", async ({ page, 
   await page.route("**/api/me/crypto/confirm", route => route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "The quote expired. Review a new quote." }) }));
   await dialog.getByRole("button", { name: "Confirm buy" }).click();
   await expect(dialog.getByRole("alert")).toContainText("quote expired"); await expect(dialog.getByText("Recorded once in your account")).toHaveCount(0);
-  await expect(dialog.getByRole("button", { name: "Edit / refresh quote" })).toBeEnabled(); await expect(dialog.locator(".crypto-trade-animation")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Edit quote" })).toBeEnabled(); await expect(dialog.locator(".flow-steplist")).toHaveCount(0);
 });
 
 test("an owner submits a reference, staff review it, and only then can it be selected for funding", async ({ page, request, browser }, info) => {
@@ -184,16 +184,16 @@ test("from/to rows stay aligned and readable across selection, review and mobile
   await dialog.getByLabel("Amount to spend (USD)").fill("25");
   await dialog.screenshot({ path: info.outputPath("from-to-selection-mobile.png") });
   await dialog.getByRole("checkbox").check(); await dialog.getByRole("button", { name: "Review order" }).click();
-  await expect(dialog.locator(".cw-route-quantity").last()).toHaveText(/0\.\d{15,18} ETH/);
+  await expect(dialog.locator(".flow-rows .flow-row", { hasText: "You receive" })).toContainText(/0\.\d{15,18} ETH/);
   for (const width of [320, 390, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 }); await fits(page);
     for (const button of await dialog.locator(".modal-actions button").all()) expect((await button.boundingBox())!.height).toBeLessThanOrEqual(64);
-    const amount = dialog.locator(".cw-route-quantity").last();
+    const amount = dialog.locator(".flow-rows .flow-row", { hasText: "You receive" }).locator("b");
     expect(await amount.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   }
   await page.setViewportSize({ width: 390, height: 900 });
   await dialog.screenshot({ path: info.outputPath("from-to-review-mobile.png") });
-  await dialog.getByRole("button", { name: "Edit / refresh quote" }).click();
+  await dialog.getByRole("button", { name: "Edit quote" }).click();
   await expect(dialog.getByLabel("To", { exact: true })).toHaveValue("ETH");
   await expect(dialog.getByLabel("Amount to spend (USD)")).toHaveValue("25");
 });

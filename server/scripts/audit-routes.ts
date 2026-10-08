@@ -125,6 +125,10 @@ const BASELINE: Policy[] = [
 
   { method: "POST", path: "/api/me/deposits", auth: true, perm: null },
   { method: "POST", path: "/api/me/transfers", auth: true, perm: null },
+  // Veyra-to-Veyra: a lookup shows the recipient before anything moves; the transfer
+  // itself is authenticated, approved-only, and idempotent on its request key.
+  { method: "POST", path: "/api/me/veyra-transfers/lookup", auth: true, perm: null },
+  { method: "POST", path: "/api/me/veyra-transfers", auth: true, perm: null },
   { method: "GET", path: "/api/me/notifications", auth: true, perm: null },
   // Managing your own passkeys. Authenticated and scoped to the caller: a
   // passkey is added to an account that already exists, never used to open

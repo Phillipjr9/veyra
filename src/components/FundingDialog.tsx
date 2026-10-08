@@ -12,6 +12,7 @@ import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider, type FundingKi
 import { quoteFee } from "../../shared/fees";
 import { apiGet, apiPost } from "../lib/api";
 import { money, useAcct } from "../lib/store";
+import { VeyraIdCard } from "./SendMoneyShared";
 import { useBankingDialog } from "./bankingDialog";
 import "../styles/banking-controls.css";
 import "../styles/funding-hub.css";
@@ -71,7 +72,7 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
     live.current = true;
     return () => { live.current = false; if (pause.current) { releasePresentation(pause.current); pause.current = null; } };
   }, []);
-  const { account, refreshAccount } = useAcct();
+  const { account, user, refreshAccount } = useAcct();
   const [linkedAccounts, setLinkedAccounts] = useState<ExternalAccount[]>([]);
   const [receiving, setReceiving] = useState<ReceivingDetails | null>(null);
   const [methods, setMethods] = useState<Method[]>([]), [requests, setRequests] = useState<Request[]>([]);
@@ -175,6 +176,7 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
       onAmount={value => { setAmount(value); change(); }} onNote={value => { setNote(value); change(); }}
       onReview={() => { if (method && !method.unavailable && validFundingAmount(amount) && !busy) { setError(""); setPhase("review"); } }} onCancel={close}>
       {method?.kind === "direct_deposit" && <DirectDepositDetails details={receiving} close={close} />}
+      {method?.kind === "bank" && <VeyraIdCard veyraId={account?.veyraId} email={account?.veyraEmail || user?.email} />}
     </FundingDetails>}
     {immediateFunding && phase === "review" && method && <FlowReview title="Review deposit"
       description="Check the details before adding funds to your account."
@@ -190,10 +192,8 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
     {(phase === "processing" || phase === "receipt") && <FundingAnimation phase={phase} amount={submitted ? submitted.amount_cents / 100 : Number(amount)} source={method?.label ?? "Funding method"} immediate={immediateFunding}
       receipt={submitted ? { status: submitted.status, reference: submitted.reference, ledgerOnly: !!requestMethod(submitted).ledgerOnly, createdAt: submitted.created_at, fee: reviewFee ? reviewFee.feeCents / 100 : 0 } : undefined}
       onPresented={() => pause.current?.finish()}
-      close={close} again={() => choose(null)} />}
-    {/* Belongs with the receipt, not floating above it. It is still the way to
-        re-read a pending request or clear a failed account refresh. */}
-    {phase === "receipt" && <button type="button" className="ghost-btn sm funding-receipt-refresh" disabled={busy} onClick={() => void refreshStatus()}>Refresh funding status</button>}
+      close={close} again={() => choose(null)}
+      onRefresh={() => void refreshStatus()} refreshing={busy} />}
     {!immediateFunding && loaded && <div hidden={phase !== "form"}>
     {activeKind && option ? <>
       <button type="button" className="funding-back" onClick={() => choose(null)} disabled={busy}><ArrowLeft size={16} /> All funding methods</button>
@@ -202,12 +202,13 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
         <p className="funding-detail-intro">{immediateFunding ? "Choose the amount to add to your account." : option.description}</p>
         {!immediateFunding && activeKind === "zelle" && <div className="funding-activation-note"><strong>Use your participating bank’s app</strong><p>Veyra does not send or request Zelle payments. Confirm that the recipient email or phone and the name shown in your bank app match these instructions before sending. Availability and limits depend on the receiving bank; receipt is not instant or guaranteed here.</p></div>}
         {activeKind === "direct_deposit" && <DirectDepositDetails details={receiving} close={close} />}
+        {activeKind === "bank" && <VeyraIdCard veyraId={account?.veyraId} email={account?.veyraEmail || user?.email} />}
         {!immediateFunding && activeKind === "check" && <p>Check collection is not connected. This screen only shows check-funding instructions enabled by your administrator. It does not collect photos, perform OCR or clear checks.</p>}
       </>}
       {loaded && !method && !(activeKind === "direct_deposit" && receiving) && <div className="funding-empty"><ShieldCheck size={22} /><div><strong>{option.providerRequired ? "No connected funding source" : "Instructions not configured"}</strong><p>{option.providerRequired ? "This method will remain inactive until a provider is integrated. Never send bank or card credentials to support." : "Your administrator has not enabled receiving instructions for this method. Contact support before sending funds; do not use unverified account details."}</p></div></div>}
       {method && <>
         <label className="funding-method-label">Funding method<select aria-label="Funding method" disabled={busy} value={method.id} onChange={e => { setSelected(e.target.value); change(); }}>{available.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>
-        <div className="funding-instructions"><div className="funding-instructions-heading"><h3>{method.label}</h3><span className="funding-badge">{immediateFunding ? "Available immediately" : option.providerRequired ? "Reference only" : "Manual instructions"}</span></div><p>{method.instructions}</p><dl>{[['Recipient',method.recipient], ...(activeKind === 'zelle' ? [['Zelle email or phone',method.recipient_contact]] : option.providerRequired || activeKind === 'direct_deposit' ? [] : [['Bank',method.bank_name],['Routing number',method.routing_number],['Account number',method.account_number]])].filter(([,value]) => value).map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></div>
+        <div className="funding-instructions"><div className="funding-instructions-heading"><h3>{method.label}</h3><span className="funding-badge">{immediateFunding ? "Available immediately" : option.providerRequired ? "Reference only" : "Manual instructions"}</span></div><p>{method.instructions}</p><dl>{[['Recipient',method.recipient], ...(activeKind === 'zelle' ? [['Zelle email or phone',method.recipient_contact]] : activeKind === 'direct_deposit' ? [] : [['Bank',method.bank_name],['Routing number',method.routing_number],['Account number',method.account_number]])].filter(([,value]) => value).map(([label,value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></div>
         {(immediateFunding || !option.providerRequired) && <form className="dash-form funding-request-form" onSubmit={submit}><fieldset disabled={busy || !!submittedId}>
           <h3>{immediateFunding ? "Add to your account" : "Let us know about your transfer"}</h3><p>{immediateFunding ? "Your available account balance updates as soon as you add funds. No separate wallet or staff review." : "After following the instructions, record the transfer for review. This does not move money, charge a card or make funds available. Your balance changes only after staff confirm receipt."}</p>
           <label>Amount (USD)<input type="number" required min="10" max="100000" step="0.01" inputMode="decimal" value={amount} onChange={e => {setAmount(e.target.value);change();}} /></label>

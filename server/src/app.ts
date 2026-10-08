@@ -26,7 +26,7 @@ import express, { type NextFunction, type Request, type RequestHandler, type Res
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError, generateAccountNumber } from "./db.js";
+import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToDecimal, now, rid, BadInputError, generateAccountNumber, generateVeyraId } from "./db.js";
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
 import { requireRecaptcha, publicRecaptchaConfig, RECAPTCHA_ACTIONS } from "./recaptcha.js";
 import { verifyFirebaseIdToken, federatedConfig, publicFederatedConfig, PROVIDER_REGISTRY } from "./federated.js";
@@ -43,6 +43,7 @@ import { validateApplication, rowToApplication, memberIdentity, submissionFor, P
 import { seed } from "./seed.js";
 import { sendMail, mailDelivers, passwordResetMail, applicationReceivedMail, kycDecisionMail, supportReceivedMail, supportReplyMail, supportInboxMail, teamInviteMail } from "./mail.js";
 import { buildMemberState, cardNumbers, rewardRate, makeReference } from "./state.js";
+import { createVeyraTransfers } from "./veyraTransfers.js";
 import { parseUnits, formatUnitsTrimmed, valueInCents, unitsForCents } from "./money.js";
 import { listAssets, assetByCode, tradingEnabled } from "./assets.js";
 import { loadPrices, loadMarkets, quoteIsFresh, tradableQuote, loadCandles, isCandleRange, CANDLE_RANGES } from "./prices.js";
@@ -200,7 +201,7 @@ export function createApp(dbPath?: string) {
   /** Full user shape — mirrors the frontend User model (used by /api/auth/me). */
   function fullUser(userId: string) {
     const row = db.prepare(
-      "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at, team_owner_id, team_role FROM users WHERE id = ?",
+      "SELECT id, name, email, phone, business, account_type, role, plan, avatar_url, created_at, team_owner_id, team_role, veyra_id FROM users WHERE id = ?",
     ).get(userId) as Record<string, unknown> | undefined;
     if (!row) return null;
     // The account the user just opened, so the sign-up response is already
@@ -211,6 +212,7 @@ export function createApp(dbPath?: string) {
     return {
       id: String(row.id), name: String(row.name), email: String(row.email), phone: String(row.phone ?? ""),
       business: String(row.business ?? ""), accountType: row.account_type as "personal" | "business",
+      veyraId: String(row.veyra_id ?? ""),
       avatarUrl: String(row.avatar_url ?? "/images/avatar-3d-default.svg"),
       role: row.role as string, plan: row.plan as "Starter" | "Pro", createdAt: row.created_at as number,
       ...(row.team_owner_id ? { teamRole: row.team_role as TeamRole, teamOwnerId: String(row.team_owner_id) } : {}),
@@ -903,11 +905,13 @@ export function createApp(dbPath?: string) {
     const id = rid("u");
     const accountNumber = generateAccountNumber(db);
     inTransaction(db, () => {
+      // Every member gets a unique Veyra ID at sign-up: the code other members
+      // scan or type to send money without knowing the account number.
       db.prepare(
-        `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?, 'active', ?)`,
+        `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at, veyra_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'user', ?, ?, 'active', ?, ?)`,
       ).run(id, name.trim(), email, values.phone, typeof business === "string" ? business : "", type,
-        plan === "Starter" ? "Starter" : "Pro", hashPassword(password), now());
+        plan === "Starter" ? "Starter" : "Pro", hashPassword(password), now(), generateVeyraId(db));
       // The application itself. One row, one shape, normalised by identity.ts.
       const columns = PROFILE_COLUMNS.map(([, column]) => column);
       db.prepare(
@@ -1215,6 +1219,17 @@ export function createApp(dbPath?: string) {
       fail(res, err, "Transfer failed.");
     }
   }));
+
+  // Veyra-to-Veyra: members pay each other by email or Veyra ID. Lookup shows the
+  // recipient's name for review before any money moves; the transfer itself is
+  // one database transaction that returns the original result on a retry.
+  const veyraTransfers = createVeyraTransfers(db, {
+    notify,
+    enforceSpend: (ownerId, actorId, cents, at) => enforceTeamSpend(db, ownerId, actorId, cents, at),
+    paymentsHalted: () => getSetting(db, "payment_rails") === "halted",
+  });
+  app.post("/api/me/veyra-transfers/lookup", requireAuth, requireApproved, wrap(veyraTransfers.lookup));
+  app.post("/api/me/veyra-transfers", requireAuth, requireApproved, wrap(veyraTransfers.transfer));
 
   // --- Digital assets -------------------------------------------------------
   // Holdings live beside the deposit account, never inside it. See
@@ -2034,9 +2049,9 @@ export function createApp(dbPath?: string) {
     const ownerId = String(invite.user_id);
     inTransaction(db, () => {
       db.prepare(
-        `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at, team_owner_id, team_role)
-         VALUES (?, ?, ?, '', ?, 'business', 'user', ?, ?, 'active', ?, ?, ?)`,
-      ).run(id, name, email, String(invite.owner_business ?? ""), String(invite.owner_plan ?? "Pro"), hashPassword(password), now(), ownerId, String(invite.role));
+        `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at, team_owner_id, team_role, veyra_id)
+         VALUES (?, ?, ?, '', ?, 'business', 'user', ?, ?, 'active', ?, ?, ?, ?)`,
+      ).run(id, name, email, String(invite.owner_business ?? ""), String(invite.owner_plan ?? "Pro"), hashPassword(password), now(), ownerId, String(invite.role), generateVeyraId(db));
       db.prepare("UPDATE team_members SET status = 'active', name = ?, member_user_id = ?, invite_token_hash = NULL, invite_expires_at = NULL WHERE id = ?")
         .run(name, id, String(invite.id));
     });

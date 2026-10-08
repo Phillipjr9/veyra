@@ -41,14 +41,26 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
     const configured = db.prepare("SELECT * FROM funding_methods WHERE user_id=? AND kind='direct_deposit' AND enabled=1 AND bank_name!='' AND routing_number!='' AND account_number!='' ORDER BY updated_at DESC LIMIT 1").get(id) as any;
     return configured ? { bank_name: configured.bank_name, routing_number: configured.routing_number, account_number: configured.account_number, account_type: "", recipient: configured.recipient } : null;
   };
+  // Wire, ACH and Direct Deposit all receive into the bank details the
+  // administrator set on the member's account (Admin → Member → Account details).
+  // They are unavailable until those details exist, so a member is never shown
+  // routing numbers that were not configured for them.
+  const BANK_INFO_KINDS = new Set<string>(["direct_deposit", "wire", "ach"]);
   const accountMethods = (id: string) => FUNDING_OPTIONS.flatMap(option => {
-    const receiving = option.kind === "direct_deposit" ? directDeposit(id) : null;
+    const receiving = BANK_INFO_KINDS.has(option.kind) ? directDeposit(id) : null;
     const base = { id: `demo_${id}_${option.kind}`, user_id: id, label: option.label, kind: option.kind,
       instructions: "Add funds directly to your account balance. External bank and card processing is not connected.",
       bank_name: "", routing_number: "", account_number: "", account_type: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0, demo: true, ledgerOnly: true,
       linkedAccountId: "", unavailable: option.kind === "direct_deposit" && !receiving, ...receiving };
+    if (option.kind === "wire" || option.kind === "direct_deposit") return [base];
     if (option.kind !== "ach" && option.kind !== "card") return [base];
     const linked = linkedAccounts(id).filter(account => (account.kind ?? "bank") === (option.kind === "card" ? "card" : "bank"));
+    if (option.kind === "ach" && receiving) {
+      // Receiving into the admin-set Veyra account by ACH; linked accounts stay listed too.
+      const receivingAch = { ...base, label: "ACH to your Veyra account", instructions: "Send an ACH credit to the receiving details below. Account entries credit immediately; external ACH settlement is not connected." };
+      const linkedRows = linked.map(account => ({ ...base, bank_name: "", routing_number: "", account_number: "", recipient: "Your Veyra account", unavailable: false, id: `linked_${id}_${account.id}`, linkedAccountId: account.id, label: `${account.bank_name} ${account.account_type} •••• ${account.last4}${account.verification_kind === "staff_reference" ? " · Account reference" : " · ACH"}`, instructions: base.instructions }));
+      return [receivingAch, ...linkedRows];
+    }
     if (!linked.length) return [{ ...base, unavailable: true }];
     return linked.map(account => ({
       ...base,

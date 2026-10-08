@@ -19,6 +19,8 @@ import {
 import { AnimatedMoney, AnimatedNumber, Logo, VirtualCard, ease } from "../../components/common";
 import { Footer } from "../../components/Chrome";
 import { CashFlowExplorer, PersonalShortcuts } from "../../components/DashboardIntelligence";
+import { CategoryPicker } from "../../components/CategoryPicker";
+import { VeyraIdCard, transferCategoryOptions } from "../../components/SendMoneyShared";
 import { Confetti, ETA, useMoneyFlow, ZelleLogo, type SendMethod } from "../../components/MoneyFlow";
 import { useToast } from "../../components/Toast";
 import { ScoutQuickDrawer, ScoutAIPage as ScoutWorkspace } from "../../components/ScoutAIAssistant";
@@ -1601,7 +1603,7 @@ function LegacyPaymentsPage() {
   }
 
   const value = Number.parseFloat(amount) || 0;
-  const transferFee = quoteFee("transfer", Math.round(value * 100));
+  const transferFee = method === "Veyra" ? quoteFee("deposit", 0) : quoteFee("transfer", Math.round(value * 100));
   const bank = account.bankDetails;
   const recentOut = account.transactions.filter(t => t.amount < 0 && t.method && t.method !== "Card").slice(0, 5);
 
@@ -1652,7 +1654,7 @@ function LegacyPaymentsPage() {
       <div className="pay-layout">
         <motion.form className="panel dash-form" onSubmit={submit} noValidate {...rise(0)}>
           <h2>Send money</h2>
-          <p className="form-intro">Outgoing transfers include a 0.5% fee (minimum $0.10, maximum $10.00). You'll review everything before anything is sent.</p>
+          <p className="form-intro">{method === "Veyra" ? "Veyra to Veyra transfers are free and arrive instantly. You'll confirm the recipient before anything is sent." : "Outgoing transfers include a 0.5% fee (minimum $0.10, maximum $10.00). You'll review everything before anything is sent."}</p>
 
           <span className="field-label">Transfer type</span>
           <Segmented
@@ -1671,11 +1673,16 @@ function LegacyPaymentsPage() {
               { value: "ACH", label: "ACH" },
               { value: "Wire", label: "Wire" },
               { value: "Vendor Bill", label: "Vendor bill" },
+              { value: "Veyra", label: "Veyra" },
             ]}
           />
           <AnimatePresence mode="wait" initial={false}>
             <motion.p key={method} className="method-note" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.18 }}>
-              {method === "Zelle" ? (
+              {method === "Veyra" ? (
+                <>
+                  <Zap size={13} /> <strong>Veyra to Veyra</strong> · Send by email or Veyra ID · Instant · no fee
+                </>
+              ) : method === "Zelle" ? (
                 <>
                   <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Uses signup email or phone · account ledger only · 0.5% transfer fee" : "Send to US mobile # or email · Typically arrives in minutes · 0.5% transfer fee"}
                 </>
@@ -1687,7 +1694,7 @@ function LegacyPaymentsPage() {
             </motion.p>
           </AnimatePresence>
 
-          {account.payees.length > 0 && (
+          {method !== "Veyra" && account.payees.length > 0 && (
             <>
               <div className="field-label recipient-label"><span>Saved recipients</span><button type="button" className="text-btn" onClick={() => setPayeeOpen(true)}>Manage</button></div>
               <div className="payee-row">
@@ -1700,15 +1707,15 @@ function LegacyPaymentsPage() {
               </div>
             </>
           )}
-          {!account.payees.length && <button type="button" className="add-recipient" onClick={() => setPayeeOpen(true)}><Plus size={14} /> Add a saved recipient</button>}
+          {method !== "Veyra" && !account.payees.length && <button type="button" className="add-recipient" onClick={() => setPayeeOpen(true)}><Plus size={14} /> Add a saved recipient</button>}
 
           <label htmlFor="pay-to">
-            {method === "Zelle" ? (isDemo ? "Pay to (Signup email or phone)" : "Pay to (Name, US Mobile # or Email)") : "Pay to"}
+            {method === "Zelle" ? (isDemo ? "Pay to (Signup email or phone)" : "Pay to (Name, US Mobile # or Email)") : method === "Veyra" ? "Recipient email or Veyra ID" : "Pay to"}
           </label>
           <input
             id="pay-to"
             autoComplete="off"
-            placeholder={method === "Zelle" ? (isDemo ? "Registered email or +country code phone" : "e.g. Jamie Chen, (555) 234-5678, jamie@email.com") : "Business or person"}
+            placeholder={method === "Zelle" ? (isDemo ? "Registered email or +country code phone" : "e.g. Jamie Chen, (555) 234-5678, jamie@email.com") : method === "Veyra" ? "name@email.com or VYR123456789" : "Business or person"}
             value={payee}
             onChange={e => setPayee(e.target.value)}
           />
@@ -1723,10 +1730,7 @@ function LegacyPaymentsPage() {
             </div>
             <div>
               <label htmlFor="pay-cat">Category{user?.accountType === "personal" ? " (optional)" : " (required)"}</label>
-              <select id="pay-cat" required={user?.accountType !== "personal"} value={category} onChange={e => setCategory(e.target.value)}>
-                {user?.accountType === "personal" && <option value="">No category</option>}
-                {categories.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <CategoryPicker id="pay-cat" value={category} onChange={setCategory} options={transferCategoryOptions(user?.accountType === "personal")} required={user?.accountType !== "personal"} />
             </div>
           </div>
           <div className="quick-row">
@@ -1740,7 +1744,7 @@ function LegacyPaymentsPage() {
 
           <div className="fee-lines">
             <div className="fee-line"><span>Transfer fee</span><strong className={transferFee.feeCents > 0 ? "" : "free"}>{transferFee.feeCents > 0 ? `${money(transferFee.feeCents / 100)} · ${transferFee.rateBps / 100}%` : "$0.00"}</strong></div>
-            <div className="fee-line"><span>Estimated rewards</span><strong>+{money(value * rewardRate(category))}</strong></div>
+            <div className="fee-line"><span>Estimated rewards</span><strong>+{money(method === "Veyra" ? 0 : value * rewardRate(category))}</strong></div>
             <div className="fee-line"><span>Balance after</span><strong>{money(Math.max(account.balance - value - transferFee.feeCents / 100, 0))}</strong></div>
           </div>
 
@@ -1764,6 +1768,7 @@ function LegacyPaymentsPage() {
                 <button type="button" className="ghost-btn sm" onClick={() => openDeposit()}><Plus size={13} /> Add funds</button>
               </div>
             </div>
+            <VeyraIdCard veyraId={account.veyraId} email={account.veyraEmail || user?.email} />
             <div className="wire-box">
               {wireRows.map(([k, v, copyable]) => (
                 <div className="wire-row" key={k}>

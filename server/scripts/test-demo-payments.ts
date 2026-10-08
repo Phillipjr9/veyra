@@ -26,7 +26,7 @@ try{
  db.prepare("INSERT INTO external_accounts(id,user_id,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at) VALUES(?,?,'Linked bank','Personal checking','1234','Checking','verified','fixture-link',1,1)").run('fixture-link',a.id);
  db.prepare("INSERT INTO external_accounts(id,user_id,kind,bank_name,account_name,last4,account_type,card_brand,card_exp_month,card_exp_year,billing_address_json,status,provider_reference,created_at,updated_at,verification_kind,verification_note,request_key) VALUES('fixture-card',?,'card','Visa','Alice debit card','4242','Checking','Visa',12,2030,'{}','verified','card-token:fixture-card',1,1,'card_token','fixture card reference',NULL)").run(a.id);
  db.prepare("UPDATE accounts SET receiving_details_configured=1 WHERE user_id=?").run(a.id);
- const sources=(await funding()).methods;check('all eight original methods have mock sources',sources.length===8&&(await funding()).demoMode);
+ const sources=(await funding()).methods;check('all nine methods have mock sources (ACH also receives into the admin-set Veyra account)',sources.length===9&&(await funding()).demoMode);
  for(const m of sources){const before=balance(),body={methodId:m.id,amount:'25.01',requestKey:randomUUID(),note:'',demo:true};
   const depositFee=quoteFee(m.kind==='card'?'card_deposit':'deposit',2501).feeCents, credit=2501-depositFee;
   const posted=await deposit(body);check(`${m.kind}: immediately confirmed`,posted.status===201&&posted.json.request.status==='confirmed'&&posted.json.fee===(depositFee/100).toFixed(2));

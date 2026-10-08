@@ -16,8 +16,13 @@ import { lockScroll } from "../lib/scrollLock";
 /* ============================================================
    Types & constants
    ============================================================ */
-export type SendMethod = "ACH" | "Wire" | "Zelle" | "Vendor Bill";
-export type SendDraft = { counterparty: string; amount: number; method: SendMethod; category: string; note?: string; demo?: boolean };
+export type SendMethod = "ACH" | "Wire" | "Zelle" | "Vendor Bill" | "Veyra";
+/**
+ * counterparty is what the member typed (name, email or Veyra ID). For a Veyra
+ * transfer, recipientName is the confirmed name the server returned, and
+ * requestKey makes a retried confirmation safe.
+ */
+export type SendDraft = { counterparty: string; amount: number; method: SendMethod; category: string; note?: string; demo?: boolean; recipientName?: string; requestKey?: string };
 
 type Stage = "form" | "review" | "processing" | "success";
 type DepositFlow = { kind: "deposit"; stage: Stage; sourceId: string; amount: number };
@@ -32,6 +37,7 @@ export const ETA: Record<SendMethod, string> = {
   ACH: "Next business day",
   Wire: "Today, within 2 hours",
   "Vendor Bill": "1–2 business days",
+  Veyra: "Instant · no fee",
 };
 
 export function ZelleLogo({ size = 18 }: { size?: number }) {
@@ -73,10 +79,12 @@ function trackFor(flow: FlowState, acct: string): Track {
     const s = sourceById(flow.sourceId);
     return { from: { label: s.short, sub: s.sub, icon: <s.Icon size={18} /> }, to: veyra };
   }
-  const initial = flow.draft.counterparty.trim().charAt(0).toUpperCase() || "?";
+  const label = flow.draft.recipientName ?? flow.draft.counterparty;
+  const initial = label.trim().charAt(0).toUpperCase() || "?";
   const icon = flow.draft.method === "Zelle"
     ? <ZelleLogo size={22} />
     : <span className="flow-initial">{initial}</span>;
+  if (flow.draft.method === "Veyra") return { from: veyra, to: { label, sub: "Veyra member · instant", icon } };
   return { from: veyra, to: { label: flow.draft.counterparty, sub: `${flow.draft.demo ? "Veyra account" : flow.draft.method === "Zelle" ? "Zelle® Instant" : flow.draft.method} transfer`, icon } };
 }
 
@@ -85,6 +93,7 @@ function stepsFor(flow: FlowState): string[] {
     const s = sourceById(flow.sourceId);
     return [`Connecting to ${s.short.toLowerCase()}`, "Authorizing the ACH pull", "Clearing funds with Northfield Bank", "Updating your balance"];
   }
+  if (flow.draft.method === "Veyra") return ["Confirming the Veyra recipient", "Encrypting & authorizing transfer", "Crediting the recipient's account", "Updating account balances"];
   if (flow.draft.demo) return ["Checking your account balance", "Confirming the recipient", "Recording the payment", "Updating account balances"];
   const network = flow.draft.method === "Zelle"
     ? "Connecting to Zelle® instant network"
@@ -293,7 +302,9 @@ function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; 
   const amountCents = Math.round(amount * 100);
   const depositFee = quoteFee("deposit", amountCents);
   const sendFee = quoteFee("transfer", amountCents);
-  const fee = flow.kind === "deposit" ? depositFee.feeCents / 100 : sendFee.feeCents / 100;
+  // Veyra-to-Veyra transfers carry no fee and no rewards, matching the server.
+  const veyra = flow.kind === "send" && flow.draft.method === "Veyra";
+  const fee = flow.kind === "deposit" ? depositFee.feeCents / 100 : veyra ? 0 : sendFee.feeCents / 100;
   const rows: Row[] =
     flow.kind === "deposit"
       ? [
@@ -304,29 +315,32 @@ function Review({ flow, balance, track, onBack, onConfirm }: { flow: FlowState; 
           { label: "Balance after", value: money(balance + amount - fee) },
         ]
       : [
-          { label: "Method", value: flow.draft.method },
+          { label: "Method", value: veyra ? "Veyra to Veyra" : flow.draft.method },
+          ...(veyra ? [{ label: "Recipient", value: `${flow.draft.recipientName ?? flow.draft.counterparty}` }] : []),
           { label: "Arrives", value: flow.draft.demo ? "Account ledger only" : ETA[flow.draft.method] },
           { label: "Category", value: flow.draft.category || "Not selected" },
           ...(flow.draft.note ? [{ label: "Memo", value: flow.draft.note }] : []),
           { label: "Fee", value: fee > 0 ? `${money(fee)} · ${sendFee.rateBps / 100}%` : "$0.00 · Free", tone: fee > 0 ? undefined : "free" as const },
-          { label: "Est. rewards", value: `+${money(flow.draft.demo ? 0 : amount * rewardRate(flow.draft.category))}`, tone: "reward" as const },
+          ...(veyra ? [] : [{ label: "Est. rewards", value: `+${money(flow.draft.demo ? 0 : amount * rewardRate(flow.draft.category))}`, tone: "reward" as const }]),
           { label: "Balance after", value: money(balance - amount - fee) },
         ];
   return <FlowReview amount={amount} rows={rows} track={track} onBack={onBack} onConfirm={onConfirm}
     title={flow.kind === "deposit" ? "Review deposit" : "Review payment"}
-    description={flow.kind === "deposit" ? "Check the details, then confirm to move the funds." : `Make sure everything looks right before sending to ${flow.draft.counterparty}.`}
+    description={flow.kind === "deposit" ? "Check the details, then confirm to move the funds." : `Make sure everything looks right before sending to ${flow.draft.recipientName ?? flow.draft.counterparty}.`}
     backLabel={flow.kind === "deposit" ? "Back" : "Edit"}
     confirmLabel={flow.kind === "deposit" ? `Deposit ${money(amount)}` : `Send ${money(amount)}`} />;
 }
 
 /** Shared review screen: no mutation occurs until the explicit confirmation. */
-export function FlowReview({ title, description, amount, rows, track, onBack, onConfirm, backLabel = "Edit", confirmLabel }: {
+export function FlowReview({ title, description, amount, rows, track, onBack, onConfirm, backLabel = "Edit", confirmLabel, extra, backDisabled = false, confirmDisabled = false, className }: {
   title: string; description: string; amount: number; rows: Row[]; track: Track;
   onBack: () => void; onConfirm: () => void; backLabel?: string; confirmLabel: string;
+  /** Optional content between the rows and the actions (crypto price lock, notices). */
+  extra?: ReactNode; backDisabled?: boolean; confirmDisabled?: boolean; className?: string;
 }) {
   const shown = useCountUp(amount, { from: 0, duration: 650 });
   return (
-    <div className="flow-pane">
+    <div className={className ? `flow-pane ${className}` : "flow-pane"}>
       <h2 className="flow-title" id="flow-title">{title}</h2>
       <p className="flow-sub">
         {description}
@@ -340,9 +354,10 @@ export function FlowReview({ title, description, amount, rows, track, onBack, on
           </motion.div>
         ))}
       </div>
+      {extra}
       <div className="flow-actions">
-        <button type="button" className="ghost-btn" onClick={onBack}>{backLabel}</button>
-        <button type="button" className="solid-btn flow-confirm" onClick={onConfirm} autoFocus>
+        <button type="button" className="ghost-btn" disabled={backDisabled} onClick={onBack}>{backLabel}</button>
+        <button type="button" className="solid-btn flow-confirm" disabled={confirmDisabled} onClick={onConfirm} autoFocus>
           <Lock size={14} /> {confirmLabel}
         </button>
       </div>
@@ -425,7 +440,7 @@ function receiptText(flow: FlowState, r: MoveResult, acct: string) {
     `${pad("Amount")}${money(r.amount)}`,
     flow.kind === "deposit" ? `${pad("From")}${sourceById(flow.sourceId).label}` : `${pad("To")}${flow.draft.counterparty}`,
     `${pad("Account")}Checking •••• ${acct}`,
-    `${pad("Method")}${flow.kind === "deposit" ? "ACH deposit" : flow.draft.method === "Zelle" ? "Zelle® Instant Payment" : flow.draft.method}`,
+    `${pad("Method")}${flow.kind === "deposit" ? "ACH deposit" : flow.draft.method === "Zelle" ? "Zelle® Instant Payment" : flow.draft.method === "Veyra" ? "Veyra to Veyra transfer" : flow.draft.method}`,
   ];
   if (flow.kind === "send") {
     lines.push(`${pad("Category")}${flow.draft.category}`, `${pad("Memo")}${flow.draft.note ?? "—"}`, `${pad("Rewards earned")}${money(r.reward)}`, `${pad("Scout savings")}${money(r.scout)}`);
@@ -436,13 +451,13 @@ function receiptText(flow: FlowState, r: MoveResult, acct: string) {
 
 function Success({ flow, result, acct, onClose, onAgain }: { flow: FlowState; result: MoveResult; acct: string; onClose: () => void; onAgain: () => void }) {
   const isDeposit = flow.kind === "deposit";
-  const counterparty = flow.kind === "deposit" ? sourceById(flow.sourceId).label : flow.draft.counterparty;
+  const counterparty = flow.kind === "deposit" ? sourceById(flow.sourceId).label : (flow.draft.recipientName ?? flow.draft.counterparty);
   const rows: Row[] = [
     { label: "Reference", value: result.reference },
     { label: "Date", value: longDate(result.date) },
     { label: isDeposit ? "From" : "To", value: counterparty },
-    { label: "Method", value: flow.kind === "deposit" ? "ACH deposit" : flow.draft.method },
-    { label: isDeposit ? "Available" : "Arrives", value: flow.kind === "deposit" ? "Now" : flow.draft.demo ? "Account ledger only" : ETA[flow.draft.method] },
+    { label: "Method", value: flow.kind === "deposit" ? "ACH deposit" : flow.draft.method === "Veyra" ? "Veyra to Veyra" : flow.draft.method },
+    { label: isDeposit ? "Available" : "Arrives", value: flow.kind === "deposit" ? "Now" : flow.draft.method === "Veyra" ? "Instantly" : flow.draft.demo ? "Account ledger only" : ETA[flow.draft.method] },
     { label: "Fee", value: (result.fee ?? 0) > 0 ? money(result.fee ?? 0) : "$0.00", tone: (result.fee ?? 0) > 0 ? undefined : "free" },
     ...(flow.kind === "send" ? [{ label: "Rewards earned", value: `+${money(result.reward)}`, tone: "reward" as const }] : []),
     ...(flow.kind === "send" && result.scout > 0 ? [{ label: "Scout savings", value: `+${money(result.scout)}`, tone: "scout" as const }] : []),
@@ -451,7 +466,7 @@ function Success({ flow, result, acct, onClose, onAgain }: { flow: FlowState; re
 
   return <FlowReceipt isDeposit={isDeposit} value={result.amount} balanceBefore={result.balanceBefore} balanceAfter={result.balanceAfter}
     title={isDeposit ? "Funds added" : "Payment sent"}
-    subtitle={isDeposit ? `Now available in Checking •••• ${acct}` : flow.kind === "send" && flow.draft.demo ? `Payment recorded for ${counterparty}` : `On its way to ${counterparty} · ${flow.kind === "send" ? ETA[flow.draft.method].toLowerCase() : ""}`}
+    subtitle={isDeposit ? `Now available in Checking •••• ${acct}` : flow.kind === "send" && flow.draft.method === "Veyra" ? `Delivered to ${counterparty}'s Veyra account` : flow.kind === "send" && flow.draft.demo ? `Payment recorded for ${counterparty}` : `On its way to ${counterparty} · ${flow.kind === "send" ? ETA[flow.draft.method].toLowerCase() : ""}`}
     rows={rows} download={download} onAgain={onAgain} onClose={onClose} againLabel={isDeposit ? "Add more" : "Send another"}
     extra={<>
       {flow.kind === "send" && result.scout > 0 && (
@@ -521,7 +536,7 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
   const demo = useDemoPayments();
   const demoPreview = useRef<string | null>(null);
   const resolving = useRef(false);
-  const { user, account, deposit, sendPayment, refreshAccount } = useAcct();
+  const { user, account, deposit, sendPayment, sendVeyra, refreshAccount } = useAcct();
   const toast = useToast();
   const [flow, setFlow] = useState<FlowState | null>(null);
   const [fundingOwner, setFundingOwner] = useState<string | null>(null);
@@ -540,6 +555,23 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
     }
     if (resolving.current) return;
     demoPreview.current = null;
+    if (draft.method === "Veyra") {
+      // Veyra-to-Veyra: the server confirms the recipient before review, so the
+      // review screen shows a verified name rather than whatever was typed.
+      resolving.current = true;
+      try {
+        const found = await apiPost<{ recipient: { name: string; veyraId: string; email: string } }>("/api/me/veyra-transfers/lookup", { identifier: draft.counterparty.trim() });
+        draft = { ...draft, counterparty: draft.counterparty.trim(), recipientName: found.recipient.name, requestKey: crypto.randomUUID() };
+      } catch (error) {
+        toast({ title: "Recipient not found", description: error instanceof Error ? error.message : "Check the email or Veyra ID.", tone: "error" });
+        return;
+      } finally { resolving.current = false; }
+      committed.current = false;
+      onComplete.current = options?.onComplete;
+      setResult(null);
+      setFlow({ kind: "send", stage: "review", draft });
+      return;
+    }
     if (demo.data.demoMode) {
       resolving.current = true;
       try {
@@ -574,6 +606,9 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
           if (!reply.result) throw new Error("Payment result unavailable. Refresh your account before retrying.");
           r = reply.result;
           await refreshAccount().catch(() => { toast({ title: "Payment recorded", description: "Refresh your account to update its balance.", tone: "info" }); });
+        } else if (flow.draft.method === "Veyra") {
+          r = await sendVeyra({ identifier: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, note: flow.draft.note, requestKey: flow.draft.requestKey ?? crypto.randomUUID() });
+          await refreshAccount().catch(() => {});
         } else r = await sendPayment({ counterparty: flow.draft.counterparty, amount: flow.draft.amount, category: flow.draft.category, method: flow.draft.method, note: flow.draft.note });
         onComplete.current?.(r);
       }
@@ -584,7 +619,7 @@ export function MoneyFlowProvider({ children }: { children: ReactNode }) {
       toast({ tone: "error", title: "Transfer blocked", description: err instanceof Error ? err.message : "Something went wrong." });
       setFlow(demoPreview.current ? { ...flow, stage: "review" } : null);
     }
-  }, [flow, deposit, sendPayment, refreshAccount, toast]);
+  }, [flow, deposit, sendPayment, sendVeyra, refreshAccount, toast]);
 
   const open = flow !== null;
   const stage = flow?.stage;

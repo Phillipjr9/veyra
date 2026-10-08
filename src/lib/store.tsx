@@ -245,6 +245,9 @@ export type Account = {
   kyc: KycRecord;
   /** Platform-level status set by admins ("restricted" blocks outgoing sends). */
   accountStatus?: "active" | "restricted";
+  /** The member's unique Veyra ID (a scannable code) and sign-up email. Others send money with either. */
+  veyraId?: string;
+  veyraEmail?: string;
   /**
    * Why the account is on hold — the sentence the admin chose when suspending,
    * shown verbatim on the member's own dashboard.
@@ -256,6 +259,8 @@ export type Account = {
 
 export type Profile = { name: string; business: string; email: string; accountType: "personal" | "business" };
 export type MoveResult = { status?: "pending" | "cleared"; reference: string; date: number; amount: number; fee: number; balanceBefore: number; balanceAfter: number; reward: number; scout: number };
+/** A Veyra-to-Veyra recipient, confirmed by the server before any money moves. */
+export type VeyraRecipient = { name: string; veyraId: string; email: string };
 
 /* ============================================================
    Formatting & utilities
@@ -514,6 +519,8 @@ function normalize(raw: unknown, p: Profile): Account {
     ...base,
     version: SCHEMA_VERSION,
     bankDetails,
+    veyraId: typeof r.veyraId === "string" ? r.veyraId : "",
+    veyraEmail: typeof r.veyraEmail === "string" ? r.veyraEmail : "",
     balance: num(r.balance, base.balance),
     pendingBalance: num(r.pendingBalance, base.pendingBalance),
     rewards: num(r.rewards, base.rewards),
@@ -893,6 +900,14 @@ function useAccountState() {
     }));
     return booked.result;
   }, [confirmedMutation, resolveId]);
+
+  /** Veyra-to-Veyra transfer. The request key makes a retry of the same review safe. */
+  const sendVeyra = useCallback(async (input: { identifier: string; amount: number; category: string; note?: string; requestKey: string }): Promise<MoveResult> => {
+    const booked = await confirmedMutation(() => apiPost<{ result: MoveResult }>("/api/me/veyra-transfers", {
+      identifier: input.identifier, amount: input.amount, category: input.category, note: input.note, requestKey: input.requestKey,
+    }));
+    return booked.result;
+  }, [confirmedMutation]);
 
   const redeemRewards = useCallback(() => {
     const amount = r2(ref.current?.rewards ?? 0);
@@ -1408,6 +1423,7 @@ function useAccountState() {
       deposit,
       depositCheck,
       sendPayment,
+      sendVeyra,
       redeemRewards,
       createCard,
       toggleFreeze,
@@ -1449,7 +1465,7 @@ function useAccountState() {
       setPreference,
       exportCSV,
     }),
-    [account, accountError, user, refreshFromServer, deposit, depositCheck, sendPayment, redeemRewards, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createBudget, removeBudget, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
+    [account, accountError, user, refreshFromServer, deposit, depositCheck, sendPayment, sendVeyra, redeemRewards, createCard, toggleFreeze, removeCard, setLimit, setCardControl, setMerchantLock, setCategoryLock, setTransactionLimit, setAtmLimit, changeCardPin, toggleCardWallet, advanceCardShipping, replaceCard, markInvoicePaid, createInvoice, sendReminder, redeemPerk, inviteTeamMember, removeTeamMember, createSavingsPocket, transferSavings, deleteSavingsPocket, addPayee, removePayee, addScheduledPayment, toggleScheduledPayment, removeScheduledPayment, payScheduledNow, createBudget, removeBudget, createDispute, revokeSession, toggleTrustedSession, freezeAllCards, markNotificationRead, updateKyc, markAllNotificationsRead, setPreference, exportCSV],
   );
 }
 

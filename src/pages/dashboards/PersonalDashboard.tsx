@@ -194,7 +194,7 @@ export function PersonalOverview() {
           {/* ---- goals ---- */}
           <motion.section className="p-card" {...rise(2)}>
             <div className="p-card-head">
-              <div><h2>Your goals</h2><span>Round-ups land here automatically</span></div>
+              <div><h2>Your goals</h2><span>Goals you create and fund from checking</span></div>
               <Link to="/app/accounts" className="p-link">All goals <ArrowRight size={13} /></Link>
             </div>
             {pockets.length ? (
@@ -212,7 +212,7 @@ export function PersonalOverview() {
                 ))}
               </div>
             ) : (
-              <p className="p-empty">No goals yet — create one and Veyra will round up your spending into it. <Link to="/app/accounts">Create a goal</Link></p>
+              <p className="p-empty">No goals yet — create one, then move money into it from checking. <Link to="/app/accounts">Create a goal</Link></p>
             )}
           </motion.section>
 

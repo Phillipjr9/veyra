@@ -1,0 +1,13 @@
+/* Crypto account orders use the shared Send money / Add funds modal. These rules
+   only add what a priced order needs: the price-lock bar, the live estimate and
+   the confirmed-receipt line. */
+.crypto-flow .flow-body { min-height: 0; }
+.crypto-form-pane { display: grid; gap: 12px; }
+.crypto-form-pane .flow-title { margin: 6px 0 0; }
+.crypto-estimate { margin: 4px 0 0; padding: 10px 12px; border-radius: 12px; background: #f3effc; color: #4d395f; font-size: 13px; line-height: 1.5; }
+.crypto-estimate span { color: #7b6e8c; }
+.crypto-review-extra { display: grid; gap: 8px; }
+.crypto-lock { display: grid; gap: 0; }
+.crypto-lock-head { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; color: #4d395f; font-weight: 600; }
+.crypto-lock .flow-progress { margin: 8px 0 0; }
+.crypto-flow .cw-recorded { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; margin: 4px 0 12px; font-size: 13px; color: #3d6b52; }

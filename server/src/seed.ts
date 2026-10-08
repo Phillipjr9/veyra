@@ -13,7 +13,7 @@
  */
 import type { DatabaseSync } from "node:sqlite";
 import { hashPassword } from "./security.js";
-import { setSetting } from "./db.js";
+import { setSetting, generateVeyraId } from "./db.js";
 import { logAdminAction } from "./audit.js";
 import { ROLE_DEFAULTS, setRolePermissions } from "./rbac.js";
 
@@ -69,9 +69,9 @@ export function bootstrapAdmin(db: DatabaseSync): { email: string; created: bool
   if (password.length < 8) throw new Error("ADMIN_PASSWORD must be at least 8 characters.");
   const name = process.env.ADMIN_NAME?.trim() || "System Admin";
   db.prepare(
-    `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at)
-     VALUES (?, ?, ?, '', 'Veyra Financial HQ', 'business', 'superadmin', 'Pro', ?, 'active', ?)`,
-  ).run(`admin_${Date.now().toString(36)}`, name, email, hashPassword(password), Date.now());
+    `INSERT INTO users (id, name, email, phone, business, account_type, role, plan, password_hash, status, created_at, veyra_id)
+     VALUES (?, ?, ?, '', 'Veyra Financial HQ', 'business', 'superadmin', 'Pro', ?, 'active', ?, ?)`,
+  ).run(`admin_${Date.now().toString(36)}`, name, email, hashPassword(password), Date.now(), generateVeyraId(db));
   logAdminAction(db, {
     adminId: "seed", adminName: "System", action: "system.seed", category: "System",
     target: `user:${email}`, summary: `Super Admin bootstrap account created from ADMIN_EMAIL (${email}).`,

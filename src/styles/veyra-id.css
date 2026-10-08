@@ -1,0 +1,15 @@
+/* The member's Veyra ID card: a scannable Code 128 barcode, the ID and email. */
+.veyra-id-card { display: grid; gap: 10px; padding: 14px; border: 1px solid #e2d9ed; border-radius: 16px; background: linear-gradient(160deg, #fbf9ff, #f3eefb); margin-bottom: 14px; }
+.veyra-id-card.is-pending { display: block; }
+.veyra-id-card.is-pending p { margin: 0; color: #786a83; font-size: 13px; }
+.veyra-id-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.veyra-id-kicker { font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #6c4796; }
+.veyra-id-value { font-size: 15px; letter-spacing: .08em; color: var(--ink, #2a1c3d); font-variant-numeric: tabular-nums; }
+.veyra-id-code { display: grid; place-items: center; padding: 8px; border-radius: 12px; background: #fff; border: 1px solid #ece5f5; }
+.veyra-id-code svg { display: block; max-width: 100%; height: auto; }
+.veyra-id-rows { margin: 0; display: grid; gap: 4px; }
+.veyra-id-rows div { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
+.veyra-id-rows dt { color: #786a83; }
+.veyra-id-rows dd { margin: 0; font-weight: 600; word-break: break-all; text-align: right; }
+.veyra-id-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.veyra-id-note { margin: 0; font-size: 12px; color: #786a83; line-height: 1.5; }

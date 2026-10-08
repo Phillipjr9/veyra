@@ -87,7 +87,7 @@ test("lost confirmation response recovers the same completed order across reload
   const buyFee = quoteFee("crypto_buy", 3000).feeCents / 100;
   await dialog.getByRole("button", { name: "Confirm buy" }).click();
   await expect(dialog.getByRole("button", { name: "Retry same order" })).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Edit / refresh quote" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Edit quote" })).toBeDisabled();
   expect(await balance(request, session.token)).toBe(1000 - 30 - buyFee);
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await page.reload();
@@ -245,7 +245,7 @@ test("expired reviews cannot confirm and an entirely unpriced portfolio is not s
   await dialog.getByRole("checkbox").check(); await dialog.getByRole("button", { name: "Review order" }).click();
   await expect(dialog).toContainText("Quote expired");
   await expect(dialog.getByRole("button", { name: "Confirm buy" })).toBeDisabled();
-  await dialog.getByRole("button", { name: "Edit / refresh quote" }).click();
+  await dialog.getByRole("button", { name: "Edit quote" }).click();
   await expect(dialog.getByLabel("Amount to spend (USD)")).toBeVisible();
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await page.route("**/api/me/holdings", async route => { const response = await route.fetch(); const body = await response.json(); body.partial = true; body.quoteStatus = "unavailable"; body.totalUsd = "0.00"; body.holdings = body.holdings.map((h: any) => ({ ...h, units: h.asset === "BTC" ? "100000000" : "0", quantity: h.asset === "BTC" ? "1" : "0", valueUsd: null, priceUsd: null })); await route.fulfill({ response, json: body }); });
