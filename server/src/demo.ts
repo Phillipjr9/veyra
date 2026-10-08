@@ -6,7 +6,7 @@
  * every number the dashboards show is produced by the backend) and gives each
  * one enough history for its dashboard to look alive:
  *
- *   demo.personal@veyra.dev  personal — balance, cash back, savings goals, card spend
+ *   demo.personal@veyra.dev  personal — balance, cash back, card spend
  *   demo.business@veyra.dev  business — client deposits, open invoices, payees,
  *                                       scheduled payments, cards, team
  *
@@ -212,10 +212,8 @@ export async function seedDemoAccounts(opts: {
           cardId: useCard ? card.json.card?.id : undefined,
         });
       }
-      for (const [name, target, move] of [["Japan trip", 4000, 1450], ["Emergency fund", 6000, 2300]] as Array<[string, number, number]>) {
-        const pocket = await call("POST", "/api/me/pockets", token, { name, target });
-        if (pocket.json.pocket?.id) await call("POST", `/api/me/pockets/${pocket.json.pocket.id}/move`, token, { amount: move, direction: "to_pocket" });
-      }
+      // No savings goals are created here. Members create their own goals under
+      // Accounts → Savings pockets, so the demo starts without preset targets.
     } else {
       await fundDemo(48000, "Northwind — invoice #1042");
       await fundDemo(16500, "Lekki Retail — retainer");

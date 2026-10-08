@@ -2099,3 +2099,15 @@
 .admin-change-details { margin-top: 8px; font-size: 12px; min-width: 0; }
 .admin-change-details summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
 .admin-change-details pre { font-family: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; font-size: 11px; line-height: 1.6; }
+
+/* Integration switches (Settings → Integrations and features) */
+.integration-group { margin-top: 16px; }
+.integration-group h3 { margin: 0 0 8px; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.integration-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.integration-row { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 14px 16px; border: 1px solid var(--line, #e5e7eb); border-radius: 14px; flex-wrap: wrap; }
+.integration-copy { display: grid; gap: 4px; min-width: 0; flex: 1 1 320px; }
+.integration-copy small { color: var(--muted); line-height: 1.5; }
+.integration-checks { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.integration-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.integration-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; }
+.integration-switch input { width: 18px; height: 18px; accent-color: var(--violet); cursor: pointer; }

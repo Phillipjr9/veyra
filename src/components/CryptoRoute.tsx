@@ -7,7 +7,8 @@ import "../styles/crypto-route.css";
 
 type Endpoint = {
   asset: string; quantity?: string; accountLast4?: string;
-  choices?: { asset: string; name: string }[];
+  /** `detail` is shown after the name in the dropdown, e.g. the quantity held. */
+  choices?: { asset: string; name: string; detail?: string }[];
   onChange?: (asset: string) => void;
 };
 /** One aligned route, shared by selection, review and order preparation. */
@@ -26,7 +27,7 @@ export function CryptoRoute({ from, to, editable = false, busy = false, processi
       {icon}<span className="cw-route-copy"><span className="cw-route-label">{side}</span>
         <span className="cw-route-control">{endpoint.choices ? <>
           <select id={controlId} aria-label={side} value={endpoint.asset} disabled={busy} onChange={event => endpoint.onChange?.(event.target.value)}>
-            {endpoint.choices.map(asset => <option key={asset.asset} value={asset.asset}>{asset.name} · {asset.asset}</option>)}
+            {endpoint.choices.map(asset => <option key={asset.asset} value={asset.asset}>{asset.name} · {asset.asset}{asset.detail ? ` · ${asset.detail}` : ""}</option>)}
           </select><ChevronDown size={16} aria-hidden="true" />
         </> : <input id={controlId} aria-label={side} readOnly value={name} />}</span>
         <span className="cw-route-caption">{cash ? `USD${endpoint.accountLast4 ? ` · •••• ${endpoint.accountLast4}` : " · Checking account"}` : `${endpoint.asset} · Veyra crypto`}</span>

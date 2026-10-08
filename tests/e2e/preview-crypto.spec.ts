@@ -40,7 +40,7 @@ test("preview markets render without source labels and keep trades account-scope
   // A buy must actually execute against the generated feed, not just be enabled.
   const buy = await reviewBuy(page, "10");
   await buy.getByRole("button", { name: "Confirm buy" }).click();
-  await expect(buy.getByRole("heading", { name: "Account order completed" })).toBeVisible();
+  await expect(buy.getByRole("heading", { name: "Crypto purchased" })).toBeVisible();
   await buy.getByRole("button", { name: "Done" }).click();
   await expect(page.locator(".cw-asset-list")).toContainText("510 USDC");
 

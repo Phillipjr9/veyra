@@ -49,6 +49,7 @@ const CLIENT_FILES = [
   "src/pages/dashboards/PersonalDashboard.tsx",
   "src/pages/dashboards/BusinessDashboard.tsx",
   "src/pages/dashboards/AdminShell.tsx",
+  "src/components/IntegrationsPanel.tsx",
 ];
 
 /** Routes whose payload is already delivered by an aggregate snapshot. */

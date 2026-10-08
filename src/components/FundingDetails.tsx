@@ -1,6 +1,8 @@
+import { StaffNote } from "./StaffNote";
 import { Link } from "react-router-dom";
 import { useState, type ReactNode } from "react";
 import { ArrowRight } from "lucide-react";
+import { FundingMethodPicker } from "./FundingMethodPicker";
 import { money } from "../lib/store";
 import { quoteFee } from "../../shared/fees";
 
@@ -21,6 +23,7 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
   const invalid = (attempted || amount !== "") && !valid;
   const amountCents = valid ? Math.round(Number(amount) * 100) : 0;
   const fee = quoteFee(currentMethod?.kind === "card" ? "card_deposit" : "deposit", amountCents);
+  const summaryFee = currentMethod?.kind === "card" ? quoteFee("card_deposit", 10_000) : null;
   return <form className="flow-pane funding-details" noValidate onSubmit={e => {
     e.preventDefault(); setAttempted(true);
     if (!busy && available && valid) onReview();
@@ -28,11 +31,17 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
     <h2 className="flow-title" id="flow-title">Add funds</h2>
     <p className="flow-sub">Choose a method and amount, then review your deposit.</p>
     <fieldset disabled={busy}>
+      {/* The scroll lives on this plain element, not the fieldset: a fieldset
+          does not reliably clip overflow, so actions could sit on top of fields. */}
+      <div className="funding-details-scroll">
       <label className="flow-label" htmlFor="funding-method">Funding method</label>
-      <select id="funding-method" value={selected} onChange={e => onMethod(e.target.value)}>
-        {!methods.length && <option value="">No funding methods available</option>}
-        {methods.map(method => <option key={method.id} value={method.id}>{method.label}</option>)}
-      </select>
+      <FundingMethodPicker methods={methods} selected={selected} disabled={busy} onChange={onMethod} />
+      {/* At-a-glance summary of the selected method, so the choice is clear
+          without opening the list again. */}
+      {currentMethod && <div className={`funding-method-summary ${currentMethod.unavailable ? "is-setup" : "is-ready"}`} aria-live="polite">
+        <span className="funding-badge">{currentMethod.unavailable ? "Setup needed" : "Ready"}</span>
+        <span className="funding-method-summary-text">{currentMethod.unavailable ? "Not available yet" : "Available immediately"} · {summaryFee && summaryFee.feeCents > 0 ? `${summaryFee.rateBps / 100}% fee on debit cards` : "No fee"}</span>
+      </div>}
       {/* A dead method used to look identical to a working one: the only
           symptom was a disabled button further down the form. */}
       {currentMethod?.unavailable && <p className="funding-method-warning" aria-live="polite">{currentMethod.label} isn’t ready to use yet. Choose another funding method to continue.</p>}
@@ -54,11 +63,12 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
         <div className={`flow-row ${fee.feeCents > 0 ? "" : "free"}`}><span>Deposit fee</span><b>{fee.feeCents > 0 ? money(fee.feeCents / 100) : "$0.00"}</b></div>
         <div className="flow-row"><span>To</span><b>Your Veyra account</b></div>
       </div>
+      </div>
     </fieldset>
       <div className="flow-actions">
         <button type="button" className="ghost-btn" onClick={onCancel} disabled={busy}>Cancel</button>
         <button type="submit" className="solid-btn" disabled={busy || !available}>Review deposit <ArrowRight size={15} /></button>
       </div>
-    <p className="funding-animation-note">Account entries credit immediately after confirmation. External bank and card processing is not connected.</p>
+    <p className="funding-animation-note">Account entries credit immediately after confirmation. <StaffNote>External bank and card processing is not connected.</StaffNote></p>
   </form>;
 }

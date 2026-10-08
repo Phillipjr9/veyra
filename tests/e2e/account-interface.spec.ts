@@ -1,7 +1,7 @@
-import { confirmFunding } from "./funding-helpers";
+import { chooseFundingMethod, confirmFunding, fundingMethodOptions, openFundingMethods } from "./funding-helpers";
 import { test, expect, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
-import { FUNDING_OPTIONS } from "../../shared/funding";
+import { ADD_FUNDS_OPTIONS } from "../../shared/funding";
 import { quoteFee } from "../../shared/fees";
 
 test.skip((process.env.ACCOUNT_LEDGER_ENABLED || process.env.DEMO_PAYMENTS_ENABLED) !== "1", "Requires account-ledger funding.");
@@ -27,17 +27,17 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
   await page.getByRole("button", { name: "7D", exact: true }).click();
   await page.getByRole("button", { name: "Bar chart", exact: true }).click();
   let total = 0, fees = 0;
-  for (const option of FUNDING_OPTIONS) {
+  for (const option of ADD_FUNDS_OPTIONS) {
     await page.getByRole("button", { name: "Add funds", exact: true }).first().click();
     const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
-    await expect(dialog.getByLabel("Funding method", { exact: true }).locator("option")).toHaveCount(8);
+    await openFundingMethods(dialog); await expect(fundingMethodOptions(dialog)).toHaveCount(7);
     await ordinaryInterface(page);
-    await dialog.getByLabel("Funding method", { exact: true }).selectOption({ label: option.label });
+    await chooseFundingMethod(dialog, option.label);
     await dialog.getByLabel("Amount (USD)", { exact: true }).fill("14.25");
     if (option.kind === "ach" || option.kind === "direct_deposit") {
       await expect(dialog.getByRole("button", { name: "Review deposit", exact: true })).toBeDisabled();
       if (option.kind === "ach") await expect(dialog.getByRole("link", { name: "Link an external account" })).toBeVisible();
-      else await expect(dialog).toContainText("has not configured Direct Deposit");
+      else await expect(dialog).not.toContainText("has not configured Direct Deposit"); // members never see setup status
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
       continue;
     }
@@ -75,12 +75,12 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
   }
   await page.goto("/#/app/transfers");
   await ordinaryInterface(page);
-  await page.getByRole("button", { name: /Receive Zelle.*QR/ }).click();
-  const receive = page.getByRole("dialog", { name: "Zelle receive hub" });
-  await expect(receive.getByRole("img", { name: "Scannable QR for this Veyra payment link" })).toBeVisible();
+  await page.getByRole("link", { name: /Receive Zelle.*QR/ }).click();
+  await expect(page).toHaveURL(/#\/app\/zelle$/);
+  await expect(page.getByRole("heading", { name: /Zelle/, level: 1 })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Scannable QR for this Veyra payment link" })).toBeVisible();
+  await expect(page.getByRole("img", { name: /Barcode for/ })).toBeVisible();
   await ordinaryInterface(page);
-  await expect(receive.locator(".receive-demo-pill")).toHaveCount(0);
-  await receive.getByRole("button", { name: "Close receive hub" }).click();
   await page.goto("/#/app");
   await expect(page.locator('[data-flow="in"]')).toHaveText("$85.50");
 });

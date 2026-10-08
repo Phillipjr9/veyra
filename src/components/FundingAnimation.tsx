@@ -3,12 +3,13 @@ import { ArrowDownLeft, Clock3, X } from "lucide-react";
 import { FlowProcessing, FlowReceipt } from "./MoneyFlow";
 import { VeyraMark } from "./VeyraMark";
 import { downloadFile, longDate, money } from "../lib/store";
+import { RefreshCw } from "lucide-react";
 
 // These describe the presentation, not simulated bank/card processing.
 const ACCOUNT_STEPS = ["Preparing deposit details", "Displaying the funding method", "Preparing your account view", "Preparing the receipt"];
 
 /** The same processing and receipt components used by Send money. */
-export function FundingAnimation({ phase, amount, source, immediate, receipt, close, again, onPresented }: {
+export function FundingAnimation({ phase, amount, source, immediate, receipt, close, again, onPresented, onRefresh, refreshing = false }: {
   phase: "processing" | "receipt";
   amount: number;
   source: string;
@@ -17,12 +18,17 @@ export function FundingAnimation({ phase, amount, source, immediate, receipt, cl
   close: () => void;
   again: () => void;
   onPresented: () => void;
+  /** Re-reads the funding requests and balance so the status shown is the server's. */
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }) {
   const reduce = useReducedMotion() !== false;
   const processing = phase === "processing";
   const confirmed = !processing && receipt?.status === "confirmed";
   const rejected = !processing && receipt?.status === "rejected";
-  const note = immediate ? "This is an account update, not an external bank or card transfer." : "This records a request, not a bank or card transfer confirmation.";
+  // Immediate account entries carry no note. Requests say plainly that nothing
+  // has been confirmed by the bank yet.
+  const note = immediate ? undefined : "This records a request, not a bank or card transfer confirmation.";
   const rows = [
     { label: "Reference", value: receipt?.reference ?? "" },
     { label: "Date", value: receipt ? longDate(receipt.createdAt) : "" },
@@ -34,8 +40,11 @@ export function FundingAnimation({ phase, amount, source, immediate, receipt, cl
   ];
   const download = () => downloadFile(`veyra-receipt-${receipt?.reference}.txt`, [
     "VEYRA — DEPOSIT RECEIPT", `Amount: ${money(amount)}`,
-    ...rows.map(row => `${row.label}: ${row.value}`), "", note,
+    ...rows.map(row => `${row.label}: ${row.value}`), ...(note ? ["", note] : []),
   ].join("\n"));
+  const refresh = onRefresh ? <button type="button" className="ghost-btn sm funding-receipt-refresh" disabled={refreshing} onClick={onRefresh}>
+    <RefreshCw size={13} className={refreshing ? "funding-refresh-spin" : undefined} /> Refresh funding status
+  </button> : null;
 
   return <MotionConfig reducedMotion={reduce ? "always" : "never"}>
     <section className={`funding-animation ${processing ? "is-processing" : confirmed ? "is-confirmed" : "is-recorded"}`} data-motion={reduce ? "reduced" : "full"}>
@@ -50,9 +59,10 @@ export function FundingAnimation({ phase, amount, source, immediate, receipt, cl
       </> : confirmed ? <>
         <div role="status">
           <FlowReceipt isDeposit value={amount} title="Funds added" subtitle={receipt?.ledgerOnly ? "Funds added to your account immediately." : "Receipt confirmed by staff."}
-            rows={rows} download={download} onAgain={again} onClose={close} againLabel={immediate ? "Add more funds" : "All funding methods"} />
+            rows={rows} download={download} onAgain={again} onClose={close} againLabel={immediate ? "Add more funds" : "All funding methods"}
+            extra={refresh} />
         </div>
-        <p className="funding-animation-note">{note}</p>
+        {note && <p className="funding-animation-note">{note}</p>}
       </> : <div className="flow-pane flow-success">
         <div role="status">
           {rejected ? <X size={32} /> : <Clock3 size={32} />}
@@ -60,8 +70,9 @@ export function FundingAnimation({ phase, amount, source, immediate, receipt, cl
           <strong className="flow-amount">{money(amount)}</strong>
           <p className="flow-sub">{rejected ? "No funds were credited for this request." : "No funds are credited until confirmed."}</p>
           <p className="funding-animation-reference">{receipt?.reference} · {receipt?.status}</p>
+          {refresh}
         </div>
-        <p className="funding-animation-note">{note}</p>
+        {note && <p className="funding-animation-note">{note}</p>}
         <div className="flow-actions"><button type="button" className="ghost-btn" onClick={again}>All funding methods</button><button type="button" className="solid-btn" onClick={close}>Done</button></div>
       </div>}
     </section>

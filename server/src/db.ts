@@ -24,6 +24,7 @@ export function openDb(path = DB_PATH): DatabaseSync {
   db.exec("PRAGMA foreign_keys = ON;");
   migrate(db);
   ensureAccountNumbers(db);
+  ensureVeyraIds(db);
   return db;
 }
 
@@ -41,6 +42,26 @@ export function generateAccountNumber(db: DatabaseSync): string {
     if (!taken.get(candidate)) return candidate;
   }
   return String(Date.now()).padStart(12, "0").slice(-12);
+}
+
+/**
+ * A Veyra ID: "VYR" plus nine digits. Unique across members, never derived
+ * from the account number, and retried on collision so sign-up cannot fail.
+ */
+export function generateVeyraId(db: DatabaseSync): string {
+  const taken = db.prepare("SELECT 1 FROM users WHERE veyra_id = ?");
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const candidate = `VYR${Array.from({ length: 9 }, () => Math.floor(Math.random() * 10)).join("")}`;
+    if (!taken.get(candidate)) return candidate;
+  }
+  return `VYR${String(Date.now()).slice(-9).padStart(9, "0")}`;
+}
+
+/** Boot sweep: members created before Veyra IDs existed receive one. */
+function ensureVeyraIds(db: DatabaseSync): void {
+  const missing = db.prepare("SELECT id FROM users WHERE veyra_id IS NULL OR veyra_id = ''").all() as Array<{ id: string }>;
+  const update = db.prepare("UPDATE users SET veyra_id = ? WHERE id = ?");
+  for (const row of missing) update.run(generateVeyraId(db), row.id);
 }
 
 /**
@@ -1125,6 +1146,31 @@ DROP TABLE external_accounts;
 ALTER TABLE external_accounts_v27 RENAME TO external_accounts;
 CREATE INDEX idx_external_accounts_owner ON external_accounts(user_id,status);
 CREATE UNIQUE INDEX idx_external_accounts_request ON external_accounts(user_id,request_key);
+`,
+  },
+  {
+    // Veyra ID: every member gets a unique, scannable transfer code at sign-up.
+    // Members send to each other by email or this ID (Veyra-to-Veyra transfers).
+    // The ID is not the account number, so sharing it reveals no bank details.
+    version: 28,
+    sql: `
+ ALTER TABLE users ADD COLUMN veyra_id TEXT;
+ CREATE UNIQUE INDEX idx_users_veyra_id ON users(veyra_id) WHERE veyra_id IS NOT NULL;
+ CREATE TABLE veyra_transfers (
+  id TEXT PRIMARY KEY,
+  sender_id TEXT NOT NULL REFERENCES users(id),
+  recipient_id TEXT NOT NULL REFERENCES users(id),
+  amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+  reference TEXT NOT NULL UNIQUE,
+  request_key TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  sender_before_cents INTEGER NOT NULL DEFAULT 0,
+  sender_after_cents INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(sender_id, request_key)
+ );
+ CREATE INDEX idx_veyra_transfers_sender ON veyra_transfers(sender_id, created_at);
+ CREATE INDEX idx_veyra_transfers_recipient ON veyra_transfers(recipient_id, created_at);
 `,
   },
 ];

@@ -81,8 +81,9 @@ try {
  const beforeFunding=(await state()).balance;
  for(const kind of ['ach','card']) {
    const pendingBefore=db.prepare("SELECT COUNT(*) AS n FROM funding_requests").get() as {n:number};
-   const attempted=await api("POST","/api/me/deposits",alice.token,{amount:25,methodId:configured.find((m:any)=>m.kind===kind).id,requestKey:randomUUID()});
-   check(`${kind} cannot initiate deposits through a forged request`,attempted.status===400&&attempted.json.error.includes("provider activation"));
+   check(`${kind} is not offered to members before its provider is built`,!configured.some((m:any)=>m.kind===kind));
+   const attempted=await api("POST","/api/me/deposits",alice.token,{amount:25,methodId:`forged_${kind}`,requestKey:randomUUID()});
+   check(`${kind} cannot initiate deposits through a forged request`,attempted.status===400&&typeof attempted.json.error==="string");
    check(`${kind} creates no request or credit`,(db.prepare("SELECT COUNT(*) AS n FROM funding_requests").get() as {n:number}).n===pendingBefore.n&&(await state()).balance===beforeFunding);
  }
  for(const kind of ['zelle','direct_deposit']) {

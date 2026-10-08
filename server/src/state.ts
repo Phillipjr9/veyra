@@ -41,9 +41,9 @@ const s = (v: unknown) => (v == null ? undefined : String(v));
 
 export function buildMemberState(db: DatabaseSync, userId: string, currentTokenId?: string): Record<string, unknown> | null {
   const user = db.prepare(
-    "SELECT name, business, account_type, status, status_reason, status_changed_at, status_changed_by, totp_secret_encrypted FROM users WHERE id = ?",
+    "SELECT name, email, business, account_type, status, status_reason, status_changed_at, status_changed_by, totp_secret_encrypted, veyra_id FROM users WHERE id = ?",
   ).get(userId) as
-    | { name: string; business: string; account_type: string; status: string; status_reason: string | null; status_changed_at: number | null; status_changed_by: string | null; totp_secret_encrypted: string | null }
+    | { name: string; email: string; business: string; account_type: string; status: string; status_reason: string | null; status_changed_at: number | null; status_changed_by: string | null; totp_secret_encrypted: string | null; veyra_id: string | null }
     | undefined;
   if (!user) return null;
   const account = db.prepare("SELECT * FROM accounts WHERE user_id = ?").get(userId) as Record<string, unknown> | undefined;
@@ -281,6 +281,9 @@ export function buildMemberState(db: DatabaseSync, userId: string, currentTokenI
     budgets,
     scoutApplied: JSON.parse(String(account?.scout_applied_json ?? "[]")),
     kyc,
+    // Shown with the member's email as the code others use to send them money.
+    veyraId: user.veyra_id ?? "",
+    veyraEmail: user.email,
     accountStatus: user.status === "restricted" ? "restricted" : "active",
     // Why the account is on hold — the member's dashboard banner reads this
     // verbatim, so it is the sentence an admin chose when suspending, not a code.

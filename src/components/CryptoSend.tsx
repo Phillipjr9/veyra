@@ -1,3 +1,4 @@
+import { isStaffUser, StaffNote } from "./StaffNote";
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { LayoutGroup, MotionConfig, motion, useReducedMotion } from "motion/react";
 import { Check, Copy, Download, Wallet, X } from "lucide-react";
@@ -179,7 +180,7 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
       ...receiptSections.flatMap(section => ['', section.title.toUpperCase(), ...section.rows.map(([label, value]) => `${label}: ${value}`)]),
       `Destination wallet address: ${result.address}`,
       '', cancelled ? 'This request was cancelled; it has not been submitted again.' : 'Settled in your Veyra account record. No blockchain transaction hash or confirmation exists.',
-      'External custody and on-chain execution are not connected.',
+      ...(isStaffUser(user) ? ['External custody and on-chain execution are not connected.'] : []),
     ].join('\n'));
   };
   return <MotionConfig reducedMotion={reduce ? 'always' : 'never'}><LayoutGroup id={layoutId}>
@@ -243,7 +244,7 @@ export function CryptoSendDialog({ holding, close, submitted }: { holding: Holdi
             </section>)}
           </div>
           <p className="crypto-receipt-copy-notice" aria-live="polite">{copyNotice}</p>
-          <p className="crypto-send-note">Completed in your Veyra account record. External custody and on-chain execution are not connected, so no network fee or transaction hash is involved.</p>
+          <p className="crypto-send-note">Completed in your Veyra account record.<StaffNote> External custody and on-chain execution are not connected, so no network fee or transaction hash is involved.</StaffNote></p>
         </motion.div>}
       </div>
       {stage === 'recorded' && result && <footer role="group" className="crypto-send-receipt-footer" aria-label="Receipt actions">

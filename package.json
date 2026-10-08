@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:emails": "tsx scripts/build-emails.ts",
-    "test": "npm run test:market-feed && npm run test:dashboard && npm run test:money-controls && tsx scripts/test-permissions.ts && node scripts/check-emails.mjs && node scripts/check-api-coverage.mjs && tsx server/scripts/audit-routes.ts && tsx server/scripts/test-api.ts && npm run test:addresses && npm run test:banking && npm run test:stripe-rails && npm run test:admin-members && npm run test:demo-payments && npm run test:crypto && npm run test:preview-access && npm run test:preview-crypto && npm run test:crypto-funding",
+    "test": "npm run test:market-feed && npm run test:dashboard && npm run test:money-controls && tsx scripts/test-permissions.ts && node scripts/check-emails.mjs && node scripts/check-api-coverage.mjs && tsx server/scripts/audit-routes.ts && tsx server/scripts/test-api.ts && npm run test:addresses && npm run test:banking && npm run test:stripe-rails && npm run test:admin-members && npm run test:demo-payments && npm run test:crypto && npm run test:preview-access && npm run test:preview-crypto && npm run test:crypto-funding && npm run test:veyra-transfers && npm run test:integrations",
     "server:preview": "PREVIEW_CRYPTO_DATA=1 DB_PATH=server/preview-crypto.db tsx server/src/index.ts",
     "dev:preview": "PREVIEW_CRYPTO_DATA=1 DB_PATH=server/preview-crypto.db bash scripts/dev.sh",
     "server": "tsx server/src/index.ts",
@@ -29,6 +29,7 @@
     "test:stripe-rails": "tsx server/scripts/test-stripe-rails.ts",
     "test:admin-members": "tsx server/scripts/test-admin-members.ts",
     "test:demo-payments": "tsx server/scripts/test-demo-payments.ts",
+    "test:veyra-transfers": "tsx server/scripts/test-veyra-transfers.ts",
     "test:e2e:demo": "npm run build && DEMO_PAYMENTS_ENABLED=1 playwright test tests/e2e/demo-payments.spec.ts tests/e2e/receive-hub.spec.ts",
     "server:demo": "DEMO_PAYMENTS_ENABLED=1 tsx server/src/index.ts",
     "test:e2e:charts": "npm run build && DEMO_PAYMENTS_ENABLED=1 playwright test tests/e2e/dashboard-responsive.spec.ts tests/e2e/ledger-charts.spec.ts",
@@ -44,7 +45,8 @@
     "test:e2e:preview-access": "npm run build && PREVIEW_LOGIN_SHORTCUTS=1 playwright test tests/e2e/preview-access.spec.ts",
     "test:e2e:funding-animation": "npm run build && ACCOUNT_LEDGER_ENABLED=1 playwright test tests/e2e/funding-animation.spec.ts && ACCOUNT_LEDGER_ENABLED=1 playwright test tests/e2e/account-interface.spec.ts tests/e2e/demo-payments.spec.ts && ACCOUNT_LEDGER_ENABLED=1 playwright test tests/e2e/ledger-charts.spec.ts",
     "test:crypto-funding": "tsx server/scripts/test-crypto-funding-polish.ts",
-    "test:e2e:crypto-funding": "npm run build && ACCOUNT_LEDGER_ENABLED=1 E2E_LINKED_ACCOUNTS=1 playwright test tests/e2e/crypto-funding-polish.spec.ts"
+    "test:e2e:crypto-funding": "npm run build && ACCOUNT_LEDGER_ENABLED=1 E2E_LINKED_ACCOUNTS=1 playwright test tests/e2e/crypto-funding-polish.spec.ts",
+    "test:integrations": "tsx server/scripts/test-integrations.ts"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
@@ -53,6 +55,7 @@
     "clsx": "2.1.1",
     "express": "^5.2.1",
     "firebase": "^12.19.0",
+    "jsbarcode": "^3.12.3",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "lucide-react": "^1.52.0",
@@ -67,6 +70,7 @@
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
+    "@types/jsbarcode": "^3.11.4",
     "@types/node": "22.19.17",
     "@types/pngjs": "^6.0.5",
     "@types/qrcode": "^1.5.6",
