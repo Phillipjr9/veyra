@@ -2,7 +2,7 @@ import { apiPost } from "../lib/api";
 import type { DemoResult } from "../../shared/demoPayments";
 import { useDemoPayments } from "../lib/demoPayments";
 import { FundingDialog } from "./BankingControls";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { AlertCircle, ArrowDownLeft, ArrowRight, Building2, Check, Download, Landmark, Lock, ShieldCheck, Sparkles, X, Zap } from "lucide-react";
@@ -40,13 +40,40 @@ export const ETA: Record<SendMethod, string> = {
   Veyra: "Instant · no fee",
 };
 
+/* The Zelle "Z": a top and bottom bar joined by a diagonal, with a short stroke above and below, traced from the official mark. Drawn in a 140×240 box. */
+const ZELLE_Z = "M4 33H134A4 4 0 0 1 138 37V67L56 173H140V207H0V173L84 67H4Z";
+const ZELLE_STUBS = ["M54 0H86V40H54Z", "M54 200H86V240H54Z"];
+
+/**
+ * The Zelle® app mark as a 3D tile: a glossy purple square with a raised white
+ * "Z" that casts a stacked extrusion and a soft shadow. Gradient ids are unique
+ * per instance so several logos can share a page.
+ */
 export function ZelleLogo({ size = 18 }: { size?: number }) {
+  const uid = `zl${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
+  const glyph = (
+    <>
+      <path d={ZELLE_Z} />
+      {ZELLE_STUBS.map(d => <path key={d} d={d} />)}
+    </>
+  );
+  // Stacked copies, offset downward, give a solid extrusion without filters.
+  const depth = [10, 8, 6, 4, 2];
   return (
-    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-label="Zelle">
-      <rect width="48" height="48" rx="12" fill="#7414CA" />
-      {/* Characteristic Zelle Z-stroke with vertical cross bars */}
-      <path d="M13 14H31L17 34H35" stroke="#FFFFFF" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M24 8V14M24 34V40" stroke="#72F674" strokeWidth="4.5" strokeLinecap="round" />
+    <svg width={size} height={size} viewBox="0 0 48 48" role="img" aria-label="Zelle">
+      <defs>
+        <linearGradient id={`${uid}-bg`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#9158f6" /><stop offset="1" stopColor="#3d0ea6" /></linearGradient>
+        <linearGradient id={`${uid}-gloss`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#ffffff" stopOpacity=".42" /><stop offset=".5" stopColor="#ffffff" stopOpacity="0" /></linearGradient>
+        <linearGradient id={`${uid}-face`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#ffffff" /><stop offset="1" stopColor="#d9c8ff" /></linearGradient>
+        <filter id={`${uid}-shadow`} x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="3" stdDeviation="2.2" floodColor="#1d0650" floodOpacity=".5" /></filter>
+      </defs>
+      <g filter={`url(#${uid}-shadow)`}><rect width="48" height="48" rx="12" fill={`url(#${uid}-bg)`} /></g>
+      <rect width="48" height="48" rx="12" fill={`url(#${uid}-gloss)`} />
+      <rect x=".75" y=".75" width="46.5" height="46.5" rx="11.25" fill="none" stroke="#1d0650" strokeOpacity=".3" strokeWidth="1.5" />
+      <g transform="translate(15.25 9) scale(0.125)">
+        {depth.map(offset => <g key={offset} transform={`translate(0 ${offset})`} fill="#2a0c6e">{glyph}</g>)}
+        <g fill={`url(#${uid}-face)`}>{glyph}</g>
+      </g>
     </svg>
   );
 }

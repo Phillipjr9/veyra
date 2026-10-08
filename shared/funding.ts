@@ -15,3 +15,8 @@ export const fundingOption = (kind: string) => FUNDING_OPTIONS.find(option => op
 // These operations have no provider implementation. Admin instruction changes
 // must never enable ACH pulls, microdeposits or card collection on their own.
 export const fundingRequiresProvider = (kind: string) => fundingOption(kind)?.providerRequired === true;
+
+/** Zelle is a Send money method, not a way to add funds. Its admin-set instructions stay stored, but members never see it in Add funds. */
+export const ADD_FUNDS_HIDDEN_KINDS: ReadonlySet<string> = new Set(["zelle"]);
+/** The Add funds method list: the catalog without the kinds Add funds must not offer. */
+export const ADD_FUNDS_OPTIONS = FUNDING_OPTIONS.filter(option => !ADD_FUNDS_HIDDEN_KINDS.has(option.kind));

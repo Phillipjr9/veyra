@@ -22,7 +22,6 @@ import { ScoutQuickDrawer } from "../components/ScoutAIAssistant";
 import { SecurityCenterContent } from "../components/SecurityCenterContent";
 import { CommandPalette } from "../components/CommandPalette";
 import { MobileCheckDepositModal } from "../components/MobileCheckDeposit";
-import { ZelleHubModal } from "../components/ZelleHubModal";
 import { CategoryPicker } from "../components/CategoryPicker";
 import { VeyraIdCard, transferCategoryOptions } from "../components/SendMoneyShared";
 import { Confetti, ETA, useMoneyFlow, ZelleLogo, type SendMethod } from "../components/MoneyFlow";
@@ -127,6 +126,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/markets", label: "Markets", icon: <CandlestickChart size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
+      { to: "/app/zelle", label: "Zelle®", icon: <ZelleLogo size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
       { to: "/app/plan", label: "Money plan", icon: <TrendingUp size={18} />, badge: "NEW" },
     ],
@@ -539,7 +539,6 @@ export function DashboardLayout() {
   const [scoutDrawerOpen, setScoutDrawerOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [checkDepositOpen, setCheckDepositOpen] = useState(false);
-  const [zelleHubOpen, setZelleHubOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const unread = account?.notifications.filter(n => !n.read).length ?? 0;
   const prevUnread = useRef(unread);
@@ -662,11 +661,10 @@ export function DashboardLayout() {
         onClose={() => setPaletteOpen(false)}
         onOpenDeposit={() => openDeposit()}
         onOpenCheckDeposit={() => setCheckDepositOpen(true)}
-        onOpenZelleHub={() => setZelleHubOpen(true)}
+        onOpenZelleHub={() => navigate("/app/zelle")}
         onOpenScout={() => setScoutDrawerOpen(true)}
       />
       <MobileCheckDepositModal open={checkDepositOpen} onClose={() => setCheckDepositOpen(false)} />
-      <ZelleHubModal open={zelleHubOpen} onClose={() => setZelleHubOpen(false)} />
     </>
   );
 }
@@ -1336,7 +1334,6 @@ function LegacyPaymentsPage() {
   const [errorKey, setErrorKey] = useState(0);
   const [selected, setSelected] = useState<Txn | null>(null);
   const [payeeOpen, setPayeeOpen] = useState(false);
-  const [zelleReceiveOpen, setZelleReceiveOpen] = useState(false);
   const [checkOpen, setCheckOpen] = useState(false);
   const [payeeForm, setPayeeForm] = useState({ name: "", nickname: "", bankName: "", routing: "", accountLast4: "", accountType: "Checking" as "Checking" | "Savings" });
   const recent = useMemo(() => (account ? recentPayees(account.transactions) : []), [account]);
@@ -1398,9 +1395,9 @@ function LegacyPaymentsPage() {
   return (
     <div className="app-page">
       <PageHeader eyebrow={isDemo ? "Move money from your account" : "Free domestic ACH, wires & Zelle® instant transfers"} title="Transfers">
-        <button type="button" className="ghost-btn" onClick={() => setZelleReceiveOpen(true)}>
+        <Link to="/app/zelle" className="ghost-btn">
           <ZelleLogo size={14} /> Receive Zelle® QR
-        </button>
+        </Link>
         <button type="button" className="ghost-btn" onClick={() => setCheckOpen(true)}>
           <Camera size={14} /> Deposit Check
         </button>
@@ -1517,7 +1514,7 @@ function LegacyPaymentsPage() {
             <div className="panel-head">
               <div><h2>Receive money</h2><span className="panel-sub">Share these for incoming ACH, wires & Zelle®</span></div>
               <div className="receive-head-btns">
-                <button type="button" className="ghost-btn sm" onClick={() => setZelleReceiveOpen(true)}><ZelleLogo size={13} /> Zelle®</button>
+                <Link to="/app/zelle" className="ghost-btn sm"><ZelleLogo size={13} /> Zelle®</Link>
                 <button type="button" className="ghost-btn sm" onClick={() => setCheckOpen(true)}><Camera size={13} /> Check</button>
                 <button type="button" className="ghost-btn sm" onClick={() => openDeposit()}><Plus size={13} /> Add funds</button>
               </div>
@@ -1556,7 +1553,6 @@ function LegacyPaymentsPage() {
           <button type="submit" className="solid-btn dash-submit">Save recipient</button>
         </form>
       </Modal>
-      <ZelleHubModal open={zelleReceiveOpen} onClose={() => setZelleReceiveOpen(false)} />
       <MobileCheckDepositModal open={checkOpen} onClose={() => setCheckOpen(false)} />
     </div>
   );

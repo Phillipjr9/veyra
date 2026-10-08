@@ -8,7 +8,7 @@ import { FundingDetails, validFundingAmount } from "./FundingDetails";
 import { VeyraMark } from "./VeyraMark";
 import { FlowReview, StageDots } from "./MoneyFlow";
 import { ArrowDownLeft, ArrowLeft, ArrowRight, Building2, CircleHelp, CreditCard, FileCheck2, Landmark, LockKeyhole, ShieldCheck, Smartphone, WalletCards, X } from "lucide-react";
-import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider, type FundingKind } from "../../shared/funding";
+import { ADD_FUNDS_HIDDEN_KINDS, ADD_FUNDS_OPTIONS, fundingOption, fundingRequiresProvider, type FundingKind } from "../../shared/funding";
 import { quoteFee } from "../../shared/fees";
 import { apiGet, apiPost } from "../lib/api";
 import { money, useAcct } from "../lib/store";
@@ -20,6 +20,8 @@ import "../styles/funding-hub.css";
 type Method = { id: string; kind: FundingKind; label: string; instructions: string; recipient: string; recipient_contact?: string; ledgerOnly?: boolean; unavailable?: boolean; linkedAccountId?: string; bank_name: string; routing_number: string; account_number: string };
 type Request = { id: string; amount_cents: number; reference: string; status: string; method_snapshot: string; created_at: number };
 type Funding = { linkedAccounts?: ExternalAccount[]; directDeposit?: ReceivingDetails | null; immediateFunding?: boolean; methods: Method[]; requests: Request[] };
+/** Methods Add funds may offer; hidden kinds (Zelle) are dropped before anything renders or is selected. */
+const addFundsMethods = (list: Method[]) => list.filter(m => !ADD_FUNDS_HIDDEN_KINDS.has(m.kind));
 const icons = { ach: Landmark, card: CreditCard, zelle: Smartphone, bank: ArrowDownLeft, wire: Building2, direct_deposit: WalletCards, check: FileCheck2, other: CircleHelp };
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : "Funding information could not be loaded. Please try again.";
 function requestMethod(request: Request): Partial<Method> {
@@ -87,7 +89,7 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
   useEffect(() => {
     let live = true;
     apiGet<Funding>("/api/me/funding").then(data => {
-      if (live) { setMethods(data.methods); setRequests(data.requests); setLinkedAccounts(data.linkedAccounts ?? []); setReceiving(data.directDeposit ?? null); setImmediateFunding(!!data.immediateFunding); setLoaded(true); }
+      if (live) { setMethods(addFundsMethods(data.methods)); setRequests(data.requests); setLinkedAccounts(data.linkedAccounts ?? []); setReceiving(data.directDeposit ?? null); setImmediateFunding(!!data.immediateFunding); setLoaded(true); }
     }).catch(e => { if (live) setError(errorMessage(e)); });
     return () => { live = false; };
   }, []);
@@ -121,7 +123,7 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
     setBusy(true); setError("");
     try {
       const data = await apiGet<Funding>("/api/me/funding");
-      setMethods(data.methods); setRequests(data.requests); setLinkedAccounts(data.linkedAccounts ?? []); setReceiving(data.directDeposit ?? null); setImmediateFunding(!!data.immediateFunding); setLoaded(true);
+      setMethods(addFundsMethods(data.methods)); setRequests(data.requests); setLinkedAccounts(data.linkedAccounts ?? []); setReceiving(data.directDeposit ?? null); setImmediateFunding(!!data.immediateFunding); setLoaded(true);
       setLastReceipt(previous => data.requests.find(row => row.id === submittedId) ?? previous);
       if (method && !data.methods.some(m => m.id === method.id && m.kind === method.kind)) { setSelected(""); setAmount(""); setNote(""); setRequestKey(crypto.randomUUID()); setSubmittedId(""); setPhase("form"); }
       await refreshAccount();
@@ -219,7 +221,7 @@ export function FundingDialog({ close, kind }: { close: () => void; kind?: strin
       </>}
     </> : <>
       <div className="funding-hub-intro"><div><h3>A way in, on your terms.</h3><p>{immediateFunding ? "Choose your funding method and add funds immediately to your account." : "Choose how you’d like to fund your account. See what’s configured, what needs activation, and where each request stands."}</p></div><div className="funding-orbit" aria-hidden="true"><div /><span><Landmark size={28} /></span></div></div>
-      <div className="funding-choice-grid">{FUNDING_OPTIONS.filter(o => o.kind !== 'other' || methods.some(m => m.kind === 'other')).map(o => {
+      <div className="funding-choice-grid">{ADD_FUNDS_OPTIONS.filter(o => o.kind !== 'other' || methods.some(m => m.kind === 'other')).map(o => {
         const Icon = icons[o.kind], configured = methods.some(m => m.kind === o.kind);
         return <button type="button" className="funding-choice" data-funding-kind={o.kind} aria-label={o.label} key={o.kind} disabled={busy} onClick={() => choose(o.kind)}>
           <span className={`funding-choice-icon funding-icon-${o.kind}`}><Icon size={21} /></span>

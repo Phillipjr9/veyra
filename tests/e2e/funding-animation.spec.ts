@@ -102,7 +102,7 @@ test("a fast response still gets a visible animation and adding more uses a new 
   await expect(dialog.getByRole("status")).toContainText("Funds added to your account immediately");
   expect(Date.now() - started).toBeGreaterThanOrEqual(2300);
   await dialog.getByRole("button", { name: "Add more funds", exact: true }).click();
-  await openFundingMethods(dialog); await expect(fundingMethodOptions(dialog)).toHaveCount(8);
+  await openFundingMethods(dialog); await expect(fundingMethodOptions(dialog)).toHaveCount(7);
   await chooseFundingMethod(dialog, "Debit card");
   await dialog.getByLabel("Amount (USD)").fill("15");
   await confirmFunding(dialog);

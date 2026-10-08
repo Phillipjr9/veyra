@@ -35,7 +35,10 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
 }) {
   const { user, account } = useAcct();
   const userId = user?.id ?? "";
-  const initialAsset = holdings.find(h => h.asset === asset)?.asset ?? holdings[0]?.asset ?? "BTC";
+  /* Sell can only send what the account holds, so its source list is limited to non-zero balances. */
+  const sellable = holdings.filter(h => h.units !== "0");
+  const sourceChoices = action === "sell" ? sellable : holdings;
+  const initialAsset = sourceChoices.find(h => h.asset === asset)?.asset ?? sourceChoices[0]?.asset ?? "BTC";
   const [source, setSource] = useState(initialAsset), [target, setTarget] = useState(action === "buy" ? initialAsset : initialAsset === "USDC" ? "ETH" : "USDC");
   const [amount, setAmount] = useState(""), [accepted, setAccepted] = useState(false), [quote, setQuote] = useState<CryptoQuote | null>(null), [receipt, setReceipt] = useState<CryptoReceipt | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -115,6 +118,12 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
 
   /* Live estimate from the last priced holdings. The locked quote from the server is the only binding figure. */
   const priceOf = (code: string) => { const value = Number(holdings.find(h => h.asset === code)?.priceUsd); return Number.isFinite(value) && value > 0 ? value : null; };
+  /* Dropdown option: the quantity the account holds, with its approximate value when a price is known. */
+  const holdingChoice = (h: Holding) => {
+    const price = Number(h.priceUsd);
+    const value = Number.isFinite(price) && price > 0 && h.units !== "0" ? ` ≈ ${usd(Number(h.quantity) * price)}` : "";
+    return { asset: h.asset, name: h.name, detail: h.units === "0" ? "none held" : `${h.quantity} held${value}` };
+  };
   function estimate(): string | null {
     const n = Number(amount);
     if (!amount || !Number.isFinite(n) || n <= 0) return null;
@@ -220,10 +229,11 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
       <p className="flow-sub">Account balances only. Custody, cash conversion and external trading providers are not connected. This is not an on-chain transaction.</p>
       {error && <p role="alert" className="banking-error">{error}</p>}
       {recoveryId && <div className="cw-notice"><p>Checking an earlier order prevents duplicate execution after a lost connection.</p><button className="solid-btn" disabled={busy} onClick={() => void recover(recoveryId)}>{busy ? "Checking order…" : "Check order status"}</button></div>}
-      {!recoveryId && <form className="dash-form" onSubmit={review}>
+      {!recoveryId && action === "sell" && sellable.length === 0 && <p className="cw-notice" role="status">You don’t hold any crypto to sell. Buy an asset first, then sell it here.</p>}
+      {!recoveryId && (action !== "sell" || sellable.length > 0) && <form className="dash-form" onSubmit={review}>
         <CryptoRoute editable busy={busy}
-          from={action === "buy" ? { asset: "USD", accountLast4: last4 } : { asset: source, choices: holdings, onChange: value => choose(value, "source") }}
-          to={action === "sell" ? { asset: "USD", accountLast4: last4 } : { asset: target, choices: holdings.filter(h => action === "buy" || h.asset !== source), onChange: value => choose(value, "target") }} />
+          from={action === "buy" ? { asset: "USD", accountLast4: last4 } : { asset: source, choices: sourceChoices.map(holdingChoice), onChange: value => choose(value, "source") }}
+          to={action === "sell" ? { asset: "USD", accountLast4: last4 } : { asset: target, choices: holdings.filter(h => action === "buy" || h.asset !== source).map(holdingChoice), onChange: value => choose(value, "target") }} />
         <label>{action === "buy" ? "Amount to spend (USD)" : `Quantity (${source})`}<input required inputMode="decimal" maxLength={72} pattern="[0-9]+(\.[0-9]+)?" autoComplete="off" placeholder={action === "buy" ? "0.00" : "0.00000000"} value={amount} onChange={e => setAmount(e.target.value)} /></label>
         <p className="cw-subtle">Available: {action === "buy" ? (account ? `$${account.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} in checking` : "Checking balance unavailable") : `${available?.quantity ?? "Unavailable"} ${source}`}</p>
         {est && <p className="crypto-estimate" aria-live="polite">{est}<span> · final figures are locked at review</span></p>}

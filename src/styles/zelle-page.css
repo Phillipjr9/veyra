@@ -1,0 +1,58 @@
+/* Zelle® member page: receiving identifiers, barcode, QR and deposit details. */
+.zelle-page { display: grid; gap: 18px; box-sizing: border-box; width: 100%; min-width: 0; max-width: 1040px; margin: 0 auto; color: #2a1c3d; }
+.zelle-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; min-width: 0; }
+.zelle-head-icon { display: inline-grid; place-items: center; width: 52px; height: 52px; border-radius: 16px; background: #f4eefb; border: 1px solid #e6dcf3; flex: none; }
+.zelle-head-copy { flex: 1 1 260px; min-width: 0; }
+.zelle-head-copy h1 { margin: 2px 0 4px; font-size: 28px; line-height: 1.15; font-weight: 700; }
+.zelle-head-copy h1 sup, .zelle-card h2 sup { font-size: 0.5em; }
+.zelle-head-copy p { margin: 0; color: #6e6480; font-size: 14px; line-height: 1.5; }
+.zelle-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #7a5fb0; }
+.zelle-send { display: inline-flex; align-items: center; gap: 6px; }
+
+.zelle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; align-items: stretch; }
+.zelle-card { background: #ffffff; border: 1px solid #ebe4f3; border-radius: 18px; padding: 20px; display: grid; gap: 14px; min-width: 0; box-shadow: 0 1px 2px rgba(42, 28, 61, .04); }
+.zelle-card h2 { margin: 0; font-size: 17px; font-weight: 650; }
+.zelle-sub, .zelle-muted { margin: 0; font-size: 13px; line-height: 1.5; color: #6e6480; }
+
+.zelle-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; background: #f6f2fb; border-radius: 12px; }
+.zelle-choice button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; border: 0; border-radius: 9px; background: transparent; color: #5b4c70; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.zelle-choice button[aria-pressed="true"] { background: #ffffff; color: #291440; box-shadow: 0 1px 3px rgba(42, 28, 61, .12); }
+.zelle-choice button:disabled { opacity: .45; cursor: not-allowed; }
+
+.zelle-identifier { display: grid; gap: 4px; padding: 14px 16px; border-radius: 12px; background: #faf8fc; border: 1px solid #efe9f6; min-width: 0; }
+.zelle-identifier span { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8b7b9c; }
+.zelle-identifier strong { font-size: 16px; font-weight: 650; overflow-wrap: anywhere; }
+
+.zelle-barcode { display: grid; place-items: center; min-height: 120px; padding: 12px; border-radius: 12px; background: #ffffff; border: 1px dashed #d9cde9; overflow: hidden; }
+.zelle-barcode svg { display: block; width: 100%; max-width: 100%; height: auto; }
+
+.zelle-qr { display: grid; place-items: center; min-height: 240px; border-radius: 14px; background: #ffffff; border: 1px solid #efe9f6; padding: 10px; }
+.zelle-qr img { display: block; width: 220px; height: 220px; max-width: 100%; height: auto; }
+
+.zelle-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.zelle-actions button, .zelle-actions a, .zelle-inline-copy { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid #ddd2ec; background: #ffffff; color: #3a2a52; font: inherit; font-size: 13px; font-weight: 600; text-decoration: none; cursor: pointer; }
+.zelle-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.zelle-inline-copy { min-height: 28px; padding: 0 8px; margin-left: 8px; vertical-align: middle; }
+
+.zelle-feedback { margin: 0; min-height: 1.4em; font-size: 13px; color: #3f7d5c; display: flex; align-items: center; gap: 6px; }
+.zelle-feedback.is-error { color: #a03b3b; }
+
+.zelle-deposit { grid-column: 1 / -1; }
+.zelle-rows { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 0; }
+.zelle-rows > div { display: grid; gap: 4px; padding: 12px 14px; border-radius: 12px; background: #faf8fc; border: 1px solid #efe9f6; min-width: 0; }
+.zelle-rows dt { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #8b7b9c; }
+.zelle-rows dd { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.zelle-rows dd.zelle-contact { display: flex; align-items: center; flex-wrap: wrap; }
+.zelle-disclosure { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 12px 14px; border-radius: 12px; background: #f6f2fb; font-size: 12.5px; line-height: 1.55; color: #5b4c70; }
+.zelle-disclosure svg { flex: none; margin-top: 2px; color: #7a5fb0; }
+
+@media (max-width: 640px) {
+  .zelle-card { padding: 16px; }
+  .zelle-head-copy h1 { font-size: 24px; }
+  .zelle-send { width: 100%; justify-content: center; }
+}
+
+/* Keep headings and cards aligned regardless of inherited dashboard typography. */
+.zelle-page h1, .zelle-page h2, .zelle-page p, .zelle-page dl, .zelle-page dd, .zelle-page dt { text-align: left; }
+.zelle-page .zelle-card { margin: 0; align-self: stretch; }
+.zelle-page .zelle-card h2 { margin: 0; }
