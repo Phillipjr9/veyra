@@ -156,8 +156,8 @@ test("Ethereum discovery, precise separate balances, receive QR, event invalidat
   await expect(card).toContainText("123.456789");
   await expect(card.locator(".cw-wallet-balances")).toContainText("Unavailable");
   await expect(page.locator(".cw-hero h2")).toHaveText("$0.00");
-  await expect(card.locator(".cw-wallet-locked button")).toHaveCount(4);
-  for (const button of await card.locator(".cw-wallet-locked button").all()) await expect(button).toBeDisabled();
+  // Members never see external-wallet execution status; the locked row is admin-only.
+  await expect(card.locator(".cw-wallet-locked button")).toHaveCount(0);
   await card.getByRole("button", { name: "Receive / QR" }).click();
   const receive = page.getByRole("dialog", { name: "Receive to connected wallet" });
   const image = receive.getByRole("img"); await expect(image).toBeVisible();

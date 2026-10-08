@@ -37,7 +37,7 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
     if (option.kind === "ach" || option.kind === "direct_deposit") {
       await expect(dialog.getByRole("button", { name: "Review deposit", exact: true })).toBeDisabled();
       if (option.kind === "ach") await expect(dialog.getByRole("link", { name: "Link an external account" })).toBeVisible();
-      else await expect(dialog).toContainText("has not configured Direct Deposit");
+      else await expect(dialog).not.toContainText("has not configured Direct Deposit"); // members never see setup status
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
       continue;
     }

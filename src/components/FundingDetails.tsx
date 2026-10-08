@@ -1,3 +1,4 @@
+import { StaffNote } from "./StaffNote";
 import { Link } from "react-router-dom";
 import { useState, type ReactNode } from "react";
 import { ArrowRight } from "lucide-react";
@@ -68,6 +69,6 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
         <button type="button" className="ghost-btn" onClick={onCancel} disabled={busy}>Cancel</button>
         <button type="submit" className="solid-btn" disabled={busy || !available}>Review deposit <ArrowRight size={15} /></button>
       </div>
-    <p className="funding-animation-note">Account entries credit immediately after confirmation. External bank and card processing is not connected.</p>
+    <p className="funding-animation-note">Account entries credit immediately after confirmation. <StaffNote>External bank and card processing is not connected.</StaffNote></p>
   </form>;
 }

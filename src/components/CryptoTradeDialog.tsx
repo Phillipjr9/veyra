@@ -1,3 +1,4 @@
+import { StaffNote } from "./StaffNote";
 import { CryptoTradeAnimation, cryptoTrack } from "./CryptoTradeAnimation";
 import { CryptoRoute } from "./CryptoRoute";
 import { FlowReceipt, FlowReview, StageDots } from "./MoneyFlow";
@@ -226,7 +227,7 @@ export function CryptoTradeDialog({ action, asset, holdings, close, completed }:
     const est = estimate();
     return <div className="crypto-form-pane">
       <h2 className="flow-title" id="flow-title">{titles[action]}</h2>
-      <p className="flow-sub">Account balances only. Custody, cash conversion and external trading providers are not connected. This is not an on-chain transaction.</p>
+      <p className="flow-sub">Account balances only. <StaffNote>Custody, cash conversion and external trading providers are not connected.</StaffNote> This is not an on-chain transaction.</p>
       {error && <p role="alert" className="banking-error">{error}</p>}
       {recoveryId && <div className="cw-notice"><p>Checking an earlier order prevents duplicate execution after a lost connection.</p><button className="solid-btn" disabled={busy} onClick={() => void recover(recoveryId)}>{busy ? "Checking order…" : "Check order status"}</button></div>}
       {!recoveryId && action === "sell" && sellable.length === 0 && <p className="cw-notice" role="status">You don’t hold any crypto to sell. Buy an asset first, then sell it here.</p>}

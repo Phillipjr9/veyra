@@ -1,3 +1,4 @@
+import { StaffNote } from "./StaffNote";
 import { assetIcon } from "../../shared/assetIcons";
 import { useEffect, useRef, useState } from "react";
 import { Cable, Copy, Download, ExternalLink, Link2, RefreshCw, ShieldCheck, Unplug, Wallet, X } from "lucide-react";
@@ -75,8 +76,8 @@ export function ConnectedWallet({ sepoliaTestnetSend = false }: { sepoliaTestnet
       <div className="cw-wallet-actions"><button type="button" className="ghost-btn sm" disabled={busy} onClick={() => void refresh()}><RefreshCw size={14} /> {busy ? "Reading…" : "Refresh"}</button><button type="button" className="ghost-btn sm" disabled={busy} onClick={() => setReceive(true)}>Receive / QR</button><button type="button" className="ghost-btn sm" disabled={busy} onClick={disconnect}><Unplug size={14} /> Disconnect</button></div>
       <p className="cw-subtle">Disconnecting removes this Veyra connection. Revoke site permissions in your wallet settings if needed.</p>
     </>}
-    <div className="cw-provider-note"><Cable size={18} /><div><b>Mainnet and partner execution are not connected</b><p>Veyra account buy/sell/swap remain internal. Mainnet sends, wallet swaps and cash rails need reviewed, integrated providers. Connecting a wallet never authorizes those operations.</p></div></div>
-    <div className="cw-wallet-locked" aria-label="External wallet actions awaiting integration">{["Buy", "Swap", "Sell", "Send"].map(action => <button type="button" className="ghost-btn sm" disabled key={action} title="Mainnet execution provider is not connected">{action}</button>)}</div>
+    <StaffNote><div className="cw-provider-note"><Cable size={18} /><div><b>Mainnet and partner execution are not connected</b><p>Veyra account buy/sell/swap remain internal. Mainnet sends, wallet swaps and cash rails need reviewed, integrated providers. Connecting a wallet never authorizes those operations.</p></div></div></StaffNote>
+    <StaffNote><div className="cw-wallet-locked" aria-label="External wallet actions awaiting integration">{["Buy", "Swap", "Sell", "Send"].map(action => <button type="button" className="ghost-btn sm" disabled key={action} title="Mainnet execution provider is not connected">{action}</button>)}</div></StaffNote>
     {sepoliaTestnetSend && <div className="cw-testnet-send-card"><small><b>TESTNET ONLY</b> · Sepolia ETH has no real-world value and never changes Veyra account balances.</small><button type="button" className="ghost-btn" onClick={() => setSepoliaSend(true)}>Send Sepolia test ETH</button></div>}
     <small className="cw-safety"><ShieldCheck size={14} /> Never share a private key or recovery phrase.</small>
     {picker && <WalletPicker close={() => setPicker(false)} choices={choices} select={choice => void connect(choice)} busy={busy} error={error} />}

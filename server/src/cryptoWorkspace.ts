@@ -1,3 +1,4 @@
+import type { Integrations } from "./integrations.js";
 import { sendCryptoNotification } from "./cryptoNotifications.js";
 import { previewCryptoEnabled } from "./previewCrypto.js";
 import { randomUUID } from "node:crypto";
@@ -17,7 +18,7 @@ type Audit = (req: Request, action: string, category: "Financial", target: strin
 function fail(message: string): never { throw new BadInputError(message); }
 const validId = (value: unknown) => typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
 
-export function createCryptoWorkspace(db: DatabaseSync, audit: Audit) {
+export function createCryptoWorkspace(db: DatabaseSync, audit: Audit, integrations?: Integrations) {
   function eligible(req: Request) {
     if (req.user?.loginId || req.user?.role !== "user") return false;
     const row = db.prepare(`SELECT u.status, u.role, u.team_owner_id, k.review_state FROM users u
@@ -54,8 +55,9 @@ export function createCryptoWorkspace(db: DatabaseSync, audit: Audit) {
   }
   return {
     capabilities(req: Request, res: Response) {
-      const enabled = tradingEnabled() && getSetting(db, "payment_rails") !== "halted";
-      const capabilities: CryptoCapabilities = { accountTrading: enabled, canOperate: eligible(req), withdrawals: enabled && eligible(req), networks: WALLET_NETWORKS,
+      const enabled = tradingEnabled() && getSetting(db, "payment_rails") !== "halted" && (integrations?.available("crypto_trading") ?? true);
+      const sendEnabled = integrations?.available("crypto_send") ?? true;
+      const capabilities: CryptoCapabilities = { accountTrading: enabled, canOperate: eligible(req), withdrawals: enabled && sendEnabled && eligible(req), networks: WALLET_NETWORKS,
         custody: false, onchainSend: false, onchainSwap: false, cashOnramp: false, cashOfframp: false,
         sepoliaTestnetSend: process.env.NODE_ENV !== "production" && process.env.CRYPTO_TESTNET_SEND === "1",
         solanaBalance: !!process.env.SOLANA_RPC_URL?.trim() };

@@ -27,6 +27,7 @@ import {
 import { useToast } from "../components/Toast";
 import { Logo } from "../components/common";
 import { CashFlowExplorer } from "../components/DashboardIntelligence";
+import { IntegrationsPanel } from "../components/IntegrationsPanel";
 
 type AdminUser = User & { role?: UserRole };
 type TabId =
@@ -1606,6 +1607,8 @@ export function SuperAdminPage() {
       {/* ============================ BANKING SETTINGS ============================ */}
       {activeTab === "settings" && (
         <div className="admin-tab-pane">
+          <IntegrationsPanel />
+
           <section className="panel admin-panel">
             <div className="panel-head"><div><h2>Global bank parameters</h2><span className="panel-sub">Changes are audit-logged with before/after values</span></div></div>
             <div className="admin-params-form">

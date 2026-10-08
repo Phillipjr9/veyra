@@ -8,6 +8,8 @@ import { createBulkAccounts } from "./bulkAccounts.js";
 import { sendZelleNotification } from "./zelleNotifications.js";
 import { ASSETS } from "../../shared/catalog.js";
 import { createBanking } from "./banking.js";
+import { createIntegrations } from "./integrations.js";
+import { integrationById } from "../../shared/integrations.js";
 import { createStripeRails, StripeError } from "./stripe.js";
 /**
  * Veyra backend API — Express + SQLite.
@@ -1062,7 +1064,13 @@ export function createApp(dbPath?: string) {
   const bulkAccounts = createBulkAccounts(db, audit);
   app.post("/api/admin/accounts/bulk-preview", requireAuth, requirePerm("accounts.edit_number"), wrap(bulkAccounts.preview));
   app.post("/api/admin/accounts/bulk-apply", requireAuth, requirePerm("accounts.edit_number"), wrap(bulkAccounts.apply));
-  const banking = createBanking(db, audit);
+  const integrations = createIntegrations(db);
+  // Gate a member route on an administrator switch. Off or not-ready integrations return a neutral message.
+  const requireIntegration = (id: string): RequestHandler => (_req, res, next) => {
+    if (!integrations.available(id)) return void res.status(503).json({ error: "This is not available right now." });
+    next();
+  };
+  const banking = createBanking(db, audit, integrations);
   app.get("/api/admin/members/:id/account-details", requireAuth, requirePerm("accounts.view"), wrap(banking.accountGet));
   app.patch("/api/admin/members/:id/account-details", requireAuth, requirePerm("accounts.edit_number"), wrap(banking.accountSave));
   app.get("/api/admin/members/:id/funding", requireAuth, requirePerm("accounts.view"), wrap(banking.adminFundingGet));
@@ -1128,7 +1136,7 @@ export function createApp(dbPath?: string) {
   app.get("/api/me/funding", requireAuth, wrap(banking.fundingGet));
   app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
   app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
-  app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, wrap(banking.withdraw));
+  app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, requireIntegration("crypto_send"), wrap(banking.withdraw));
 
   app.post("/api/me/transfers", requireAuth, requireApproved, guardDemoLedger, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
@@ -1236,12 +1244,12 @@ export function createApp(dbPath?: string) {
   // server/src/assets.ts for why trading is gated, and server/src/money.ts for
   // why every quantity below is a bigint of base units rather than a number.
 
-  const cryptoWorkspace = createCryptoWorkspace(db, audit);
+  const cryptoWorkspace = createCryptoWorkspace(db, audit, integrations);
   app.get("/api/me/crypto/capabilities", requireAuth, wrap(cryptoWorkspace.capabilities));
   app.get("/api/me/crypto/orders", requireAuth, wrap(cryptoWorkspace.history));
   app.get("/api/me/crypto/orders/:id", requireAuth, wrap(cryptoWorkspace.order));
-  app.post("/api/me/crypto/quote", requireAuth, requireApproved, wrap(cryptoWorkspace.quote));
-  app.post("/api/me/crypto/confirm", requireAuth, wrap(cryptoWorkspace.confirm));
+  app.post("/api/me/crypto/quote", requireAuth, requireApproved, requireIntegration("crypto_trading"), wrap(cryptoWorkspace.quote));
+  app.post("/api/me/crypto/confirm", requireAuth, requireIntegration("crypto_trading"), wrap(cryptoWorkspace.confirm));
   app.post("/api/me/crypto/wallet-balance", requireAuth, wrap(cryptoWorkspace.walletBalance));
 
   app.get("/api/me/holdings", requireAuth, wrap(async (req, res) => {
@@ -1293,7 +1301,7 @@ export function createApp(dbPath?: string) {
     });
   }));
 
-  app.post("/api/me/holdings/trade", requireAuth, requireApproved, wrap(async (req, res) => {
+  app.post("/api/me/holdings/trade", requireAuth, requireApproved, requireIntegration("crypto_trading"), wrap(async (req, res) => {
     if (!tradingEnabled()) {
       return void res.status(503).json({ error: "Buying and selling is unavailable.", code: "crypto_disabled" });
     }
@@ -2988,6 +2996,24 @@ export function createApp(dbPath?: string) {
         "System", "platform", `Updated ${key} to ${value}.`, before, value);
     }
     res.json({ settings: Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map((r: any) => [r.key, r.value])) });
+  }));
+
+  /* ============================== admin: integration switches ============================== */
+
+  app.get("/api/admin/integrations", requireAuth, requirePerm("settings.manage"), wrap((_req, res) => {
+    res.json({ integrations: integrations.list() });
+  }));
+
+  app.put("/api/admin/integrations/:id", requireAuth, requirePerm("settings.manage"), wrap((req, res) => {
+    const id = String(req.params.id);
+    const def = integrationById(id);
+    if (!def) return void res.status(404).json({ error: "Unknown integration." });
+    if (typeof req.body?.enabled !== "boolean") return void res.status(400).json({ error: "enabled must be true or false." });
+    const before = integrations.isOn(id) ? "on" : "off";
+    const after = req.body.enabled ? "on" : "off";
+    integrations.setOn(id, req.body.enabled, req.user!.id);
+    audit(req, "integration.toggle", "System", "platform", `Switched ${def.label} ${after}.`, before, after);
+    res.json({ integration: integrations.status(id), integrations: integrations.list() });
   }));
 
   /* ============================== admin: durable operations casework ============================== */

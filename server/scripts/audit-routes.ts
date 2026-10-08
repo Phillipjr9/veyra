@@ -236,6 +236,8 @@ const BASELINE: Policy[] = [
   { method: "GET", path: "/api/admin/members/status-reasons", auth: true, perm: "accounts.set_status" },
   { method: "GET", path: "/api/admin/settings", auth: true, perm: "settings.manage" },
   { method: "PUT", path: "/api/admin/settings", auth: true, perm: "settings.manage" },
+  { method: "GET", path: "/api/admin/integrations", auth: true, perm: "settings.manage" },
+  { method: "PUT", path: "/api/admin/integrations/:id", auth: true, perm: "settings.manage" },
 ];
 
 const samePath = (a: string, b: string) => a === b || (a.includes(":") && new RegExp(`^${a.replace(/:[A-Za-z_]\w*/g, "[^/]+")}$`).test(b));

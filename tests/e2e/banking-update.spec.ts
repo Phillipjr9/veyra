@@ -74,7 +74,7 @@ test('catalog is separate from holdings; animated crypto request is recorded and
  let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
  await page.route('**/api/me/crypto-withdrawals',async route=>{if(route.request().method()!=='POST')return route.continue();const response=await route.fetch();await gate;await route.fulfill({response});});
  await send.getByRole('button',{name:'Confirm withdrawal'}).click();await expect(send.getByText('Submitting withdrawal request…',{exact:true})).toBeVisible();await expect(send.locator('.flow-track')).toBeVisible();release();
- await expect(send.getByText('Send complete',{exact:true})).toBeVisible();await expect(send.getByText(/External custody and on-chain execution are not connected/)).toBeVisible();await send.getByRole('button',{name:'Close',exact:true}).click();
+ await expect(send.getByText('Send complete',{exact:true})).toBeVisible();await expect(send.getByText(/External custody and on-chain execution are not connected/)).toHaveCount(0);await send.getByRole('button',{name:'Close',exact:true}).click();
  await expect(usdc.locator('.cw-asset-quantity')).toContainText('14.876544 USDC');await expect(usdc).not.toContainText('reserved');
  await page.reload();await page.getByRole('button',{name:'Activity',exact:true}).click();await expect(page.locator('.crypto-request-history')).toContainText('recorded');await expect(page.getByRole('button',{name:'Cancel and release units'})).toHaveCount(0);await page.getByRole('button',{name:'Account assets',exact:true}).click();await expect(usdc.locator('.cw-asset-quantity')).toContainText('14.876544 USDC');
 });
@@ -97,26 +97,15 @@ test('funding catalog restores choices without collecting unconnected bank or ca
  const u=await fixture(request);await signIn(page,u.email);
  await page.getByRole('button',{name:'Add funds',exact:true}).filter({visible:true}).first().click();
  const dialog=page.getByRole('dialog',{name:'Add funds',exact:true});
- for(const label of ['Link a bank (ACH)','Debit card','Bank transfer','Wire transfer','Direct deposit','Check deposit']) await expect(dialog.getByRole('button',{name:label,exact:true})).toBeVisible();
+ for(const label of ['Bank transfer','Wire transfer','Direct deposit','Check deposit']) await expect(dialog.getByRole('button',{name:label,exact:true})).toBeVisible();
+ await expect(dialog.getByRole('button',{name:'Link a bank (ACH)',exact:true})).toHaveCount(0);
+ await expect(dialog.getByRole('button',{name:'Debit card',exact:true})).toHaveCount(0);
  await expect(dialog.getByRole('button',{name:'Zelle',exact:true})).toHaveCount(0);
- await expect(dialog.getByText('Activation needed',{exact:true})).toHaveCount(2);
+ await expect(dialog.getByText('Activation needed',{exact:true})).toHaveCount(0);
  for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:900});await fits(page);expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);}
- await dialog.getByRole('button',{name:'Link a bank (ACH)',exact:true}).click();
- await expect(dialog.getByText('Awaiting provider activation',{exact:true})).toBeVisible();
- await expect(dialog.getByLabel('ACH routing number',{exact:true})).toBeDisabled();
- await expect(dialog.getByLabel('External account number',{exact:true})).toBeDisabled();
- await expect(dialog.getByRole('button',{name:'Link bank · not activated',exact:true})).toBeDisabled();
- await expect(dialog.getByText('Wait for trial deposits',{exact:true})).toBeVisible();
- await expect(dialog.getByRole('button',{name:'Submit funding request'})).toHaveCount(0);
- for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:900});await fits(page);expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);}
- await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();
- await expect(dialog.getByRole('button',{name:'Link a bank (ACH)',exact:true})).toBeFocused();
- await dialog.getByRole('button',{name:'Debit card',exact:true}).click();
- await expect(dialog.getByRole('button',{name:'Add debit card · not activated',exact:true})).toBeDisabled();
  await expect(dialog.locator('input')).toHaveCount(0);
  await expect(dialog.getByRole('button',{name:'Submit funding request'})).toHaveCount(0);
  await page.setViewportSize({width:320,height:844});await fits(page);expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
- await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();
  await expect(dialog.getByRole('button',{name:'Zelle',exact:true})).toHaveCount(0);
  const state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(0);
  const funding=await (await request.get('/api/me/funding',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(funding.requests).toHaveLength(0);
@@ -152,10 +141,9 @@ test('admin configures Zelle and direct deposit; Zelle stays out of Add funds wh
   const dialog=member.getByRole('dialog',{name:'Add funds',exact:true});
   await expect(dialog.getByRole('button',{name:'Zelle',exact:true})).toHaveCount(0);
   for(const name of ['Link a bank (ACH)','Debit card']){
-   await expect(dialog.getByRole('button',{name,exact:true})).toContainText('Activation needed');
-   await dialog.getByRole('button',{name,exact:true}).click();await expect(dialog.getByRole('button',{name:'Submit funding request'})).toHaveCount(0);
-   await expect(dialog.getByText('Awaiting provider activation',{exact:true})).toBeVisible();await dialog.getByRole('button',{name:'All funding methods',exact:true}).click();
+   await expect(dialog.getByRole('button',{name,exact:true})).toHaveCount(0);
   }
+  await expect(dialog.getByText('Awaiting provider activation',{exact:true})).toHaveCount(0);
   await fits(member);
   expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
   await dialog.getByRole('button',{name:'Direct deposit',exact:true}).click();

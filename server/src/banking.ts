@@ -9,6 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { validWallet } from "../../shared/walletAddress.js";
 export { validWallet } from "../../shared/walletAddress.js";
 import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider } from "../../shared/funding.js";
+import type { Integrations } from "./integrations.js";
 import { ASSETS } from "../../shared/catalog.js";
 import { BadInputError, centsToDecimal, dollarsToCents, getSetting, inTransaction, now, rid } from "./db.js";
 import { applyFee, quoteFee } from "../../shared/fees.js";
@@ -25,7 +26,9 @@ const requestKey = (body: any) => { const key = body?.requestKey; if (typeof key
 const ref = () => `VYR-${randomUUID().slice(0, 8).toUpperCase()}`;
 
 
-export function createBanking(db: DatabaseSync, audit: Audit) {
+export function createBanking(db: DatabaseSync, audit: Audit, integrations?: Integrations) {
+  // Members only see and use funding methods whose integration is switched on and ready.
+  const kindAllowed = (kind: string) => !integrations || integrations.fundingKindAvailable(kind);
   const member = (id: string) => {
     const row = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'user'").get(id) as any;
     if (!row || row.team_owner_id) throw new BadInputError("Select an account owner, not a staff or team-member login.");
@@ -197,7 +200,8 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
       res.json({ accounts: externalAccounts(id) });
     },
     fundingGet(req: Request, res: Response) {
-      res.json({ immediateFunding: demoPaymentsEnabled(), demoMode: demoPaymentsEnabled(), methods: demoPaymentsEnabled() ? accountMethods(req.user!.id) : methods(req.user!.id).filter((r: any) => r.enabled),
+      res.json({ immediateFunding: demoPaymentsEnabled(), demoMode: demoPaymentsEnabled(), methods: (demoPaymentsEnabled() ? accountMethods(req.user!.id) : methods(req.user!.id).filter((r: any) => r.enabled)).filter((m: any) => kindAllowed(m.kind)),
+        availableKinds: integrations ? integrations.availableFundingKinds() : undefined,
         linkedAccounts: linkedAccounts(req.user!.id), directDeposit: directDeposit(req.user!.id), requests: fundingRequests(req.user!.id) });
     },
     adminFundingGet(req: Request, res: Response) {
@@ -282,6 +286,7 @@ export function createBanking(db: DatabaseSync, audit: Audit) {
         if ((db.prepare("SELECT COUNT(*) AS n FROM funding_requests WHERE user_id=? AND status='pending'").get(id) as {n:number}).n >= 20) throw new BadInputError("You have 20 pending funding requests. Resolve existing requests before adding more.");
         const m = db.prepare("SELECT * FROM funding_methods WHERE id=? AND user_id=? AND enabled=1").get(String(req.body?.methodId ?? ""),id) as Method | undefined;
         if (!m) throw new BadInputError("Choose an enabled funding method configured for your account.");
+        if (!kindAllowed(m.kind)) throw new BadInputError("This funding method is not available right now.");
         if (fundingRequiresProvider(m.kind)) throw new BadInputError("This funding method is awaiting provider activation. No bank linking, trial deposits or card charges are available yet.");
         const requestId = rid("deposit"), reference = ref();
         db.prepare("INSERT INTO funding_requests(id,user_id,method_id,amount_cents,reference,method_snapshot,note,request_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(requestId,id,m.id,amount,reference,JSON.stringify(m),note,key,now());
