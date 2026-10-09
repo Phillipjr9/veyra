@@ -11,6 +11,7 @@ import { apiGet, describeAuthError, ApiError } from "../lib/api";
 import { storageBlocked } from "../lib/api";
 import { prewarmRecaptcha } from "../lib/recaptcha";
 import { federatedProviders, FederatedCancelled, type ProviderId } from "../lib/federated";
+import PhoneCodeStep from "../components/PhoneCodeStep";
 import { passkeySupported, passkeyErrorMessage, isPasskeyCancellation } from "../lib/passkey";
 import { useToast } from "../components/Toast";
 import { SsnField } from "../components/SsnField";
@@ -133,7 +134,7 @@ function AuthProviders({ providers, onProvider, onPasskey, busyProvider = "", pa
 }
 
 export function LoginPage() {
-  const { login, verifyLoginCode, loginWithProvider, loginWithPasskey, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
+  const { login, verifyLoginCode, verifyLoginPhone, switchToSmsLogin, loginWithProvider, loginWithPasskey, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession } = useAuth();
 
   const toast = useToast();
   const [email, setEmail] = useState("");
@@ -153,6 +154,12 @@ export function LoginPage() {
   const [challengeEmail, setChallengeEmail] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
   const [codeMode, setCodeMode] = useState<"authenticator" | "recovery">("authenticator");
+  // "sms": the challenge is a text to the member's verified number (PhoneCodeStep).
+  const [challengeMethod, setChallengeMethod] = useState<"totp" | "sms">("totp");
+  const [challengePhone, setChallengePhone] = useState("");
+  const [challengeMasked, setChallengeMasked] = useState("");
+  // An authenticator user with a verified phone may ask for a text instead.
+  const [smsFallbackAvailable, setSmsFallbackAvailable] = useState(false);
   const authBusy = busy || Boolean(busyProvider) || passkeyBusy;
 
   // Only server-advertised methods can initiate OAuth; unsupported methods stay disabled.
@@ -174,6 +181,10 @@ export function LoginPage() {
       if ("twoFactorRequired" in result) {
         setChallengeId(result.challengeId);
         setChallengeEmail(asEmail.trim());
+        setChallengeMethod(result.method ?? "totp");
+        setChallengePhone(result.phone ?? "");
+        setChallengeMasked(result.maskedPhone ?? "");
+        setSmsFallbackAvailable(Boolean(result.smsFallbackAvailable));
         setCodeMode("authenticator");
         setVerificationCode("");
         setPassword("");
@@ -210,6 +221,29 @@ export function LoginPage() {
       setBusy(false);
     }
   }
+
+  const resetChallenge = () => {
+    setChallengeId(""); setChallengeEmail(""); setVerificationCode(""); setError(""); setErrorHint("");
+    setChallengeMethod("totp"); setChallengePhone(""); setChallengeMasked(""); setSmsFallbackAvailable(false);
+  };
+
+  // Authenticator user, no phone to hand: switch the same challenge to a text.
+  const useTextInstead = async () => {
+    if (authBusy) return;
+    setError(""); setErrorHint(""); setBusy(true);
+    try {
+      const next = await switchToSmsLogin(challengeId);
+      setChallengeMethod("sms");
+      setChallengePhone(next.phone ?? "");
+      setChallengeMasked(next.maskedPhone ?? "");
+    } catch (err) {
+      const described = describeAuthError(err, "send a text");
+      setError(described.message);
+      setErrorHint(described.status ? `${described.hint} (HTTP ${described.status})` : described.hint);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleProvider = async (id: ProviderId) => {
     if (authBusy) return;
@@ -302,6 +336,18 @@ export function LoginPage() {
           </article>)}</div>
         </section>}
 
+      {challengeId && challengeMethod === "sms" ? (
+        <div className="auth-form">
+          <PhoneCodeStep
+            phone={challengePhone}
+            maskedPhone={challengeMasked}
+            containerId="login-recaptcha"
+            submitLabel="Verify and sign in"
+            onProof={async idToken => { await verifyLoginPhone(challengeId, idToken); }}
+          />
+          <button type="button" className="auth-code-back" onClick={resetChallenge}>Use a different account</button>
+        </div>
+      ) : (
       <form className="auth-form" onSubmit={submit}>
         {challengeId ? (
           <>
@@ -328,6 +374,11 @@ export function LoginPage() {
               }}
               onChange={e => setVerificationCode(codeMode === "authenticator" ? e.target.value.replace(/\D/g, "").slice(0, 6) : e.target.value.toUpperCase().replace(/[^A-Z0-9 -]/g, "").slice(0, 24))} />
             <p id="verification-help" className="auth-method-note">{codeMode === "authenticator" ? "Use the current six-digit code from your enrolled authenticator app. This is not an SMS code." : "Use one of the single-use recovery codes saved when you enabled two-step verification. A used code cannot be reused."}</p>
+            {smsFallbackAvailable && codeMode === "authenticator" && (
+              <button type="button" className="auth-code-back" disabled={busy} onClick={() => void useTextInstead()}>
+                Text me a code instead
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -347,9 +398,7 @@ export function LoginPage() {
           {busy ? <Loader2 className="spin" size={16} /> : null}{busy ? "Signing in…" : challengeId ? "Verify and sign in" : "Sign in"}
         </button>
         {challengeId ? (
-          <button type="button" className="auth-code-back" disabled={busy} onClick={() => {
-            setChallengeId(""); setChallengeEmail(""); setVerificationCode(""); setError(""); setErrorHint("");
-          }}>Use a different account</button>
+          <button type="button" className="auth-code-back" disabled={busy} onClick={resetChallenge}>Use a different account</button>
         ) : storageBlocked() && (
           <p className="auth-storage-note">
             This browser blocks web storage (embedded browsers and private mode often do), so sign-in works for this
@@ -357,6 +406,7 @@ export function LoginPage() {
           </p>
         )}
       </form>
+      )}
       {!challengeId && <>
         <div className="auth-divider"><span>Other ways to sign in</span></div>
         <AuthProviders providers={providers} onProvider={handleProvider} onPasskey={handlePasskey} busyProvider={busyProvider} passkeyBusy={passkeyBusy} disabled={authBusy} loading={providersLoading} />

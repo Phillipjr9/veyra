@@ -22,6 +22,7 @@ const CLIENT_FILES = [
   "src/lib/recaptcha.ts",
   "src/lib/authConfig.ts",
   "src/lib/federated.ts",
+  "src/lib/phoneAuth.ts",
   "src/lib/passkey.ts",
   "src/lib/holdings.ts",
   "src/lib/web3.ts",

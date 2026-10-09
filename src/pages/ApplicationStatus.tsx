@@ -18,6 +18,7 @@ import { useAcct, type ReviewRequirement } from "../lib/store";
 import { useAuth } from "../lib/auth";
 import { useToast } from "../components/Toast";
 import { VeyraMark } from "../components/VeyraMark";
+import PhoneVerifyCard from "../components/PhoneVerifyCard";
 
 const REQUIREMENT_COPY: Record<ReviewRequirement, { title: string; detail: string; example: string }> = {
   identity: { title: "Government photo ID", detail: "A clear photo of your passport, driver's licence or state ID.", example: "passport-2026.jpg" },
@@ -64,6 +65,8 @@ function UnderReview({ submittedAt, checking, onRefresh }: {
         <li className="now"><span><Loader2 size={13} className="spin" /></span><div><strong>In review</strong><small>A specialist is verifying your identity and details.</small></div></li>
         <li><span><Landmark size={13} /></span><div><strong>Account opens</strong><small>Your dashboard, card and account number unlock straight away.</small></div></li>
       </ul>
+
+      <PhoneVerifyCard />
 
       <div className="appstatus-note">
         <Mail size={15} />
@@ -145,6 +148,7 @@ function MoreInformation({ note, requirements, reviewedBy }: { note: string; req
       <p className="appstatus-lead">
         Before we can open your account we need to confirm a few things. This is routine, and it keeps your account safe.
       </p>
+      <PhoneVerifyCard />
       {note && (
         <blockquote className="appstatus-quote">
           <span>From the review team</span>

@@ -32,6 +32,10 @@ import { openDb, inTransaction, getSetting, setSetting, dollarsToCents, centsToD
 import { hashPassword, verifyPassword, signToken, verifyToken, rateLimit, failureBudgetExceeded, recordFailure, clearFailures, TOKEN_TTL_MS } from "./security.js";
 import { requireRecaptcha, publicRecaptchaConfig, RECAPTCHA_ACTIONS } from "./recaptcha.js";
 import { verifyFirebaseIdToken, federatedConfig, publicFederatedConfig, PROVIDER_REGISTRY } from "./federated.js";
+import { createRequirePhoneVerified, isPhoneVerified, maskPhone, normalizePhone, phoneStatus, phoneVerificationEnforced, verifyPhoneToken } from "./phoneAuth.js";
+
+/** The two phone columns the login and verification routes read. */
+type PhoneColumns = { phone: string | null; phone_verified_number: string | null };
 import {
   webauthnConfig, issueChallenge, verifyRegistration, verifyAuthentication,
   registrationOptions, authenticationOptions,
@@ -459,6 +463,9 @@ export function createApp(dbPath?: string) {
     });
   };
 
+  /** Money movement needs a verified phone too. Off unless FIREBASE_PROJECT_ID is set. */
+  const requirePhoneVerified = createRequirePhoneVerified(db);
+
   const memberRow = (id: string) =>
     db.prepare("SELECT * FROM users WHERE id = ? AND role = 'user'").get(id) as Record<string, unknown> | undefined;
 
@@ -483,7 +490,7 @@ export function createApp(dbPath?: string) {
   const previewAccess = createPreviewAccess(db);
   app.get("/api/auth/config", wrap((_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json({ recaptcha: publicRecaptchaConfig(), federated: publicFederatedConfig(), addresses: addressConfig(), previewLogins: previewAccess() });
+    res.json({ recaptcha: publicRecaptchaConfig(), federated: publicFederatedConfig(), addresses: addressConfig(), previewLogins: previewAccess(), phone: { enforced: phoneVerificationEnforced() } });
   }));
 
   // Signup address lookup is intentionally public, but bounded and server-keyed.
@@ -796,7 +803,7 @@ export function createApp(dbPath?: string) {
       return void res.status(429).json({ error: "Too many failed attempts — wait a minute, then try again." });
     }
     const row = db.prepare("SELECT * FROM users WHERE email = ? COLLATE NOCASE").get(email) as
-      | (AuthedUser & { password_hash: string; account_type: string; totp_secret_encrypted: string | null })
+      | (AuthedUser & { password_hash: string; account_type: string; totp_secret_encrypted: string | null; phone: string | null; phone_verified_number: string | null })
       | undefined;
     // Constant-ish response regardless of which factor failed.
     if (!row || !verifyPassword(password, row.password_hash)) {
@@ -806,47 +813,114 @@ export function createApp(dbPath?: string) {
     }
     clearFailures(accountKey);
     const prefs = db.prepare("SELECT two_factor FROM preferences WHERE user_id = ?").get(row.id) as { two_factor: number } | undefined;
-    if (prefs?.two_factor === 1 && row.totp_secret_encrypted) {
+    // Second factor. An authenticator app wins when both exist; a verified phone
+    // is the second factor for everyone else, and the backup for authenticator users.
+    const totpOn = prefs?.two_factor === 1 && Boolean(row.totp_secret_encrypted);
+    const phoneOn = phoneVerificationEnforced() && isPhoneVerified(row);
+    if (totpOn || phoneOn) {
       if (!rateLimit(`login:mfa:${row.id}`, 8, 60_000)) {
         return void res.status(429).json({ error: "Too many verification requests. Wait a minute, then try again." });
       }
       db.prepare("DELETE FROM login_challenges WHERE expires_at <= ?").run(now());
       const challengeId = randomUUID();
       const created = now();
-      db.prepare("INSERT INTO login_challenges (id, user_id, created_at, expires_at, attempts) VALUES (?, ?, ?, ?, 0)")
-        .run(challengeId, row.id, created, created + 5 * 60_000);
-      return void res.json({ twoFactorRequired: true, challengeId, expiresIn: 300 });
+      const method = totpOn ? "totp" : "sms";
+      db.prepare("INSERT INTO login_challenges (id, user_id, created_at, expires_at, attempts, method) VALUES (?, ?, ?, ?, 0, ?)")
+        .run(challengeId, row.id, created, created + 5 * 60_000, method);
+      if (method === "sms") {
+        // The member has just proved their password, and the number is theirs to
+        // see. The browser needs it to ask Firebase for the text. The SMS code,
+        // not the number, is what gates the session.
+        const e164 = normalizePhone(row.phone ?? "");
+        return void res.json({ twoFactorRequired: true, challengeId, expiresIn: 300, method, phone: e164, maskedPhone: e164 ? maskPhone(e164) : null });
+      }
+      return void res.json({ twoFactorRequired: true, challengeId, expiresIn: 300, method, smsFallbackAvailable: phoneOn });
     }
     const user = loadUser(row.id)!;
     res.json(createLoginSession(req, user));
   }));
 
-  app.post("/api/auth/login/verify", wrap((req, res) => {
+  /**
+   * An authenticator-app member asks for a text instead. Only for a challenge the
+   * password already unlocked, and only when a verified phone is on the account.
+   */
+  app.post("/api/auth/login/sms-fallback", wrap((req, res) => {
+    const challengeId = typeof req.body?.challengeId === "string" ? req.body.challengeId.trim() : "";
+    const challenge = challengeId
+      ? db.prepare("SELECT * FROM login_challenges WHERE id = ?").get(challengeId) as
+        | { user_id: string; expires_at: number; attempts: number; method: string } | undefined
+      : undefined;
+    if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5 || challenge.method !== "totp") {
+      return void res.status(400).json({ error: "This sign-in challenge expired. Start again with your email and password." });
+    }
+    if (!rateLimit(`login:sms-fallback:${challenge.user_id}`, 5, 60_000)) {
+      return void res.status(429).json({ error: "Too many text-message requests. Wait a minute, then try again." });
+    }
+    const row = db.prepare("SELECT phone, phone_verified_number FROM users WHERE id = ?").get(challenge.user_id) as PhoneColumns | undefined;
+    const e164 = normalizePhone(row?.phone ?? "");
+    if (!phoneVerificationEnforced() || !e164 || !isPhoneVerified(row)) {
+      return void res.status(409).json({ error: "Text-message sign-in isn't set up for this account. Use your authenticator app or a recovery code.", code: "sms_unavailable" });
+    }
+    db.prepare("UPDATE login_challenges SET method = 'sms' WHERE id = ?").run(challengeId);
+    res.json({
+      twoFactorRequired: true, challengeId, expiresIn: Math.max(1, Math.ceil((challenge.expires_at - now()) / 1000)),
+      method: "sms", phone: e164, maskedPhone: maskPhone(e164),
+    });
+  }));
+
+  app.post("/api/auth/login/verify", wrap(async (req, res) => {
     const challengeId = typeof req.body?.challengeId === "string" ? req.body.challengeId.trim() : "";
     const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
-    if (!challengeId || !code) return void res.status(400).json({ error: "Enter your authenticator or recovery code." });
+    const idToken = typeof req.body?.idToken === "string" ? req.body.idToken.trim() : "";
+    if (!challengeId || (!code && !idToken)) {
+      return void res.status(400).json({ error: "Enter the code we sent you, or your authenticator or recovery code." });
+    }
     const challenge = db.prepare("SELECT * FROM login_challenges WHERE id = ?").get(challengeId) as
-      | { id: string; user_id: string; created_at: number; expires_at: number; attempts: number }
+      | { id: string; user_id: string; created_at: number; expires_at: number; attempts: number; method: string }
       | undefined;
     if (!challenge || challenge.expires_at <= now() || challenge.attempts >= 5) {
       if (challenge) db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
       return void res.status(400).json({ error: "This sign-in challenge expired. Start again with your email and password." });
     }
     if (!rateLimit(`login:mfa-verify:${challenge.user_id}`, 10, 60_000)) {
-      return void res.status(429).json({ error: "Too many authenticator checks. Wait a minute, then try again." });
+      return void res.status(429).json({ error: "Too many verification checks. Wait a minute, then try again." });
     }
-    const row = db.prepare("SELECT totp_secret_encrypted FROM users WHERE id = ?").get(challenge.user_id) as { totp_secret_encrypted: string | null } | undefined;
-    let validTotp = false;
-    if (row?.totp_secret_encrypted) {
-      try { validTotp = verifyTotp(decryptTotpSecret(row.totp_secret_encrypted), code); } catch { validTotp = false; }
-    }
-    const recoveryCodeHash = validTotp ? null : hashRecoveryCode(code);
-    if (!validTotp && !recoveryCodeHash) {
+    const row = db.prepare("SELECT totp_secret_encrypted, phone, phone_verified_number FROM users WHERE id = ?")
+      .get(challenge.user_id) as ({ totp_secret_encrypted: string | null } & PhoneColumns) | undefined;
+
+    // One failed guess costs an attempt, whichever factor the challenge expects.
+    const failAttempt = (status: number, message: string) => {
       const attempts = challenge.attempts + 1;
       if (attempts >= 5) db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
       else db.prepare("UPDATE login_challenges SET attempts = ? WHERE id = ?").run(attempts, challengeId);
-      return void res.status(401).json({ error: attempts >= 5 ? "Too many incorrect codes. Start sign-in again." : "That code didn't match. Check your authenticator or recovery code and try again." });
+      return void res.status(attempts >= 5 ? 401 : status).json({ error: attempts >= 5 ? "Too many incorrect codes. Start sign-in again." : message });
+    };
+
+    // The factor is chosen by the challenge the password created, never by what
+    // the client sends: a text-message token cannot be used on an authenticator
+    // challenge, and the reverse.
+    let recoveryCodeHash: string | null = null;
+    if (challenge.method === "sms") {
+      const e164 = normalizePhone(row?.phone ?? "");
+      if (!phoneVerificationEnforced() || !e164 || !isPhoneVerified(row)) {
+        db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
+        return void res.status(409).json({ error: "Text-message sign-in isn't set up for this account. Start again to use your authenticator app.", code: "sms_unavailable" });
+      }
+      if (!idToken) return void res.status(400).json({ error: "Enter the six-digit code we texted you." });
+      const verdict = await verifyPhoneToken(idToken, e164);
+      if (!verdict.ok) return failAttempt(verdict.status, verdict.error);
+    } else {
+      if (!code) return void res.status(400).json({ error: "Enter your authenticator or recovery code." });
+      let validTotp = false;
+      if (row?.totp_secret_encrypted) {
+        try { validTotp = verifyTotp(decryptTotpSecret(row.totp_secret_encrypted), code); } catch { validTotp = false; }
+      }
+      recoveryCodeHash = validTotp ? null : hashRecoveryCode(code);
+      if (!validTotp && !recoveryCodeHash) {
+        return failAttempt(401, "That code didn't match. Check your authenticator or recovery code and try again.");
+      }
     }
+
     const user = loadUser(challenge.user_id);
     if (!user) {
       db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
@@ -864,13 +938,41 @@ export function createApp(dbPath?: string) {
       return { kind: "ok" as const, session: createLoginSession(req, user) };
     });
     if (result.kind === "invalid-recovery") {
-      const attempts = challenge.attempts + 1;
-      if (attempts >= 5) db.prepare("DELETE FROM login_challenges WHERE id = ?").run(challengeId);
-      else db.prepare("UPDATE login_challenges SET attempts = ? WHERE id = ?").run(attempts, challengeId);
-      return void res.status(401).json({ error: attempts >= 5 ? "Too many incorrect codes. Start sign-in again." : "That code didn't match. Check your authenticator or recovery code and try again." });
+      return failAttempt(401, "That code didn't match. Check your authenticator or recovery code and try again.");
     }
     if (result.kind !== "ok") return void res.status(400).json({ error: "This sign-in challenge expired. Start again with your email and password." });
     res.json(result.session);
+  }));
+
+  /**
+   * Phone verification for the signed-in member. Allowed before approval, because
+   * the application page is where most members verify first.
+   */
+  app.get("/api/me/phone", requireAuth, wrap((req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json(phoneStatus(db, req.user!.id));
+  }));
+
+  app.post("/api/me/phone/verify", requireAuth, wrap(async (req, res) => {
+    if (!phoneVerificationEnforced()) {
+      return void res.status(409).json({ error: "Phone verification isn't switched on for this server.", code: "phone_verification_disabled" });
+    }
+    const userId = req.user!.id;
+    const row = db.prepare("SELECT phone FROM users WHERE id = ?").get(userId) as { phone: string } | undefined;
+    const e164 = normalizePhone(row?.phone ?? "");
+    if (!e164) {
+      return void res.status(422).json({ error: "Add a valid mobile number to your profile before verifying it.", code: "phone_invalid_on_file" });
+    }
+    if (!rateLimit(`phone:verify:${userId}`, 10, 60_000)) {
+      return void res.status(429).json({ error: "Too many verification attempts. Wait a minute, then try again." });
+    }
+    const idToken = typeof req.body?.idToken === "string" ? req.body.idToken.trim() : "";
+    if (!idToken) return void res.status(400).json({ error: "Enter the six-digit code we texted you.", code: "phone_token_missing" });
+    const verdict = await verifyPhoneToken(idToken, e164);
+    if (!verdict.ok) return void res.status(verdict.status).json({ error: verdict.error, code: verdict.code });
+    db.prepare("UPDATE users SET phone_verified_number = ?, phone_verified_at = ? WHERE id = ?").run(e164, now(), userId);
+    notify(userId, "security", "Phone verified", `${maskPhone(e164)} is now verified. Deposits, transfers and trading are available once your account is approved.`);
+    res.json(phoneStatus(db, userId));
   }));
 
   app.post("/api/auth/register", requireRecaptcha(RECAPTCHA_ACTIONS.register), wrap((req, res) => {
@@ -1134,11 +1236,11 @@ export function createApp(dbPath?: string) {
   }));
 
   app.get("/api/me/funding", requireAuth, wrap(banking.fundingGet));
-  app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
+  app.post("/api/me/deposits", requireAuth, requireApproved, requirePhoneVerified, wrap(banking.deposit));
   app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
-  app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, requireIntegration("crypto_send"), wrap(banking.withdraw));
+  app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, requirePhoneVerified, requireIntegration("crypto_send"), wrap(banking.withdraw));
 
-  app.post("/api/me/transfers", requireAuth, requireApproved, guardDemoLedger, wrap((req, res) => {
+  app.post("/api/me/transfers", requireAuth, requireApproved, requirePhoneVerified, guardDemoLedger, wrap((req, res) => {
     const cents = dollarsToCents(req.body?.amount ?? 0);
     if (cents <= 0) return void res.status(400).json({ error: "Amount must be greater than zero." });
     if (cents > MAX_TRANSFER_CENTS) return void res.status(400).json({ error: "Transfers are limited to $250,000 per transaction." });
@@ -1237,7 +1339,7 @@ export function createApp(dbPath?: string) {
     paymentsHalted: () => getSetting(db, "payment_rails") === "halted",
   });
   app.post("/api/me/veyra-transfers/lookup", requireAuth, requireApproved, wrap(veyraTransfers.lookup));
-  app.post("/api/me/veyra-transfers", requireAuth, requireApproved, wrap(veyraTransfers.transfer));
+  app.post("/api/me/veyra-transfers", requireAuth, requireApproved, requirePhoneVerified, wrap(veyraTransfers.transfer));
 
   // --- Digital assets -------------------------------------------------------
   // Holdings live beside the deposit account, never inside it. See
@@ -1248,8 +1350,8 @@ export function createApp(dbPath?: string) {
   app.get("/api/me/crypto/capabilities", requireAuth, wrap(cryptoWorkspace.capabilities));
   app.get("/api/me/crypto/orders", requireAuth, wrap(cryptoWorkspace.history));
   app.get("/api/me/crypto/orders/:id", requireAuth, wrap(cryptoWorkspace.order));
-  app.post("/api/me/crypto/quote", requireAuth, requireApproved, requireIntegration("crypto_trading"), wrap(cryptoWorkspace.quote));
-  app.post("/api/me/crypto/confirm", requireAuth, requireIntegration("crypto_trading"), wrap(cryptoWorkspace.confirm));
+  app.post("/api/me/crypto/quote", requireAuth, requireApproved, requirePhoneVerified, requireIntegration("crypto_trading"), wrap(cryptoWorkspace.quote));
+  app.post("/api/me/crypto/confirm", requireAuth, requirePhoneVerified, requireIntegration("crypto_trading"), wrap(cryptoWorkspace.confirm));
   app.post("/api/me/crypto/wallet-balance", requireAuth, wrap(cryptoWorkspace.walletBalance));
 
   app.get("/api/me/holdings", requireAuth, wrap(async (req, res) => {
@@ -1301,7 +1403,7 @@ export function createApp(dbPath?: string) {
     });
   }));
 
-  app.post("/api/me/holdings/trade", requireAuth, requireApproved, requireIntegration("crypto_trading"), wrap(async (req, res) => {
+  app.post("/api/me/holdings/trade", requireAuth, requireApproved, requirePhoneVerified, requireIntegration("crypto_trading"), wrap(async (req, res) => {
     if (!tradingEnabled()) {
       return void res.status(503).json({ error: "Buying and selling is unavailable.", code: "crypto_disabled" });
     }
@@ -1574,7 +1676,12 @@ export function createApp(dbPath?: string) {
     const sets: string[] = [];
     const vals: Array<string | number> = [];
     if (typeof patch.name === "string" && patch.name.trim()) { sets.push("name = ?"); vals.push(patch.name.trim()); }
-    if (typeof patch.phone === "string") { sets.push("phone = ?"); vals.push(patch.phone.trim()); }
+    if (typeof patch.phone === "string") {
+      sets.push("phone = ?"); vals.push(patch.phone.trim());
+      // A changed number has not been proved yet. Same number, new formatting: keep the proof.
+      const verifiedNumber = (db.prepare("SELECT phone_verified_number FROM users WHERE id = ?").get(req.user!.id) as { phone_verified_number: string | null } | undefined)?.phone_verified_number ?? null;
+      if (normalizePhone(patch.phone) !== verifiedNumber) { sets.push("phone_verified_number = NULL", "phone_verified_at = NULL"); }
+    }
     if (typeof patch.business === "string" && req.user!.accountType === "business") { sets.push("business = ?"); vals.push(patch.business.trim()); }
     if (typeof patch.avatarUrl === "string" && patch.avatarUrl.length < 1_500_000) { sets.push("avatar_url = ?"); vals.push(patch.avatarUrl); }
     if (patch.plan === "Starter" || patch.plan === "Pro") { sets.push("plan = ?"); vals.push(patch.plan); }

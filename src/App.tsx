@@ -27,6 +27,7 @@ import { ZellePage } from "./pages/ZellePage";
 import { useAcct } from "./lib/store";
 import { SuperAdminPage } from "./pages/SuperAdmin";
 import { ApplicationStatusPage } from "./pages/ApplicationStatus";
+import PhoneVerifyCard from "./components/PhoneVerifyCard";
 import { SupportCenterPage } from "./pages/SupportCenter";
 import { EmailTemplatesPage } from "./pages/EmailTemplates";
 import { MoneyPlanPage } from "./components/MoneyPlan";
@@ -75,6 +76,11 @@ function RequireApproved({ children }: { children: React.ReactNode }) {
   if (!account) return <div className="route-loading"><span className="spinner" /></div>;
   if (account.kyc.review.state !== "approved" && location.pathname !== "/application") {
     return <Navigate to="/application" replace />;
+  }
+  // Approved, but money stays locked until the phone is proved. The card renders
+  // nothing once verified, or when the server doesn't enforce phone verification.
+  if (account.kyc.review.state === "approved") {
+    return <><PhoneVerifyCard variant="inline" />{children}</>;
   }
   return <>{children}</>;
 }

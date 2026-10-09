@@ -1173,6 +1173,19 @@ CREATE UNIQUE INDEX idx_external_accounts_request ON external_accounts(user_id,r
  CREATE INDEX idx_veyra_transfers_recipient ON veyra_transfers(recipient_id, created_at);
 `,
   },
+  {
+    // Phone verification (Firebase SMS). A member's phone is "verified" only when
+    // a Firebase ID token proving possession of exactly the stored number was
+    // accepted; the verified number is kept so a later change to the profile
+    // phone silently un-verifies the account. Login challenges record which
+    // second factor they expect: an authenticator code (totp) or a text (sms).
+    version: 29,
+    sql: `
+ ALTER TABLE users ADD COLUMN phone_verified_number TEXT;
+ ALTER TABLE users ADD COLUMN phone_verified_at INTEGER;
+ ALTER TABLE login_challenges ADD COLUMN method TEXT NOT NULL DEFAULT 'totp' CHECK(method IN ('totp','sms'));
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */
