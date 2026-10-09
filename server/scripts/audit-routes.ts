@@ -53,6 +53,10 @@ const rawRoutes = [...source.matchAll(ROUTE_RE)];
 type Policy = { method: string; path: string; auth: boolean; /** One permission, or any of several. */ perm: string | string[] | null; /** Authenticated account owner only; staff must be refused. */ memberOnly?: boolean };
 const BASELINE: Policy[] = [
   { method: "GET", path: "/api/me/demo-payments", auth: true, perm: null },
+  // Phone verification (Firebase text-message proof). Open before approval: the
+  // application page is where a member verifies first. See server/src/phoneAuth.ts.
+  { method: "GET", path: "/api/me/phone", auth: true, perm: null },
+  { method: "POST", path: "/api/me/phone/verify", auth: true, perm: null },
   { method: "POST", path: "/api/me/demo-payments/action", auth: true, perm: null },
   // Public surface: reachable without a session.
   // Stripe calls this with a signed raw payload rather than a bearer token; the
@@ -68,6 +72,9 @@ const BASELINE: Policy[] = [
   // anyone can sign in — and carries no secret: the site key is designed to
   // ship inside the page, while the secret/API key never leaves the server.
   { method: "GET", path: "/api/auth/config", auth: false, perm: null },
+  // Second-factor step for an authenticator user who asks for a text instead. Public,
+  // like /login/verify: the challenge id it needs is only issued after the password.
+  { method: "POST", path: "/api/auth/login/sms-fallback", auth: false, perm: null },
   // Public during signup; fixed upstream, bounded input, session-bound details,
   // per-connection and instance request budgets, and server-only credentials.
   { method: "POST", path: "/api/address/autocomplete", auth: false, perm: null },

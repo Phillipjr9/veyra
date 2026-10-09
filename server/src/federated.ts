@@ -200,7 +200,7 @@ export type VerifyResult =
   | { ok: true; identity: FederatedIdentity }
   | { ok: false; status: number; error: string; detail: string };
 
-const bad = (detail: string, status = 401, error = "That sign-in could not be verified. Try again."): VerifyResult =>
+const bad = (detail: string, status = 401, error = "That sign-in could not be verified. Try again."): Extract<VerifyResult, { ok: false }> =>
   ({ ok: false, status, error, detail });
 
 const decodeSegment = (segment: string): Record<string, unknown> | null => {
@@ -209,10 +209,16 @@ const decodeSegment = (segment: string): Record<string, unknown> | null => {
 };
 
 /**
- * Verifies a Firebase ID token against Google's JWKS and returns the identity
- * it asserts. Every check Firebase documents is applied; none are optional.
+ * Proves a Firebase ID token is genuine and current: RS256 signature against
+ * Google's JWKS, plus every standard claim (exp, iat, auth_time, aud, iss, sub).
+ * Provider policy is NOT applied here: the federated sign-in path and the
+ * phone-verification path each apply their own rules on top.
  */
-export async function verifyFirebaseIdToken(idToken: string): Promise<VerifyResult> {
+export type SignedFirebaseToken =
+  | { ok: true; payload: Record<string, unknown>; subject: string }
+  | Extract<VerifyResult, { ok: false }>;
+
+export async function verifyFirebaseSignedToken(idToken: string): Promise<SignedFirebaseToken> {
   const config = federatedConfig();
   if (!config.enabled) return bad("federated sign-in is not configured", 503, "Google sign-in is not enabled.");
   if (!idToken || typeof idToken !== "string") return bad("no token supplied", 400);
@@ -271,6 +277,14 @@ export async function verifyFirebaseIdToken(idToken: string): Promise<VerifyResu
 
   const subject = typeof payload.sub === "string" ? payload.sub.trim() : "";
   if (!subject) return bad("token carries no subject (uid)");
+  return { ok: true, payload, subject };
+}
+
+export async function verifyFirebaseIdToken(idToken: string): Promise<VerifyResult> {
+  const signed = await verifyFirebaseSignedToken(idToken);
+  if (!signed.ok) return signed;
+  const { payload, subject } = signed;
+  const config = federatedConfig();
 
   const firebase = (payload.firebase ?? {}) as { sign_in_provider?: unknown };
   const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { apiGet, apiPost, apiPatch, probeApi, getToken, setToken, clearToken, onUnauthorized, ApiError } from "./api";
 import { recaptchaField } from "./recaptcha";
 import { federatedIdToken, type ProviderId } from "./federated";
+import { requestSmsFallback } from "./phoneAuth";
 import { signInWithPasskey } from "./passkey";
 
 export type UserRole = "user" | "support" | "compliance" | "admin" | "superadmin";
@@ -22,7 +23,20 @@ export type User = {
   teamOwnerId?: string;
 };
 
-export type LoginChallenge = { twoFactorRequired: true; challengeId: string; expiresIn: number };
+/**
+ * A correct password on an account with a second factor. `method` says which:
+ * an authenticator/recovery code ("totp") or a text to `phone` ("sms").
+ * `smsFallbackAvailable` lets an authenticator user ask for a text instead.
+ */
+export type LoginChallenge = {
+  twoFactorRequired: true;
+  challengeId: string;
+  expiresIn: number;
+  method?: "totp" | "sms";
+  phone?: string | null;
+  maskedPhone?: string | null;
+  smsFallbackAvailable?: boolean;
+};
 export type LoginResult = User | LoginChallenge;
 
 type AuthValue = {
@@ -50,6 +64,10 @@ type AuthValue = {
   login: (email: string, password: string) => Promise<LoginResult>;
   /** Second step of a password sign-in: an authenticator or recovery code. */
   verifyLoginCode: (challengeId: string, code: string) => Promise<User>;
+  /** Second step for a text-message challenge: the Firebase ID token proving the texted number. */
+  verifyLoginPhone: (challengeId: string, idToken: string) => Promise<User>;
+  /** Authenticator user switches to a text on a challenge the password already unlocked. */
+  switchToSmsLogin: (challengeId: string) => Promise<LoginChallenge>;
   /**
    * Federated sign-in (Google / Apple / Microsoft). Firebase proves identity;
    * the server decides whether that identity may open an existing account
@@ -155,11 +173,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // to {} when the gate is off or Google is unreachable; the server decides.
     const result = await apiPost<{
       token?: string; user?: User; twoFactorRequired?: true; challengeId?: string; expiresIn?: number;
+      method?: "totp" | "sms"; phone?: string | null; maskedPhone?: string | null; smsFallbackAvailable?: boolean;
     }>("/api/auth/login", { email: email.trim(), password, ...(await recaptchaField("login")) });
     if (result.twoFactorRequired && result.challengeId) {
       // The password was right but no session exists yet: the form now asks
-      // for the authenticator code and finishes with verifyLoginCode().
-      return { twoFactorRequired: true, challengeId: result.challengeId, expiresIn: result.expiresIn ?? 300 };
+      // for the code and finishes with verifyLoginCode() or verifyLoginPhone().
+      return {
+        twoFactorRequired: true, challengeId: result.challengeId, expiresIn: result.expiresIn ?? 300,
+        method: result.method ?? "totp", phone: result.phone ?? null, maskedPhone: result.maskedPhone ?? null,
+        smsFallbackAvailable: result.smsFallbackAvailable ?? false,
+      };
     }
     if (!result.token || !result.user) throw new Error("The server did not complete sign-in. Try again.");
     setToken(result.token);
@@ -174,6 +197,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setActiveToken(token);
     setUser(me);
     return me;
+  }, []);
+
+  const verifyLoginPhone = useCallback(async (challengeId: string, idToken: string): Promise<User> => {
+    const { token, user: me } = await apiPost<{ token: string; user: User }>("/api/auth/login/verify", { challengeId, idToken });
+    setToken(token);
+    setActiveToken(token);
+    setUser(me);
+    return me;
+  }, []);
+
+  const switchToSmsLogin = useCallback(async (challengeId: string): Promise<LoginChallenge> => {
+    const next = await requestSmsFallback(challengeId);
+    return { twoFactorRequired: true, challengeId: next.challengeId, expiresIn: next.expiresIn, method: "sms", phone: next.phone, maskedPhone: next.maskedPhone };
   }, []);
 
   const loginWithProvider = useCallback(async (provider: ProviderId): Promise<User> => {
@@ -258,8 +294,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, verifyLoginCode, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword }),
-    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, verifyLoginCode, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword],
+    () => ({ user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, verifyLoginCode, verifyLoginPhone, switchToSmsLogin, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword }),
+    [user, ready, offline, sessionNotice, sessionDetail, dismissSessionNotice, resetSession, login, verifyLoginCode, verifyLoginPhone, switchToSmsLogin, loginWithProvider, loginWithPasskey, signup, acceptInvite, logout, updateUser, changePassword, forgotPassword, resetPassword],
 
   );
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
