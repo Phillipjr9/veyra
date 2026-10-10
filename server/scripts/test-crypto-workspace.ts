@@ -146,6 +146,16 @@ try {
   solUnits = Number.MAX_SAFE_INTEGER + 1;
   check("unsafe numeric RPC balances are unavailable instead of rounded", (await readSol()).json.units === null);
   check("wallet balance lookup does not mutate account holdings", held("SOL") === 200000000n);
+  const wallets = await api("GET", "/api/me/crypto/wallets", alice.token);
+  check("each owner receives BTC ETH USDC SOL deposit addresses", wallets.status === 200 && ["BTC", "ETH", "USDC", "SOL"].every(asset => wallets.json.wallets.some((w: any) => w.kind === "deposit" && w.asset === asset && validWallet(w.network, w.address))));
+  const eth = wallets.json.wallets.find((w: any) => w.asset === "ETH");
+  const link = await api("POST", "/api/me/crypto/wallets/link", alice.token, { network: "Ethereum", address: eth.address, label: "My MetaMask", requestKey: randomUUID() });
+  check("an external wallet can be linked by address", link.status === 201 && link.json.wallet.kind === "linked");
+  const ethBefore = held("ETH");
+  const inbound = await api("POST", "/api/me/crypto/wallets/receive", alice.token, { asset: "ETH", amount: "0.25", requestKey: randomUUID() });
+  check("inbound wallet deposit credits holdings", inbound.status === 201 && held("ETH") === ethBefore + 250000000000000000n);
+  const renamed = await api("PATCH", `/api/admin/members/${alice.id}/profile`, admin, { name: "Alice Revised", reason: "Staff corrected the legal name on file." });
+  check("admin can rewrite member profile fields", renamed.status === 200 && renamed.json.member.name === "Alice Revised");
   check("all financial foreign keys remain valid", db.prepare("PRAGMA foreign_key_check").all().length === 0);
   console.log(`\n${checks} crypto workspace checks passed.`);
 } finally {

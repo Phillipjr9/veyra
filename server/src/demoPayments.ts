@@ -27,9 +27,20 @@ export function createDemoPayments(db: DatabaseSync) {
   const owners = () => db.prepare("SELECT id,email,phone FROM users WHERE role='user' AND team_owner_id IS NULL").all() as Pick<Member,'id'|'email'|'phone'>[];
   const account = (id: string) => db.prepare('SELECT id,balance_cents FROM accounts WHERE user_id=?').get(id) as Account | undefined;
   const eligible = (m: Member | undefined) => !!m && m.role === 'user' && !m.team_owner_id && m.status === 'active' && m.review_state === 'approved';
+  function canonicalIdentifier(identifier: string) {
+    const email = identifier.includes('@');
+    if (email) {
+      const value = identifier.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) fail('Enter a valid email or a phone number with country code.');
+      return value;
+    }
+    const phone = normalizeDemoPhone(identifier);
+    if (!phone) fail('Use the recipient’s email or phone with country code.');
+    return phone;
+  }
   function recipient(identifier: string) {
-    const email = identifier.includes('@'), canonical = email ? identifier.toLowerCase() : normalizeDemoPhone(identifier);
-    if (!canonical) fail('Use the recipient’s signup email or phone with country code.');
+    const canonical = canonicalIdentifier(identifier);
+    const email = canonical.includes('@');
     const matches = owners().filter(u => (email ? u.email.toLowerCase() : normalizeDemoPhone(u.phone ?? '')) === canonical);
     if (matches.length !== 1) fail('No unique recipient matches. Check the email or use email instead of a shared phone.');
     const m = member(matches[0].id);
@@ -68,9 +79,15 @@ export function createDemoPayments(db: DatabaseSync) {
         let identifier = text(body.identifier), name = identifier, recipientId: string | null = null;
         if (!name) fail('Enter a recipient.');
         if (method === 'Zelle') {
-          const found = recipient(identifier);
-          if (found.member.id === id) fail('Use a different recipient, not your own identifier.');
-          identifier = found.identifier; name = found.member.name; recipientId = found.member.id;
+          identifier = canonicalIdentifier(identifier);
+          if (identifier === member(id).email.toLowerCase() || identifier === normalizeDemoPhone(member(id).phone ?? '')) fail('Use a different recipient, not your own identifier.');
+          name = identifier;
+          const email = identifier.includes('@');
+          const matches = owners().filter(u => (email ? u.email.toLowerCase() : normalizeDemoPhone(u.phone ?? '')) === identifier);
+          if (matches.length === 1) {
+            const found = member(matches[0].id);
+            if (eligible(found) && found.id !== id) { name = found.name; recipientId = found.id; }
+          }
         }
         const fee = quoteFee('transfer', cents);
         const previewId = randomUUID(), expires = Date.now() + 600000;

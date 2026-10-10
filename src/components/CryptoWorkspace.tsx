@@ -9,6 +9,7 @@ import type { CryptoAction, CryptoCapabilities, CryptoOrder } from "../../shared
 import { CryptoTradeDialog, pendingCryptoOrder } from "./CryptoTradeDialog";
 import { CryptoSendDialog, CryptoWithdrawalHistory } from "./CryptoSend";
 import { ConnectedWallet } from "./ConnectedWallet";
+import { CryptoWalletsPanel } from "./CryptoWallets";
 import "../styles/crypto-workspace.css";
 
 const usd = (value: string) => Number(value).toLocaleString(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -62,6 +63,7 @@ export function CryptoWorkspace() {
       <div className="cw-account-notice"><ShieldCheck size={20} /><div><b>Know where your assets live.</b><p>Buy, sell and swap update Veyra’s internal account records. <StaffNote>External custody, cash conversion, execution and bridging are not connected.</StaffNote> Send records a request and debits the units; it is not a blockchain transfer.</p><Link to="/legal/disclosures">Digital asset disclosures <ArrowUpRight size={12} /></Link></div></div>
       {capabilities && (!capabilities.canOperate || !capabilities.accountTrading) && <p className="cw-notice">{!capabilities.canOperate ? "View-only access. An active, approved account owner is required for these orders; team members cannot initiate them." : "Account trading is currently paused."}</p>}
     </div><ConnectedWallet sepoliaTestnetSend={!!capabilities?.sepoliaTestnetSend} /></div>
+    <CryptoWalletsPanel />
     <section className="cw-card cw-portfolio"><div className="cw-portfolio-tools"><div className="cw-tabs" role="group" aria-label="Crypto account view"><button type="button" aria-pressed={view === "assets"} onClick={() => setView("assets")}>Account assets</button><button type="button" aria-pressed={view === "activity"} onClick={() => setView("activity")}>Activity</button></div><button type="button" className="ghost-btn sm" disabled={loading} onClick={() => { void reload(); setRevision(value => value + 1); }}><RefreshCw size={14} />{loading ? "Refreshing…" : "Refresh account"}</button></div>
       {view === "assets" ? <><div className="cw-asset-heading"><div><h2>Your asset directory</h2><p>Available units can be traded or sent. Sent units leave the balance as soon as the request is recorded.</p></div><label className="cw-search"><Search size={16} /><input aria-label="Search account assets" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search assets" maxLength={80} /></label></div>
         {!data && <p role="status">{loading ? "Loading account assets…" : "Account assets unavailable. Use Retry account data above."}</p>}

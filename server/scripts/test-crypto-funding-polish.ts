@@ -94,11 +94,12 @@ try {
   check("all 24 supported assets have unique local images", new Set(icons).size === 24 && icons.every(path => path.startsWith("/images/crypto/")));
   check("asset images have distinct contents, not copied placeholders", new Set(icons.map(path => createHash("sha256").update(readFileSync(`public${path}`)).digest("hex"))).size === 24);
   const beforeReferenceBalance = db.prepare("SELECT balance_cents FROM accounts WHERE user_id=?").get(a.id)!.balance_cents;
-  const referenceBody = { bankName: "Owner Bank", accountName: "Household checking", accountType: "Checking", last4: "6789", ownershipConfirmed: true, requestKey: randomUUID() };
+  const referenceBody = { bankName: "Owner Bank", accountName: "Household checking", accountType: "Checking", accountNumber: "123456789012", ownershipConfirmed: true, requestKey: randomUUID() };
   const submitReference = (body = referenceBody, token = a.token) => api("POST", "/api/me/external-accounts", token, body);
   check("account references require authentication", (await api("POST", "/api/me/external-accounts", undefined, referenceBody)).status === 401);
   check("client cannot self-verify an external account", (await submitReference({ ...referenceBody, status: "verified" } as any)).status === 400);
-  check("full external account numbers are rejected", (await submitReference({ ...referenceBody, accountNumber: "123456789012" } as any)).status === 400);
+  check("last four digits alone are rejected", (await submitReference({ ...referenceBody, accountNumber: undefined, last4: "6789" } as any)).status === 400);
+  check("full external account numbers are accepted", (await submitReference({ ...referenceBody, accountNumber: "555123456789", requestKey: randomUUID() } as any)).status === 201);
   const pendingReference = await submitReference(); const referenceId = pendingReference.body.account.id;
   check("owner can submit a pending account reference without fabricating a bank link", pendingReference.status === 201 && pendingReference.body.account.status === "pending" && pendingReference.body.account.verification_kind === "staff_reference");
   check("request retry returns the same reference", (await submitReference()).body.account.id === referenceId);
@@ -118,7 +119,7 @@ try {
   check("approved reference appears in dropdown with honest scope", referenceMethod?.label.includes("Account reference"));
   check("approved reference supports only the existing explicit internal credit", (await deposit(referenceMethod.id)).status === 201);
   check("another owner cannot fund from an approved reference", (await deposit(referenceMethod.id,randomUUID(),b.token)).status === 400);
-  const rejectedReference = await submitReference({ ...referenceBody, last4: "4444", requestKey: randomUUID() });
+  const rejectedReference = await submitReference({ ...referenceBody, accountNumber: "444433332222", requestKey: randomUUID() });
   await api("POST", `/api/admin/members/${a.id}/external-accounts/${rejectedReference.body.account.id}/review`, admin, { decision: "reject", note: "Unable to independently verify ownership of this account." });
   check("declined references stay out of funding choices", !(await funding()).methods.some((m: any) => m.linkedAccountId === rejectedReference.body.account.id));
   console.log(`\n${checks} crypto/funding polish checks passed.`);

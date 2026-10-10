@@ -6,7 +6,7 @@ import { useMoneyFlow } from "./MoneyFlow";
 import { externalAccountLabel, externalAccountStatus, type ExternalAccount } from "../../shared/externalAccounts";
 import "../styles/funding-hub.css";
 export type { ExternalAccount } from "../../shared/externalAccounts";
-const blank = { bankName: "", accountName: "", last4: "", accountType: "Checking", ownershipConfirmed: false };
+const blank = { bankName: "", accountName: "", accountNumber: "", accountType: "Checking", ownershipConfirmed: false };
 const blankCard = {
   cardNumber: "", cardholderName: "", cardExpMonth: "", cardExpYear: "", cvc: "",
   billingName: "", billingAddressLine1: "", billingAddressLine2: "", billingCity: "", billingState: "", billingPostalCode: "", billingCountry: "US", ownershipConfirmed: false,
@@ -117,7 +117,7 @@ export function ExternalAccountsPage() {
       const result = await apiPost<{account: ExternalAccount}>("/api/me/external-accounts", { kind: "bank", ...form, requestKey: key.current });
       if (!active.current) return;
       setUncertain(false); setFormOpen(false); setForm(blank); key.current = crypto.randomUUID();
-      setNotice(`Account ending ${result.account.last4} saved for review. It will be available for internal account funding only after staff approval. No bank connection or debit was initiated.`);
+      setNotice(`Account ${result.account.last4 ? `ending ${result.account.last4}` : "reference"} saved for review. It will be available for internal account funding only after staff approval.`);
       await load();
     } catch (e) {
       if (!active.current) return;
@@ -184,7 +184,7 @@ export function ExternalAccountsPage() {
         <h2>{accounts.length ? "Your linked accounts & approved references" : "Link an external account"}</h2>
         {accounts.map(card)}
         {!accounts.length && <p>No verified external accounts or approved references are available yet. Save an account reference below to begin staff review.</p>}
-        <div className="funding-activation-note"><ShieldCheck size={20} /><strong>Account references and bank connections are different</strong><p>A saved reference records your bank name and last four digits for review. Staff approval enables internal account entries only. {rails?.configured ? "For provider-backed bank linking and ownership verification, use the secure Stripe connection above — never enter a full account number here." : "Live bank linking, ownership checks through a provider and ACH debits are not connected in this environment."}</p></div>
+        <div className="funding-activation-note"><ShieldCheck size={20} /><strong>Account references and bank connections are different</strong><p>A saved reference records your bank name and full account number for review. Staff approval enables internal account entries only. {rails?.configured ? "For provider-backed bank linking and ownership verification, use the secure Stripe connection above." : "Live bank linking, ownership checks through a provider and ACH debits are not connected in this environment."}</p></div>
       </section>
       {snapshot.referenceRequestsAvailable && !showForm && <button type="button" className="ghost-btn external-add-reference" onClick={() => { setMode("bank"); setFormOpen(true); }}>Add another funding reference <ArrowRight size={14} /></button>}
       {snapshot.referenceRequestsAvailable && showForm ? <section className="panel external-account-list external-account-form-panel">
@@ -194,19 +194,19 @@ export function ExternalAccountsPage() {
           <button type="button" role="tab" aria-selected={mode === "card"} className={mode === "card" ? "active" : ""} onClick={() => { setMode("card"); setNotice(""); setError(""); }}>Debit card</button>
         </div>
         {mode === "bank" ? <>
-          <p>Step 1: save your reference. Step 2: staff independently verify ownership. Step 3: the approved reference appears in Add funds. Saving does not verify ownership or authorize a debit.</p>
+          <p>Step 1: save the full account number. Step 2: staff independently verify ownership. Step 3: the approved reference appears in Add funds. Saving does not authorize a debit.</p>
           <form className="dash-form" onSubmit={submit}>
             <fieldset disabled={busy || uncertain}>
               <label>Bank name<input required maxLength={120} autoComplete="off" value={form.bankName} onChange={e => change("bankName",e.target.value)} placeholder="Name of your bank" /></label>
               <label>Account display name<input required maxLength={120} autoComplete="off" value={form.accountName} onChange={e => change("accountName",e.target.value)} placeholder="For example, Household checking" /></label>
               <div className="external-account-fields"><label>Account type<select value={form.accountType} onChange={e => change("accountType",e.target.value)}><option>Checking</option><option>Savings</option></select></label>
-                <label>Last four account digits<input required type="text" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={form.last4} onChange={e => change("last4",e.target.value.replace(/\D/g,""))} placeholder="1234" /></label></div>
-              <label className="external-ownership"><input type="checkbox" required checked={form.ownershipConfirmed} onChange={e => change("ownershipConfirmed",e.target.checked)} /><span>I own this account. I understand this saves a reference for review and does not link to my bank or authorize a withdrawal.</span></label>
+                <label>Full account number<input required type="text" inputMode="numeric" pattern="[0-9]{6,17}" maxLength={17} autoComplete="off" value={form.accountNumber} onChange={e => change("accountNumber",e.target.value.replace(/\D/g,""))} placeholder="123456789012" /></label></div>
+              <label className="external-ownership"><input type="checkbox" required checked={form.ownershipConfirmed} onChange={e => change("ownershipConfirmed",e.target.checked)} /><span>I own this account. I understand this saves a reference for review and does not authorize a withdrawal.</span></label>
             </fieldset>
             {uncertain && <p role="status">The save result is unconfirmed. Retry this same request before changing the details; it cannot create a duplicate.</p>}
             <button type="submit" className="solid-btn" disabled={busy}>{busy ? "Saving reference…" : uncertain ? "Retry same request" : "Submit account for review"}<ArrowRight size={15} /></button>
           </form>
-          <p className="funding-safety-note">Use only the last four digits. Never enter a full external account number, bank password or access code.</p>
+          <p className="funding-safety-note">Enter the full account number used for ACH, not the last four digits. Never send a bank password or access code.</p>
         </> : <>
           <p>Enter your debit card and its billing address. The card number, expiry and security code are validated in your browser and are never sent to Veyra; only a masked reference is stored. Card-funded deposits include a 1.5% fee shown before you confirm.</p>
           <form className="dash-form" onSubmit={submit}>
@@ -235,7 +235,7 @@ export function ExternalAccountsPage() {
           <p className="funding-safety-note">Your card details are validated locally and are not included in the request. Never send a full card number or security code to support.</p>
         </>}
       </section> : !snapshot.referenceRequestsAvailable ? <p>Only an active, approved account owner can submit a funding reference.</p> : null}
-      {requests.length > 0 && <section className="panel external-account-list" aria-label="Account reference reviews"><h2>Account reference reviews</h2>{requests.map(card)}<p>Refresh the status after staff review. For questions, contact support using the bank name and last four digits only.</p></section>}
+      {requests.length > 0 && <section className="panel external-account-list" aria-label="Account reference reviews"><h2>Account reference reviews</h2>{requests.map(card)}<p>Refresh the status after staff review. For questions, contact support using the bank name and account number.</p></section>}
       <Link to="/app/support-desk" className="text-link">Contact support about bank linking <ArrowRight size={14} /></Link>
     </>}
   </div>;

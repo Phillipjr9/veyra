@@ -26,6 +26,7 @@ const CLIENT_FILES = [
   "src/lib/holdings.ts",
   "src/lib/web3.ts",
   "src/components/CryptoWorkspace.tsx",
+  "src/components/CryptoWallets.tsx",
   "src/components/CryptoTradeDialog.tsx",
   "src/lib/store.tsx",
   "src/pages/Dashboard.tsx",

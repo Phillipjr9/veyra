@@ -1406,7 +1406,7 @@
   }
 
   .check-slot {
-    aspect-ratio: 16 / 9;
+    aspect-ratio: 8.25 / 3;
     min-height: 0;
   }
 
@@ -2110,4 +2110,6 @@
 .integration-checks { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
 .integration-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .integration-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; }
+.integration-switch input { width: 18px; height: 18px; accent-color: var(--violet); cursor: pointer; }
+ font-weight: 600; }
 .integration-switch input { width: 18px; height: 18px; accent-color: var(--violet); cursor: pointer; }

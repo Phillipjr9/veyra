@@ -129,7 +129,7 @@ test("an owner submits a reference, staff review it, and only then can it be sel
   });
   await page.getByLabel("Bank name", { exact: true }).fill("Harbor External Bank");
   await page.getByLabel("Account display name").fill("Operations checking");
-  await page.getByLabel("Last four account digits").fill("8765");
+  await page.getByLabel("Full account number").fill("876512345678");
   await page.getByRole("checkbox").check(); await fits(page);
   await page.getByRole("button", { name: "Submit account for review" }).click();
   await expect(page.getByRole("button", { name: "Retry same request" })).toBeVisible();

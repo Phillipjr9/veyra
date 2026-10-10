@@ -1372,11 +1372,11 @@ function LegacyPaymentsPage() {
   };
   const savePayee = (e: FormEvent) => {
     e.preventDefault();
-    if (!payeeForm.name.trim() || !payeeForm.bankName.trim() || !/^\d{9}$/.test(payeeForm.routing) || !/^\d{4}$/.test(payeeForm.accountLast4)) {
-      toast({ tone: "error", title: "Check the recipient details", description: "Use a name, bank, 9-digit routing number and last 4 account digits." });
+    if (!payeeForm.name.trim() || !payeeForm.bankName.trim() || !/^\d{9}$/.test(payeeForm.routing) || !/^\d{6,17}$/.test(payeeForm.accountLast4)) {
+      toast({ tone: "error", title: "Check the recipient details", description: "Use a name, bank, 9-digit routing number and the full account number." });
       return;
     }
-    const saved = addPayee({ name: payeeForm.name, nickname: payeeForm.nickname, bankName: payeeForm.bankName, routingNumber: payeeForm.routing, accountLast4: payeeForm.accountLast4, accountType: payeeForm.accountType });
+    const saved = addPayee({ name: payeeForm.name, nickname: payeeForm.nickname, bankName: payeeForm.bankName, routingNumber: payeeForm.routing, accountNumber: payeeForm.accountLast4, accountType: payeeForm.accountType });
     setPayee(saved.name); setPayeeOpen(false); setPayeeForm({ name: "", nickname: "", bankName: "", routing: "", accountLast4: "", accountType: "Checking" });
     toast({ tone: "success", title: `${saved.name} saved`, description: "The recipient is verified and ready for transfers." });
   };
@@ -1431,7 +1431,7 @@ function LegacyPaymentsPage() {
                 </>
               ) : method === "Zelle" ? (
                 <>
-                  <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Uses signup email or phone · account ledger only · 0.5% transfer fee" : "Send to US mobile # or email · Typically arrives in minutes · 0.5% transfer fee"}
+                  <ZelleLogo size={14} /> <strong>{isDemo ? "Pay with email or phone" : "Zelle® Instant Pay"}</strong> · {isDemo ? "Email or phone · sends even if they are not on Veyra · 0.5% transfer fee" : "Send to US mobile # or email · Typically arrives in minutes · 0.5% transfer fee"}
                 </>
               ) : (
                 <>
@@ -1457,12 +1457,12 @@ function LegacyPaymentsPage() {
           {method !== "Veyra" && !account.payees.length && <button type="button" className="add-recipient" onClick={() => setPayeeOpen(true)}><Plus size={14} /> Add a saved recipient</button>}
 
           <label htmlFor="pay-to">
-            {method === "Zelle" ? (isDemo ? "Pay to (Signup email or phone)" : "Pay to (Name, US Mobile # or Email)") : method === "Veyra" ? "Recipient email or Veyra ID" : "Pay to"}
+            {method === "Zelle" ? (isDemo ? "Pay to (Email or phone)" : "Pay to (Name, US Mobile # or Email)") : method === "Veyra" ? "Recipient email or Veyra ID" : "Pay to"}
           </label>
           <input
             id="pay-to"
             autoComplete="off"
-            placeholder={method === "Zelle" ? (isDemo ? "Registered email or +country code phone" : "e.g. Jamie Chen, (555) 234-5678, jamie@email.com") : method === "Veyra" ? "name@email.com or VYR123456789" : "Business or person"}
+            placeholder={method === "Zelle" ? (isDemo ? "Email or +country code phone" : "e.g. Jamie Chen, (555) 234-5678, jamie@email.com") : method === "Veyra" ? "name@email.com or VYR123456789" : "Business or person"}
             value={payee}
             onChange={e => setPayee(e.target.value)}
           />
@@ -1544,7 +1544,7 @@ function LegacyPaymentsPage() {
           <h3>Add recipient</h3>
           <div className="field-row"><div><label htmlFor="recipient-name">Full name</label><input id="recipient-name" required value={payeeForm.name} onChange={e => setPayeeForm(f => ({ ...f, name: e.target.value }))} placeholder="Person or business" /></div><div><label htmlFor="recipient-nick">Nickname <small>Optional</small></label><input id="recipient-nick" value={payeeForm.nickname} onChange={e => setPayeeForm(f => ({ ...f, nickname: e.target.value }))} placeholder="Rent, Mom, Accountant" /></div></div>
           <label htmlFor="recipient-bank">Bank name</label><input id="recipient-bank" required value={payeeForm.bankName} onChange={e => setPayeeForm(f => ({ ...f, bankName: e.target.value }))} placeholder="Bank or credit union" />
-          <div className="field-row"><div><label htmlFor="recipient-routing">Routing number</label><input id="recipient-routing" inputMode="numeric" maxLength={9} required value={payeeForm.routing} onChange={e => setPayeeForm(f => ({ ...f, routing: e.target.value.replace(/\D/g, "").slice(0, 9) }))} placeholder="9 digits" /></div><div><label htmlFor="recipient-last4">Account last 4</label><input id="recipient-last4" inputMode="numeric" maxLength={4} required value={payeeForm.accountLast4} onChange={e => setPayeeForm(f => ({ ...f, accountLast4: e.target.value.replace(/\D/g, "").slice(0, 4) }))} placeholder="0000" /></div></div>
+          <div className="field-row"><div><label htmlFor="recipient-routing">Routing number</label><input id="recipient-routing" inputMode="numeric" maxLength={9} required value={payeeForm.routing} onChange={e => setPayeeForm(f => ({ ...f, routing: e.target.value.replace(/\D/g, "").slice(0, 9) }))} placeholder="9 digits" /></div><div><label htmlFor="recipient-account">Full account number</label><input id="recipient-account" inputMode="numeric" maxLength={17} required value={payeeForm.accountLast4} onChange={e => setPayeeForm(f => ({ ...f, accountLast4: e.target.value.replace(/\D/g, "").slice(0, 17) }))} placeholder="Account number" /></div></div>
           <label htmlFor="recipient-type">Account type</label><select id="recipient-type" value={payeeForm.accountType} onChange={e => setPayeeForm(f => ({ ...f, accountType: e.target.value as "Checking" | "Savings" }))}><option>Checking</option><option>Savings</option></select>
           <button type="submit" className="solid-btn dash-submit">Save recipient</button>
         </form>

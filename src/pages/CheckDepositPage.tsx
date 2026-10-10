@@ -189,9 +189,9 @@ export function CheckDepositPage() {
       <header className="check-deposit-head">
         <span className="check-deposit-head-icon" aria-hidden="true"><Camera size={24} /></span>
         <div className="check-deposit-head-copy">
-          <span className="check-deposit-eyebrow">Remote deposit</span>
+          <span className="check-deposit-eyebrow">Remote deposit capture</span>
           <h1>Mobile check deposit</h1>
-          <p>Photograph the front and the endorsed back, then confirm the amount. Funds are added to your account immediately.</p>
+          <p>Fit a personal check (8.25 × 3 in) in the frame — front, then the endorsed back. Funds are added as soon as you confirm.</p>
         </div>
       </header>
 

@@ -731,9 +731,9 @@ try {
   expect("pocket withdrawal + delete refunds remainder", state.balance === balPrePocket && !state.savingsPockets.some((p: any) => p.id === pocketId));
 
   // Payees & scheduled payments: add → schedule → pay debits
-  const payee = await api("POST", "/api/me/payees", rae, { name: "Integration Vendor", bankName: "Civic Bank", routingNumber: "071000288", accountLast4: "9090", accountType: "Checking" });
+  const payee = await api("POST", "/api/me/payees", rae, { name: "Integration Vendor", bankName: "Civic Bank", routingNumber: "071000288", accountNumber: "909012345678", accountType: "Checking" });
   expect("payee added", payee.status === 201);
-  const badPayee = await api("POST", "/api/me/payees", rae, { name: "Bad", bankName: "X", routingNumber: "123", accountLast4: "12" });
+  const badPayee = await api("POST", "/api/me/payees", rae, { name: "Bad", bankName: "X", routingNumber: "123", accountNumber: "12" });
   expect("payee validation enforced (400)", badPayee.status === 400);
   const sched = await api("POST", "/api/me/scheduled", rae, { payeeId: payee.json.payee.id, payeeName: "Integration Vendor", amount: 250, category: "Operations", frequency: "monthly", nextDate: Date.now() + 86_400_000, autopay: true, memo: "Integration" });
   expect("scheduled payment created", sched.status === 201);

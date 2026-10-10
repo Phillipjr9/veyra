@@ -650,7 +650,7 @@ type CardInput = { label: string; limit: number; type: Card["type"]; merchantLoc
 type InvoiceInput = { client: string; clientEmail: string; amount: number; dueDays: number; description?: string };
 type InviteInput = { name: string; email: string; role: TeamMember["role"]; monthlyLimit: number };
 type PocketInput = { name: string; target: number; color: string; icon: SavingsPocket["icon"] };
-type PayeeInput = { name: string; nickname?: string; bankName: string; routingNumber: string; accountLast4: string; accountType: Payee["accountType"] };
+type PayeeInput = { name: string; nickname?: string; bankName: string; routingNumber: string; accountLast4?: string; accountNumber?: string; accountType: Payee["accountType"] };
 type ScheduledInput = { payeeId?: string; payeeName: string; amount: number; category: string; frequency: ScheduledPayment["frequency"]; nextDate: number; autopay: boolean; memo?: string };
 type BudgetInput = { name: string; category: string; monthlyLimit: number; alertPercent: number };
 type DisputeInput = { transactionId: string; reason: string; detail?: string };
@@ -1250,11 +1250,12 @@ function useAccountState() {
 
   const addPayee = useCallback(
     (input: PayeeInput): Payee => {
-      const payee: Payee = { id: rid("payee"), name: input.name.trim(), nickname: input.nickname?.trim() || undefined, bankName: input.bankName.trim(), routingNumber: input.routingNumber, accountLast4: input.accountLast4, accountType: input.accountType, verified: true, createdAt: Date.now() };
+      const accountNumber = (input.accountNumber || input.accountLast4 || "").replace(/\D/g, "");
+      const payee: Payee = { id: rid("payee"), name: input.name.trim(), nickname: input.nickname?.trim() || undefined, bankName: input.bankName.trim(), routingNumber: input.routingNumber, accountLast4: accountNumber.slice(-4), accountType: input.accountType, verified: true, createdAt: Date.now() };
       commit(a => ({ ...a, payees: [...a.payees, payee] }));
       syncPost(
         "/api/me/payees",
-        { name: payee.name, nickname: payee.nickname ?? "", bankName: payee.bankName, routingNumber: payee.routingNumber, accountLast4: payee.accountLast4, accountType: payee.accountType },
+        { name: payee.name, nickname: payee.nickname ?? "", bankName: payee.bankName, routingNumber: payee.routingNumber, accountNumber, accountLast4: payee.accountLast4, accountType: payee.accountType },
         (result) => adoptId(payee.id, (result as { payee?: { id?: string } } | null)?.payee?.id),
       );
       return payee;

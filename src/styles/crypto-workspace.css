@@ -34,6 +34,19 @@
 .cw-wallet-empty h3{font-size:16px;font-weight:550;margin:5px 0 8px}
 .cw-wallet-empty p{font-size:12px;color:var(--cw-muted);line-height:1.8}
 .cw-wallet-card>.solid-btn{width:100%;justify-content:center;gap:8px}
+.cw-wallets-panel{display:grid;gap:14px}
+.cw-deposit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.cw-deposit-card{display:grid;gap:10px;padding:14px;border:1px solid var(--cw-border);border-radius:14px;background:#fbfaff;min-width:0}
+.cw-deposit-head{display:flex;align-items:center;gap:10px}
+.cw-deposit-head img{flex:none}
+.cw-deposit-head b{display:block;font-size:14px}
+.cw-deposit-head small{display:block;font-size:11px;color:var(--cw-muted)}
+.cw-deposit-head .ghost-btn{margin-left:auto}
+.cw-deposit-codes{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.cw-deposit-codes .cw-qr{width:120px;height:120px;border-radius:8px;background:#fff}
+.cw-barcode{flex:1;min-width:140px;overflow:hidden;background:#fff;border:1px solid var(--cw-border);border-radius:8px;padding:6px}
+.cw-barcode svg{width:100%;height:56px}
+.cw-receive-form{padding:14px;border:1px dashed #c8b7eb;border-radius:12px;background:#f7f3ff}
 .cw-provider-note{display:flex;align-items:flex-start;gap:10px;margin:20px 0 12px;border-top:1px solid var(--cw-border);padding-top:18px;font-size:11px;line-height:1.7;color:#81768e}
 .cw-provider-note>svg{flex-shrink:0;margin-top:3px;color:#a896b8}
 .cw-provider-note b{font-weight:650;color:#594b6b}

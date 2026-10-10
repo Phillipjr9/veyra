@@ -1173,6 +1173,25 @@ CREATE UNIQUE INDEX idx_external_accounts_request ON external_accounts(user_id,r
  CREATE INDEX idx_veyra_transfers_recipient ON veyra_transfers(recipient_id, created_at);
 `,
   },
+  {
+    version: 29,
+    sql: `
+ALTER TABLE external_accounts ADD COLUMN account_number TEXT NOT NULL DEFAULT '';
+ALTER TABLE payees ADD COLUMN account_number TEXT NOT NULL DEFAULT '';
+CREATE TABLE user_crypto_wallets (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  kind TEXT NOT NULL CHECK(kind IN ('deposit','linked')),
+  network TEXT NOT NULL CHECK(network IN ('Bitcoin','Ethereum','Solana')),
+  asset TEXT NOT NULL,
+  address TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  UNIQUE(user_id, kind, network, address)
+);
+CREATE INDEX idx_user_crypto_wallets_user ON user_crypto_wallets(user_id);
+`,
+  },
 ];
 
 /* ---------- shared helpers ---------- */

@@ -109,6 +109,22 @@ export function CheckCaptureSlot({
         )}
         {!photo && !live && (
           <button type="button" className="check-slot-empty as-button" onClick={() => needsFile ? fileRef.current?.click() : onOpenCamera()}>
+            <div className={`check-blank check-blank-${side}`} aria-hidden="true">
+              {side === "front" ? (
+                <>
+                  <span className="check-blank-bank">Personal check · 8.25 × 3 in</span>
+                  <span className="check-blank-line">Pay to the order of</span>
+                  <span className="check-blank-dollars">$</span>
+                  <span className="check-blank-micr">⑆ 000000000 ⑈ 000000000000 ⑈ 0000</span>
+                </>
+              ) : (
+                <>
+                  <span className="check-blank-bank">Endorse here</span>
+                  <span className="check-blank-line">Sign as the payee is printed</span>
+                  <span className="check-blank-endorse">FOR DEPOSIT ONLY · VEYRA</span>
+                </>
+              )}
+            </div>
             {needsFile ? <SunMedium size={22} className="check-warn" /> : <Camera size={22} />}
             <strong>{copy.title}</strong>
             <small>{needsFile ? "Camera unavailable on this device. Use a photo instead." : copy.hint}</small>

@@ -2,6 +2,8 @@ import { sendCryptoNotification } from "./cryptoNotifications.js";
 import { previewCryptoEnabled } from "./previewCrypto.js";
 import { createPreviewAccess } from "./previewAccess.js";
 import { createCryptoWorkspace } from "./cryptoWorkspace.js";
+import { createCryptoWallets } from "./cryptoWallets.js";
+import { createMemberProfile } from "./memberProfile.js";
 import { readLedgerAnalytics } from "./ledgerAnalytics.js";
 import { createDemoPayments, demoPaymentsEnabled } from "./demoPayments.js";
 import { createBulkAccounts } from "./bulkAccounts.js";
@@ -1252,6 +1254,14 @@ export function createApp(dbPath?: string) {
   app.post("/api/me/crypto/quote", requireAuth, requireApproved, requireIntegration("crypto_trading"), wrap(cryptoWorkspace.quote));
   app.post("/api/me/crypto/confirm", requireAuth, requireIntegration("crypto_trading"), wrap(cryptoWorkspace.confirm));
   app.post("/api/me/crypto/wallet-balance", requireAuth, wrap(cryptoWorkspace.walletBalance));
+  const cryptoWallets = createCryptoWallets(db, audit);
+  app.get("/api/me/crypto/wallets", requireAuth, wrap(cryptoWallets.mine));
+  app.post("/api/me/crypto/wallets/link", requireAuth, requireApproved, wrap(cryptoWallets.link));
+  app.post("/api/me/crypto/wallets/receive", requireAuth, requireApproved, wrap(cryptoWallets.receive));
+  app.get("/api/admin/members/:id/crypto-wallets", requireAuth, requirePerm("accounts.view"), wrap(cryptoWallets.adminList));
+  app.patch("/api/admin/members/:id/crypto-wallets", requireAuth, requirePerm("accounts.edit_number"), wrap(cryptoWallets.adminSet));
+  const memberProfile = createMemberProfile(db, audit);
+  app.patch("/api/admin/members/:id/profile", requireAuth, requirePerm("accounts.edit_number"), wrap(memberProfile.save));
 
   app.get("/api/me/holdings", requireAuth, wrap(async (req, res) => {
     const assets = listAssets(db);
@@ -2150,16 +2160,17 @@ export function createApp(dbPath?: string) {
     const name = String(req.body?.name ?? "").trim();
     const bankName = String(req.body?.bankName ?? "").trim();
     const routingNumber = String(req.body?.routingNumber ?? "").trim();
-    const accountLast4 = String(req.body?.accountLast4 ?? "").trim();
-    if (!name || !bankName || !/^\d{9}$/.test(routingNumber) || !/^\d{4}$/.test(accountLast4)) {
-      return void res.status(400).json({ error: "Complete bank details are required." });
+    const accountNumber = String(req.body?.accountNumber ?? req.body?.accountLast4 ?? "").replace(/\D/g, "");
+    if (!name || !bankName || !/^\d{9}$/.test(routingNumber) || !/^\d{6,17}$/.test(accountNumber)) {
+      return void res.status(400).json({ error: "Complete bank details are required, including the full account number." });
     }
+    const accountLast4 = accountNumber.slice(-4);
     const id = rid("payee");
     db.prepare(
-      `INSERT INTO payees (id, user_id, name, nickname, bank_name, routing_number, account_last4, account_type, verified, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      `INSERT INTO payees (id, user_id, name, nickname, bank_name, routing_number, account_last4, account_type, verified, created_at, account_number)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     ).run(id, req.user!.id, name, String(req.body?.nickname ?? "").trim(), bankName, routingNumber, accountLast4,
-      req.body?.accountType === "Savings" ? "Savings" : "Checking", now());
+      req.body?.accountType === "Savings" ? "Savings" : "Checking", now(), accountNumber);
     res.status(201).json({ payee: { id, name } });
   }));
 

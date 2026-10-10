@@ -166,6 +166,12 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/me/crypto/quote", auth: true, perm: null },
   { method: "POST", path: "/api/me/crypto/confirm", auth: true, perm: null },
   { method: "POST", path: "/api/me/crypto/wallet-balance", auth: true, perm: null },
+  { method: "GET", path: "/api/me/crypto/wallets", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto/wallets/link", auth: true, perm: null },
+  { method: "POST", path: "/api/me/crypto/wallets/receive", auth: true, perm: null },
+  { method: "GET", path: "/api/admin/members/:id/crypto-wallets", auth: true, perm: "accounts.view" },
+  { method: "PATCH", path: "/api/admin/members/:id/crypto-wallets", auth: true, perm: "accounts.edit_number" },
+  { method: "PATCH", path: "/api/admin/members/:id/profile", auth: true, perm: "accounts.edit_number" },
   { method: "GET", path: "/api/me/holdings", auth: true, perm: null },
   { method: "POST", path: "/api/me/holdings/trade", auth: true, perm: null },
   { method: "GET", path: "/api/me/holdings/:asset/candles", auth: true, perm: null },
@@ -380,7 +386,7 @@ await call("POST", `/api/admin/members/${owner.user.id}/adjust`, superadmin, { d
 const ownerCard = (await call("POST", "/api/me/cards", ownerToken, { label: "Audit card", limit: 1000, type: "virtual", cardholder: "Route Owner" })).json.card;
 const ownerInvoice = (await call("POST", "/api/me/invoices", ownerToken, { client: "Audit Client", clientEmail: "c@audit.test", amount: 10, dueDays: 1 })).json.invoice;
 const ownerPocket = (await call("POST", "/api/me/pockets", ownerToken, { name: "Audit pocket", target: 100, color: "#7558dc", icon: "general" })).json.pocket;
-const ownerPayee = (await call("POST", "/api/me/payees", ownerToken, { name: "Audit Payee", bankName: "Audit Bank", routingNumber: "021000021", accountLast4: "1234", accountType: "Checking" })).json.payee;
+const ownerPayee = (await call("POST", "/api/me/payees", ownerToken, { name: "Audit Payee", bankName: "Audit Bank", routingNumber: "021000021", accountNumber: "123456789012", accountType: "Checking" })).json.payee;
 const ownerScheduled = (await call("POST", "/api/me/scheduled", ownerToken, { payeeName: "Audit Payee", amount: 5, category: "Operations", frequency: "monthly", nextDate: Date.now() + 86_400_000 })).json.payment;
 const ownerTransfer = (await call("POST", "/api/me/transfers", ownerToken, { counterparty: "Audit Vendor", amount: 20, category: "Operations", method: "ACH" })).json;
 const ownerDispute = (await call("POST", "/api/me/disputes", ownerToken, { transactionId: ownerTransfer.transaction.id, reason: "audit", detail: "audit" })).json.dispute;
@@ -424,7 +430,7 @@ const bodyFor = (route: Declared): unknown => {
   if (route.path.endsWith("/role")) return { role: "member-not-a-role" };
   if (route.path.endsWith("/kyc/request")) return { userId: ownerKycId, requirements: ["identity"], reason: "audit" };
   if (route.path.endsWith("/pockets") || route.path.includes("/pockets/")) return { name: "audit", target: 1, amount: 1, direction: "to_pocket" };
-  if (route.path.endsWith("/payees")) return { name: "Audit", bankName: "Audit Bank", routingNumber: "021000021", accountLast4: "1234" };
+  if (route.path.endsWith("/payees")) return { name: "Audit", bankName: "Audit Bank", routingNumber: "021000021", accountNumber: "123456789012" };
   if (route.path.endsWith("/scheduled")) return { payeeName: "Audit", amount: 1, nextDate: Date.now() + 86_400_000 };
   if (route.path.endsWith("/cards")) return { label: "audit", limit: 1, type: "virtual" };
   if (route.path.endsWith("/profile")) return { name: "Audit Probe" };

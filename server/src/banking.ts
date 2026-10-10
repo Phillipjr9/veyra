@@ -123,25 +123,30 @@ export function createBanking(db: DatabaseSync, audit: Audit, integrations?: Int
     requestExternalAccount(req: Request, res: Response) {
       if (req.user!.role !== "user" || req.user!.loginId || req.user!.status !== "active") return void res.status(403).json({ error: "Only an active account owner can submit a funding reference." });
       const body = req.body ?? {}, id = req.user!.id, key = requestKey(body);
-      const forbidden = ["cardNumber", "pan", "cvv", "cvc", "securityCode", "fullNumber", "routingNumber", "accountNumber"];
-      if (Object.keys(body).some(field => forbidden.includes(field))) throw new BadInputError("Never submit a full card number, security code, bank account number or routing number.");
+      const forbidden = ["cardNumber", "pan", "cvv", "cvc", "securityCode", "fullNumber", "routingNumber"];
+      if (Object.keys(body).some(field => forbidden.includes(field))) throw new BadInputError("Never submit a full card number, security code or routing number.");
       const kind = body.kind === "card" ? "card" : body.kind === "bank" || body.kind === undefined ? "bank" : null;
       if (!kind) throw new BadInputError("Select either a bank account reference or a debit card.");
+      if (kind === "card" && Object.keys(body).includes("accountNumber")) throw new BadInputError("Do not send a bank account number with a debit card.");
       if (kind === "bank") {
-        if (Object.keys(body).some(field => !["kind","bankName","accountName","last4","accountType","ownershipConfirmed","requestKey"].includes(field))) throw new BadInputError("Only a bank name, display name, type and last four digits are accepted. Never submit bank credentials or a full account number.");
-        const bank = text(body.bankName,120,true), name = text(body.accountName,120,true), last4 = text(body.last4,4,true);
-        if (!/^\d{4}$/.test(last4) || !["Checking","Savings"].includes(body.accountType) || body.ownershipConfirmed !== true) throw new BadInputError("Confirm ownership and provide the account type and exactly four final digits.");
+        if (Object.keys(body).some(field => !["kind","bankName","accountName","last4","accountNumber","accountType","ownershipConfirmed","requestKey"].includes(field))) throw new BadInputError("Only a bank name, display name, type and full account number are accepted.");
+        const bank = text(body.bankName,120,true), name = text(body.accountName,120,true);
+        const number = String(body.accountNumber ?? "").replace(/\D/g, "");
+        if (!/^\d{6,17}$/.test(number)) throw new BadInputError("Enter the full account number (6–17 digits). Last four digits alone are not enough.");
+        const last4 = number.slice(-4);
+        if (typeof body.last4 === "string" && body.last4.replace(/\D/g, "") && body.last4.replace(/\D/g, "") !== last4) throw new BadInputError("The last four digits must match the full account number.");
+        if (!["Checking","Savings"].includes(body.accountType) || body.ownershipConfirmed !== true) throw new BadInputError("Confirm ownership and provide the account type and full account number.");
         const result = inTransaction(db, () => {
           const prior = db.prepare("SELECT * FROM external_accounts WHERE user_id=? AND request_key=?").get(id,key) as any;
           if (prior) {
-            if (prior.kind !== "bank" || prior.bank_name !== bank || prior.account_name !== name || prior.last4 !== last4 || prior.account_type !== body.accountType) throw new BadInputError("This request identifier was already used for different details.");
+            if (prior.kind !== "bank" || prior.bank_name !== bank || prior.account_name !== name || prior.last4 !== last4 || prior.account_number !== number || prior.account_type !== body.accountType) throw new BadInputError("This request identifier was already used for different details.");
             return { id: prior.id, replayed: true };
           }
           if (!rateLimit(`bank-reference:${id}`,10,3600000)) throw new BadInputError("Too many account-reference requests. Try again later.");
           if (externalAccounts(id).length >= 25) throw new BadInputError("Contact support to manage your existing account references before adding more.");
-          if (db.prepare("SELECT 1 FROM external_accounts WHERE user_id=? AND kind='bank' AND bank_name=? COLLATE NOCASE AND last4=? AND account_type=? AND status IN ('pending','verified')").get(id,bank,last4,body.accountType)) throw new BadInputError("An account with this bank, type and ending is already listed. Review its existing status.");
+          if (db.prepare("SELECT 1 FROM external_accounts WHERE user_id=? AND kind='bank' AND bank_name=? COLLATE NOCASE AND account_number=? AND account_type=? AND status IN ('pending','verified')").get(id,bank,number,body.accountType)) throw new BadInputError("An account with this bank, type and number is already listed. Review its existing status.");
           const accountId = rid("external"), at = now();
-          db.prepare("INSERT INTO external_accounts(id,user_id,kind,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at,verification_kind,request_key) VALUES(?,?,'bank',?,?,?,?,'pending',NULL,?,?,'staff_reference',?)").run(accountId,id,bank,name,last4,body.accountType,at,at,key);
+          db.prepare("INSERT INTO external_accounts(id,user_id,kind,bank_name,account_name,last4,account_type,status,provider_reference,created_at,updated_at,verification_kind,request_key,account_number) VALUES(?,?,'bank',?,?,?,?,'pending',NULL,?,?,'staff_reference',?,?)").run(accountId,id,bank,name,last4,body.accountType,at,at,key,number);
           return { id: accountId, replayed: false };
         });
         res.status(result.replayed ? 200 : 201).json({ account: externalAccounts(id).find(account => account.id === result.id), replayed: result.replayed });

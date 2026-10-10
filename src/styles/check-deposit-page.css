@@ -1,13 +1,14 @@
 /* Dedicated mobile check deposit page. Camera/slot chrome lives in admin.css. */
 .check-deposit-page {
   display: grid;
-  gap: 18px;
+  gap: 20px;
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  max-width: 720px;
+  max-width: 880px;
   margin: 0 auto;
-  color: var(--ink, #2a1c3d);
+  color: #10241a;
+  padding-bottom: 24px;
 }
 .check-deposit-head {
   display: flex;
@@ -19,21 +20,22 @@
 .check-deposit-head-icon {
   display: inline-grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
-  background: #eef8f1;
-  border: 1px solid #d5eadc;
-  color: #2b7044;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, #1f6a45, #0f3d28);
+  border: 1px solid #0c2f1f;
+  color: #e8f7ee;
   flex: none;
+  box-shadow: 0 10px 24px -16px #0c2f1f;
 }
 .check-deposit-head-copy { flex: 1 1 260px; min-width: 0; }
 .check-deposit-eyebrow {
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: .12em;
+  letter-spacing: .14em;
   text-transform: uppercase;
-  color: #2b7044;
+  color: #1f6a45;
 }
 .check-deposit-head-copy h1 {
   margin: 2px 0 6px;
@@ -49,14 +51,14 @@
 }
 
 .check-deposit-card {
-  background: var(--paper, #fff);
-  border: 1px solid var(--line, #ebe4f3);
-  border-radius: 18px;
-  padding: 20px;
+  background: linear-gradient(180deg, #f4faf6 0%, #eef6f1 100%);
+  border: 1px solid #c3d9cb;
+  border-radius: 16px;
+  padding: 22px;
   display: grid;
   gap: 14px;
   min-width: 0;
-  box-shadow: 0 1px 2px rgba(42, 28, 61, .04);
+  box-shadow: 0 12px 28px -22px #12332255;
 }
 .check-deposit-card h2 {
   margin: 0;
@@ -94,14 +96,72 @@
 .check-deposit-steps svg { flex: none; margin-top: 2px; color: #2b7044; }
 .check-deposit-steps strong { font-weight: 650; }
 
+.check-deposit-page .check-photos-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+}
 .check-slot-wrap {
   display: grid;
   gap: 8px;
   min-width: 0;
-  justify-items: start;
+  justify-items: stretch;
 }
-.check-slot-wrap .check-slot { width: 100%; }
+.check-deposit-page .check-slot-empty.as-button { position: relative; overflow: hidden; }
+.check-deposit-page .check-slot-empty.as-button > svg,
+.check-deposit-page .check-slot-empty.as-button > strong,
+.check-deposit-page .check-slot-empty.as-button > small,
+.check-deposit-page .check-slot-empty.as-button > .check-slot-cta { position: relative; z-index: 1; }
+.check-deposit-page .check-slot {
+  width: 100%;
+  aspect-ratio: 8.25 / 3;
+  min-height: 0;
+  border-radius: 6px;
+  border: 1px solid #1b4a32;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.28), transparent 40%),
+    repeating-linear-gradient(-12deg, #d7ead8 0 2px, #cfe3d1 2px 4px);
+  box-shadow: inset 0 0 0 1px #ffffff88, 0 10px 22px -18px #12332288;
+}
+.check-deposit-page .check-slot.is-live {
+  background: #07140e;
+  border-color: #2bd67a;
+}
+.check-deposit-page .check-slot.captured {
+  border-color: #1f6a45;
+  background: #e7f4ea;
+}
+.check-deposit-page .check-viewfinder { object-fit: contain; background: #07140e; }
 .check-slot-wrap .check-file-btn { margin-top: 0; }
+.check-blank {
+  position: absolute;
+  inset: 8px;
+  border: 1px dashed #2f6d4b55;
+  border-radius: 4px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 8px 12px 6px;
+  pointer-events: none;
+  color: #234a35;
+  font-family: "Courier New", ui-monospace, monospace;
+}
+.check-blank-bank { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; }
+.check-blank-line { align-self: center; border-bottom: 1px solid #2f6d4b66; font-size: 11px; padding-bottom: 4px; width: 70%; }
+.check-blank-dollars {
+  position: absolute;
+  right: 12px;
+  top: 28px;
+  width: 72px;
+  height: 28px;
+  border: 1.5px solid #1b4a32;
+  display: grid;
+  place-items: center start;
+  padding-left: 8px;
+  font-weight: 700;
+}
+.check-blank-micr { font-size: 11px; letter-spacing: .18em; opacity: .8; }
+.check-blank-endorse { font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+.check-blank-back .check-blank-line { width: 55%; }
 
 .check-deposit-form .flow-label { margin: 4px 0 7px; }
 .check-deposit-form .dash-submit { margin-top: 8px; }
