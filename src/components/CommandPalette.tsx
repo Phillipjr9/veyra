@@ -67,7 +67,7 @@ export function CommandPalette({
         id: "act-deposit-check",
         category: "Quick Action",
         title: "Deposit a check",
-        subtitle: "Photograph front and endorsed back. Pending review — not credited.",
+        subtitle: "Photograph front and endorsed back. Funds added when you confirm.",
         icon: <Camera size={16} />,
         action: () => {
           onClose();

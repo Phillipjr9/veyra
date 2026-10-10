@@ -66,10 +66,9 @@ try{
  const beforeCheck=balance();
  const checkBody={amount:'40.00',requestKey:randomUUID(),note:'Mobile RDC',frontCaptured:true,backCaptured:true};
  const rdc=await api('POST','/api/me/check-deposits',a.token,checkBody);
- check('mobile check deposit stays pending in demo',rdc.status===201&&rdc.json.request.status==='pending'&&balance()===beforeCheck);
- check('check deposit replay is idempotent',(await api('POST','/api/me/check-deposits',a.token,checkBody)).json.request.id===rdc.json.request.id);
+ check('mobile check deposit credits immediately in demo',rdc.status===201&&rdc.json.request.status==='confirmed'&&balance()===beforeCheck+4000);
+ check('check deposit replay is idempotent',(await api('POST','/api/me/check-deposits',a.token,checkBody)).json.request.id===rdc.json.request.id&&balance()===beforeCheck+4000);
  check('check images are refused',(await api('POST','/api/me/check-deposits',a.token,{...checkBody,requestKey:randomUUID(),frontImage:'data:image/jpeg;base64,xx'})).status===400);
- check('check deposit notifies without crediting',recentMail.some((m: {tag?: string})=>m.tag==='funding-check-received'));
  process.env.DEMO_PAYMENTS_ENABLED='0';check('disabled mode refuses demo credit',(await deposit(body)).status===400);check('disabled fixtures not exposed',(await funding()).methods.length===0);check('disabled payments refused',(await action(confirm)).status===400);
  process.env.ACCOUNT_LEDGER_ENABLED='1';
  check('standard account switch enables immediate funding',(await funding()).immediateFunding===true);

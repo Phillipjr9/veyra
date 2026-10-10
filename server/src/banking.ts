@@ -304,8 +304,9 @@ export function createBanking(db: DatabaseSync, audit: Audit, integrations?: Int
       if (created && JSON.parse(request.method_snapshot).kind === "zelle") sendZelleNotification(db,id,{event:"incoming_pending",amountCents:request.amount_cents,reference:request.reference,occurredAt:request.created_at});
       res.status(201).json({ request, status: request.status, message: "Request recorded. No funds have been collected or credited." });
     },
-    /** Mobile remote deposit: both sides captured in the browser. Always pending.
-     * Images are never accepted or stored. Demo mode still does not credit. */
+    /** Mobile remote deposit: both sides captured in the browser. Credits the
+     * account immediately the way debit-card Add funds does. Images are never
+     * accepted or stored. External check processing is not connected. */
     checkDeposit(req: Request, res: Response) {
       if (req.user!.role !== "user" || req.user!.loginId || req.user!.status !== "active") return void res.status(403).json({ error: "Only an active account owner can deposit a check." });
       const body = req.body ?? {};
@@ -316,30 +317,34 @@ export function createBanking(db: DatabaseSync, audit: Audit, integrations?: Int
       if (amount < 1000 || amount > 10000000) throw new BadInputError("Check deposits must be between $10 and $100,000.");
       if (!kindAllowed("check")) throw new BadInputError("Check deposit is not available right now.");
       const key = requestKey(body), id = req.user!.id, note = text(body.note ?? "", 500);
-      let created = false;
-      const request = inTransaction(db, () => {
+      const posted = inTransaction(db, () => {
         const prior = db.prepare("SELECT * FROM funding_requests WHERE user_id=? AND request_key=?").get(id, key) as any;
         if (prior) {
           const snap = JSON.parse(prior.method_snapshot);
-          if (prior.amount_cents !== amount || prior.note !== note || snap.kind !== "check" || !snap.frontCaptured || !snap.backCaptured) throw new BadInputError("This request identifier was already used for different details.");
-          return prior;
+          if (prior.amount_cents !== amount || prior.note !== note || snap.kind !== "check" || !snap.frontCaptured || !snap.backCaptured || prior.status !== "confirmed") throw new BadInputError("This request identifier was already used for different details.");
+          return { request: prior, created: false };
         }
-        if ((db.prepare("SELECT COUNT(*) AS n FROM funding_requests WHERE user_id=? AND status='pending'").get(id) as { n: number }).n >= 20) throw new BadInputError("You have 20 pending funding requests. Resolve existing requests before adding more.");
-        let method = db.prepare("SELECT * FROM funding_methods WHERE user_id=? AND kind='check' ORDER BY enabled DESC, updated_at DESC LIMIT 1").get(id) as Method | undefined;
+        let method = demoPaymentsEnabled()
+          ? accountMethods(id).find(row => row.kind === "check") as Method | undefined
+          : db.prepare("SELECT * FROM funding_methods WHERE user_id=? AND kind='check' ORDER BY enabled DESC, updated_at DESC LIMIT 1").get(id) as Method | undefined;
         const methodId = method?.id ?? `check_${id}`;
         if (!method) {
-          db.prepare("INSERT INTO funding_methods(id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at,recipient_contact) VALUES(?,?,?,?,?,'','','',?,0,?,'') ON CONFLICT(id) DO NOTHING").run(methodId, id, "Check deposit", "check", "Mobile check deposit. Staff confirm receipt before funds are available. Images are not stored.", "Your Veyra account", now());
-          method = { id: methodId, user_id: id, label: "Check deposit", kind: "check", instructions: "Mobile check deposit. Staff confirm receipt before funds are available. Images are not stored.", bank_name: "", routing_number: "", account_number: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0 };
+          db.prepare("INSERT INTO funding_methods(id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at,recipient_contact) VALUES(?,?,?,?,?,'','','',?,0,?,'') ON CONFLICT(id) DO NOTHING").run(methodId, id, "Check deposit", "check", "Mobile check deposit. Images are not stored. External check processing is not connected.", "Your Veyra account", now());
+          method = { id: methodId, user_id: id, label: "Check deposit", kind: "check", instructions: "Mobile check deposit. Images are not stored. External check processing is not connected.", bank_name: "", routing_number: "", account_number: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0 };
+        } else {
+          db.prepare("INSERT INTO funding_methods(id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at,recipient_contact) VALUES(?,?,?,?,?,'','','',?,0,?,'') ON CONFLICT(id) DO NOTHING").run(method.id, id, method.label, method.kind, method.instructions || "Mobile check deposit.", method.recipient || "Your Veyra account", now());
         }
-        const requestId = rid("deposit"), reference = ref(), at = now();
-        const snapshot = { id: method.id, kind: "check", label: method.label || "Check deposit", instructions: method.instructions, capture: "browser", frontCaptured: true, backCaptured: true, ledgerOnly: true };
-        db.prepare("INSERT INTO funding_requests(id,user_id,method_id,amount_cents,reference,method_snapshot,note,request_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(requestId, id, method.id, amount, reference, JSON.stringify(snapshot), note, key, at);
-        db.prepare("INSERT INTO notifications(id,user_id,type,title,detail,read,created_at) VALUES(?,?,'info',?,?,0,?)").run(rid("note"), id, "Check deposit received", `$${centsToDecimal(amount)} submitted for staff review. Front and back were captured on your device. Images were not uploaded. No funds have been credited.`, at);
-        created = true;
-        return db.prepare("SELECT * FROM funding_requests WHERE id=?").get(requestId);
+        const a = db.prepare("SELECT * FROM accounts WHERE user_id=?").get(id) as any;
+        if (!a || !Number.isSafeInteger(a.balance_cents + amount) || a.balance_cents + amount > 1000000000) throw new BadInputError("Account cannot accept this credit (maximum balance $10,000,000).");
+        const requestId = rid("deposit"), reference = `VYR-${randomUUID().slice(0, 12).toUpperCase()}`, at = now();
+        const snapshot = { id: method.id, kind: "check", label: method.label || "Check deposit", instructions: method.instructions, capture: "browser", frontCaptured: true, backCaptured: true, ledgerOnly: true, demo: demoPaymentsEnabled() || undefined };
+        db.prepare("INSERT INTO funding_requests(id,user_id,method_id,amount_cents,status,reference,method_snapshot,note,evidence,request_key,created_at,reviewed_at) VALUES(?,?,?,?,'confirmed',?,?,?,?,?,?,?)").run(requestId, id, method.id, amount, reference, JSON.stringify(snapshot), note, "Account credit; external check processing is not connected.", key, at, at);
+        db.prepare("UPDATE accounts SET balance_cents=balance_cents+?,updated_at=? WHERE id=?").run(amount, at, a.id);
+        db.prepare("INSERT INTO transactions(id,account_id,user_id,merchant,category,method,amount_cents,fee_cents,status,reference,note,created_at,performed_by) VALUES(?,?,?,?,'Funding',?,?,?,'cleared',?,?,?,?)").run(rid("txn"), a.id, id, method.label || "Check deposit", "check", amount, 0, reference, "Account credit — external check processing is not connected.", at, id);
+        db.prepare("INSERT INTO notifications(id,user_id,type,title,detail,read,created_at) VALUES(?,?,'info',?,?,0,?)").run(rid("note"), id, "Check deposited", `$${centsToDecimal(amount)} added to your account. Front and back were captured on your device. Images were not uploaded.`, at);
+        return { request: db.prepare("SELECT * FROM funding_requests WHERE id=?").get(requestId), created: true };
       });
-      if (created) sendFundingNotification(db, id, { event: "check_received", amountCents: request.amount_cents, reference: request.reference, occurredAt: request.created_at, methodLabel: "Check deposit" });
-      res.status(201).json({ request, status: request.status, message: "Check submitted for review. No funds have been credited." });
+      res.status(201).json({ request: posted.request, status: "confirmed", fee: "0.00", amountCredited: centsToDecimal(posted.request.amount_cents), message: "Funds added to your account immediately." });
     },
     reviewDeposit(req: Request, res: Response) {
       const id = String(req.params.id); member(id);

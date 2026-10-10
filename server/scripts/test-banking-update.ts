@@ -104,7 +104,7 @@ try {
   api("POST","/api/me/check-deposits",alice.token,{amount:"55.00",requestKey:checkKey,frontCaptured:true,backCaptured:true,note:"RDC"}),
  ]);
  const checkSnap=JSON.parse(c1.json.request.method_snapshot);
- check("mobile check deposit is pending, idempotent and never credits",c1.status===201&&c1.json.request.status==="pending"&&c1.json.request.id===c2.json.request.id&&(await state()).balance===beforeCheck);
+ check("mobile check deposit credits immediately and is idempotent",c1.status===201&&c1.json.request.status==="confirmed"&&c1.json.request.id===c2.json.request.id&&(await state()).balance===beforeCheck+55);
  check("check deposit snapshot records capture without images",checkSnap.kind==="check"&&checkSnap.frontCaptured===true&&checkSnap.backCaptured===true&&!("frontImage" in checkSnap));
  check("staff cannot use the member check-deposit route",(await api("POST","/api/me/check-deposits",admin,{amount:"55.00",requestKey:randomUUID(),frontCaptured:true,backCaptured:true})).status===403);
  check("personal transfer category is optional",(await api("POST","/api/me/transfers",alice.token,{amount:1,counterparty:"Fixture"})).status===201&&(await state()).transactions[0].category==='Uncategorized');

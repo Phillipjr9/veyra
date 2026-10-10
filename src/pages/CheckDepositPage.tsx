@@ -1,25 +1,32 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
-import { Camera, Check, FileSignature, Lightbulb, RectangleHorizontal, ShieldCheck } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Camera, FileSignature, Lightbulb, RectangleHorizontal, ShieldCheck } from "lucide-react";
 import { ApiError, apiPost } from "../lib/api";
 import { money, useAcct } from "../lib/store";
 import { StaffNote } from "../components/StaffNote";
 import { validFundingAmount } from "../components/FundingDetails";
+import { FundingAnimation } from "../components/FundingAnimation";
+import { FlowReview, StageDots } from "../components/MoneyFlow";
+import { VeyraMark } from "../components/VeyraMark";
 import {
   CheckCaptureSlot, readCheckPhoto, snapshotVideo, stopStream, type CheckSide,
 } from "../components/MobileCheckDeposit";
+import "../styles/funding-hub.css";
 import "../styles/check-deposit-page.css";
 
-type Receipt = { amount: string; reference: string; status: string };
+type Phase = "form" | "review" | "processing" | "receipt";
+type Posted = { id: string; amount_cents: number; reference: string; status: string; created_at: number };
+type Presentation = { finish: () => void };
 
 /**
- * Mobile remote check deposit. The member photographs the front and the
- * endorsed back, then enters the written amount. Images stay on this device;
- * the server records a pending request only. No OCR, no bank clearance, no
- * instant credit.
+ * Mobile remote check deposit. Photograph the front and endorsed back, review,
+ * then the same add-funds animation as a debit-card deposit. The account is
+ * credited immediately. Images stay on this device; no OCR or bank clearance
+ * is connected.
  */
 export function CheckDepositPage() {
-  const { refreshAccount } = useAcct();
+  const navigate = useNavigate();
+  const { account, refreshAccount } = useAcct();
   const [front, setFront] = useState("");
   const [back, setBack] = useState("");
   const [live, setLive] = useState<CheckSide | null>(null);
@@ -28,10 +35,14 @@ export function CheckDepositPage() {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const [phase, setPhase] = useState<Phase>("form");
+  const [posted, setPosted] = useState<Posted | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const keyRef = useRef(crypto.randomUUID());
+  const submitting = useRef(false);
+  const mounted = useRef(true);
+  const pause = useRef<Presentation | null>(null);
 
   const stop = () => {
     stopStream(streamRef.current);
@@ -39,7 +50,14 @@ export function CheckDepositPage() {
     setLive(null);
   };
 
-  useEffect(() => () => stopStream(streamRef.current), []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      stopStream(streamRef.current);
+      if (pause.current) { pause.current.finish(); pause.current = null; }
+    };
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -108,35 +126,63 @@ export function CheckDepositPage() {
     setAmount("");
     setNote("");
     setError("");
-    setReceipt(null);
+    setPosted(null);
     setBusy(false);
+    setPhase("form");
+    submitting.current = false;
     keyRef.current = crypto.randomUUID();
   }
 
-  async function submit(event: FormEvent) {
+  function goReview(event: FormEvent) {
     event.preventDefault();
-    if (!front || !back) { setError("Photograph the front and the endorsed back before submitting."); return; }
+    if (!front || !back) { setError("Photograph the front and the endorsed back before continuing."); return; }
     if (!validFundingAmount(amount)) { setError("Enter $10–$100,000 with no more than two decimal places."); return; }
+    stop();
+    setError("");
+    setPhase("review");
+  }
+
+  async function confirm() {
+    if (submitting.current || busy || !validFundingAmount(amount) || !front || !back) return;
+    submitting.current = true;
+    let finishPresentation!: () => void;
+    const shown = new Promise<void>(finish => { finishPresentation = finish; });
+    const presentation: Presentation = { finish: finishPresentation };
+    pause.current = presentation;
     setBusy(true);
     setError("");
+    setPhase("processing");
     try {
-      const result = await apiPost<{ request: { reference: string; status: string } }>("/api/me/check-deposits", {
+      const result = await apiPost<{ request: Posted }>("/api/me/check-deposits", {
         amount,
         note,
         requestKey: keyRef.current,
         frontCaptured: true,
         backCaptured: true,
       });
-      setReceipt({ amount, reference: result.request.reference, status: result.request.status });
-      try { await refreshAccount(); } catch { /* receipt is already recorded */ }
+      if (!mounted.current) return;
+      if (result.request.status === "confirmed") {
+        void refreshAccount().catch(() => {
+          if (mounted.current) setError("Funds were added. Refresh your account to see the updated balance; do not submit another deposit.");
+        });
+      }
+      await shown;
+      if (!mounted.current) return;
+      setPosted(result.request);
+      setPhase("receipt");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not submit this check. Try again.");
+      if (mounted.current) { setError(err instanceof ApiError ? err.message : "Could not deposit this check. Try again."); setPhase("review"); }
     } finally {
-      setBusy(false);
+      presentation.finish();
+      if (pause.current === presentation) pause.current = null;
+      submitting.current = false;
+      if (mounted.current) setBusy(false);
     }
   }
 
   const ready = Boolean(front && back && validFundingAmount(amount) && !busy);
+  const dollars = Number(amount) || 0;
+  const stage = phase === "receipt" ? "success" : phase;
 
   return (
     <div className="check-deposit-page">
@@ -145,26 +191,60 @@ export function CheckDepositPage() {
         <div className="check-deposit-head-copy">
           <span className="check-deposit-eyebrow">Remote deposit</span>
           <h1>Mobile check deposit</h1>
-          <p>Photograph the front and the endorsed back, then enter the amount written on the check. Funds are not available until staff confirm receipt.</p>
+          <p>Photograph the front and the endorsed back, then confirm the amount. Funds are added to your account immediately.</p>
         </div>
       </header>
 
-      {receipt ? (
-        <section className="check-deposit-card check-deposit-receipt" aria-live="polite">
-          <h2><Check size={18} /> Submitted for review</h2>
-          <p>No funds have been credited. Staff confirm the check before anything is available. Typical hold is 1–7 business days after confirmation.</p>
-          <dl className="check-deposit-rows">
-            <div><dt>Amount</dt><dd>{money(Number(receipt.amount))}</dd></div>
-            <div><dt>Reference</dt><dd>{receipt.reference}</dd></div>
-            <div><dt>Status</dt><dd>{receipt.status === "pending" ? "Pending review · not credited" : receipt.status}</dd></div>
-          </dl>
-          <div className="check-deposit-actions">
-            <button type="button" className="solid-btn" onClick={reset}>Deposit another check</button>
-            <Link to="/app/transfers" className="ghost-btn">Back to transfers</Link>
-          </div>
-        </section>
-      ) : (
-        <form className="check-deposit-form" onSubmit={submit} noValidate>
+      {phase !== "form" && (
+        <StageDots kind="deposit" stage={stage} completionLabel="Added" />
+      )}
+
+      {error && phase !== "processing" && <p className="flow-field-error" role="alert">{error}</p>}
+
+      {(phase === "processing" || phase === "receipt") && (
+        <div className="check-deposit-flow">
+          <FundingAnimation
+            phase={phase === "receipt" ? "receipt" : "processing"}
+            amount={posted ? posted.amount_cents / 100 : dollars}
+            source="Check deposit"
+            immediate
+            receipt={posted ? { status: posted.status, reference: posted.reference, ledgerOnly: true, createdAt: posted.created_at, fee: 0 } : undefined}
+            onPresented={() => pause.current?.finish()}
+            close={() => navigate("/app")}
+            again={reset}
+          />
+        </div>
+      )}
+
+      {phase === "review" && (
+        <div className="check-deposit-flow">
+          <FlowReview
+            title="Review deposit"
+            description="Check the details before adding funds to your account."
+            amount={dollars}
+            confirmLabel={`Add ${money(dollars)}`}
+            onBack={() => { setError(""); setPhase("form"); }}
+            onConfirm={() => void confirm()}
+            confirmDisabled={busy}
+            track={{
+              from: { label: "Check deposit", sub: "Front and endorsed back captured", icon: <Camera size={20} /> },
+              to: { label: "Your Veyra account", sub: "Account entry", icon: <VeyraMark width={20} height={20} /> },
+            }}
+            rows={[
+              { label: "Method", value: "Mobile check deposit" },
+              { label: "To", value: "Your Veyra account" },
+              ...(note ? [{ label: "Memo", value: note }] : []),
+              { label: "Available", value: "Immediately after confirmation" },
+              { label: "Fee", value: "$0.00 · Free", tone: "free" as const },
+              { label: "Balance after", value: money((account?.balance ?? 0) + dollars) },
+            ]}
+          />
+          <p className="funding-animation-note">This updates your account. <StaffNote>External check processing is not connected.</StaffNote></p>
+        </div>
+      )}
+
+      {phase === "form" && (
+        <form className="check-deposit-form" onSubmit={goReview} noValidate>
           <section className="check-deposit-card">
             <h2>How to photograph the check</h2>
             <ol className="check-deposit-steps">
@@ -207,15 +287,12 @@ export function CheckDepositPage() {
               />
             </div>
             <p id="check-amount-hint" className={amount && !validFundingAmount(amount) ? "flow-field-error" : "flow-field-note"}>
-              $10–$100,000, matching the check. No fee. Not credited until staff confirm.
+              $10–$100,000, matching the check. No fee. Added to your account when you confirm.
             </p>
             <label className="flow-label" htmlFor="check-note">Memo (optional)</label>
             <input id="check-note" className="check-field" maxLength={500} value={note} onChange={e => setNote(e.target.value)} placeholder="A short note — no passwords or card details" />
-            <StaffNote>Check collection is not connected. This records a pending request for staff review.</StaffNote>
-            {error && <p className="flow-field-error" role="alert">{error}</p>}
-            <button className="solid-btn dash-submit" type="submit" disabled={!ready}>
-              {busy ? "Submitting…" : "Submit check for review"}
-            </button>
+            <StaffNote>This updates your account. External check processing is not connected.</StaffNote>
+            <button className="solid-btn dash-submit" type="submit" disabled={!ready}>Review deposit</button>
           </section>
         </form>
       )}
