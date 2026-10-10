@@ -20,10 +20,37 @@
     <link rel="apple-touch-icon" href="/favicon.svg" />
     <link rel="manifest" href="/site.webmanifest" />
     <title>Veyra | Everyday Banking & Digital Assets</title>
-    <style>html,body,#root{min-height:100%;margin:0;background:#f5f2eb;color:#18171d}</style>
+    <style>
+      html, body, #root { min-height: 100%; margin: 0; background: #f5f2eb; color: #18171d; }
+      .boot-home { font-family: Georgia, "Times New Roman", serif; color: #24212d; min-height: 100vh; }
+      .boot-bar { display: flex; justify-content: space-between; align-items: center; padding: 28px 8vw; }
+      .boot-bar strong { font-size: 28px; letter-spacing: -.06em; }
+      .boot-bar a, .boot-cta { background: #2a2533; color: #fff; text-decoration: none; padding: 12px 18px; border-radius: 5px; font: 500 12px/1.2 sans-serif; }
+      .boot-main { padding: 36px 8vw 80px; max-width: 760px; }
+      .boot-main p.kicker { letter-spacing: 1.6px; font: 600 11px/1.4 sans-serif; color: #645879; margin: 0; }
+      .boot-main h1 { font-size: clamp(40px, 8vw, 72px); font-weight: 500; line-height: 1.12; letter-spacing: -.06em; margin: 22px 0 18px; }
+      .boot-main .lede { font: 16px/1.7 sans-serif; color: #6d6177; max-width: 440px; }
+      .boot-cta { display: inline-block; margin-top: 8px; padding: 14px 22px; }
+      #boot-error { display: none; margin: 0; padding: 20px 8vw; background: #3b1020; color: #ffdce6; font: 13px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+      #boot-error.is-on { display: block; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot-home">
+        <header class="boot-bar">
+          <strong>veyra</strong>
+          <a href="#/signup">Open an account</a>
+        </header>
+        <main class="boot-main">
+          <p class="kicker">YOUR NEXT CHAPTER IN FINANCE</p>
+          <h1>Your money.<br />Your Bitcoin.<br />One secure home.</h1>
+          <p class="lede">Everyday banking meets the world of crypto. Bring your cash, Bitcoin, and digital assets together — with security at the heart of it all.</p>
+          <p><a class="boot-cta" href="#/signup">Open an account</a></p>
+        </main>
+      </div>
+    </div>
+    <pre id="boot-error"></pre>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

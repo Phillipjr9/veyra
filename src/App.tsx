@@ -5,6 +5,7 @@ import { HashRouter, Routes, Route, useLocation, Navigate } from "react-router-d
 import { useEffect, useMemo } from "react";
 import { applyPageMeta, pageMeta } from "./lib/pageMeta";
 import { MotionConfig } from "motion/react";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { AccountProvider } from "./lib/store";
 import { ScrollManager } from "./components/common";
@@ -196,13 +197,15 @@ function Shell() {
 export default function App() {
   return (
     <MotionConfig reducedMotion="user">
-      <AuthProvider>
-        <ToastProvider>
-          <HashRouter>
-            <Shell />
-          </HashRouter>
-        </ToastProvider>
-      </AuthProvider>
+      <ErrorBoundary>
+        <AuthProvider>
+          <ToastProvider>
+            <HashRouter>
+              <Shell />
+            </HashRouter>
+          </ToastProvider>
+        </AuthProvider>
+      </ErrorBoundary>
     </MotionConfig>
   );
 }

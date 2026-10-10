@@ -15,8 +15,33 @@ import "./styles/dashboard-advanced.css";
 import "./styles/mobile.css";
 import App from "./App";
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>
-);
+function showBootError(err: unknown) {
+  const el = document.getElementById("boot-error");
+  if (!el) return;
+  const text = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
+  el.textContent = text;
+  el.classList.add("is-on");
+}
+
+window.addEventListener("error", event => {
+  if (String(event.message).includes("ResizeObserver")) return;
+  showBootError(event.error ?? event.message);
+});
+window.addEventListener("unhandledrejection", event => {
+  showBootError(event.reason);
+});
+
+const root = document.getElementById("root");
+if (!root) {
+  showBootError("Veyra could not find #root.");
+} else {
+  try {
+    createRoot(root).render(
+      <StrictMode>
+        <App />
+      </StrictMode>
+    );
+  } catch (err) {
+    showBootError(err);
+  }
+}

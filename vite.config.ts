@@ -9,8 +9,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react(), tailwindcss(), viteSingleFile()],
+export default defineConfig(({ command }) => ({
+  // vite-plugin-singlefile rewrites base to "./" — that belongs in the HTML
+  // build, not the dev server (it can strand module URLs in a preview iframe).
+  plugins: [react(), tailwindcss(), ...(command === "build" ? [viteSingleFile()] : [])],
   // Rendered small on the auth pages in dev: tells a stale tab from broken code
   // at a glance (compare it with the terminal's start time).
   define: { __BUILD_STAMP__: JSON.stringify(`${new Date().toISOString().slice(0, 16).replace("T", " ")}Z`) },
@@ -35,4 +37,4 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
-});
+}));
