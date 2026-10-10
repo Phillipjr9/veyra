@@ -156,6 +156,8 @@ try {
   check("inbound wallet deposit credits holdings", inbound.status === 201 && held("ETH") === ethBefore + 250000000000000000n);
   const renamed = await api("PATCH", `/api/admin/members/${alice.id}/profile`, admin, { name: "Alice Revised", reason: "Staff corrected the legal name on file." });
   check("admin can rewrite member profile fields", renamed.status === 200 && renamed.json.member.name === "Alice Revised");
+  const relabel = await api("PATCH", `/api/admin/members/${alice.id}/crypto-wallets`, admin, { id: eth.id, address: eth.address, label: "Staff ETH", reason: "Staff renamed the Ethereum receive wallet." });
+  check("admin can edit a member wallet by id", relabel.status === 200 && relabel.json.wallets.some((w: any) => w.id === eth.id && w.label === "Staff ETH"));
   check("all financial foreign keys remain valid", db.prepare("PRAGMA foreign_key_check").all().length === 0);
   console.log(`\n${checks} crypto workspace checks passed.`);
 } finally {

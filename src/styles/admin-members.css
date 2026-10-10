@@ -1,5 +1,7 @@
 .admin-member-page { max-width:1200px; margin:auto; padding:28px 32px 60px; color:#302638; }
 .banking-wide { max-height: min(88vh, 920px); overflow: auto; }
+.member-wallet-edit { margin: 0 0 14px; padding: 12px 14px; border: 1px solid #e1d8ea; border-radius: 14px; display: grid; gap: 8px; }
+.member-wallet-edit legend { padding: 0 6px; font-size: 12px; font-weight: 700; color: #654789; }
 .member-topbar { display:flex; justify-content:space-between; align-items:center; gap:16px; padding-bottom:24px; border-bottom:1px solid #e1d9e9; }
 .member-topbar > span { font-size:10px; letter-spacing:.15em; color:#8b7999; }
 .member-topbar a { display:inline-flex; gap:8px; align-items:center; text-decoration:none; color:#654789; font-size:13px; }

@@ -1,5 +1,6 @@
 import { ExternalAccountsPage } from "../../components/ExternalAccounts";
 import { CryptoWorkspace } from "../../components/CryptoWorkspace";
+import { CryptoReceivePage, CryptoWalletPage } from "../../components/CryptoWallets";
 import { SavingsActivityPanel } from "../../components/SavingsActivityPanel";
 import { buildLedgerAnalytics, type FlowRange } from "../../lib/dashboardAnalytics";
 import { useDemoPayments } from "../../lib/demoPayments";
@@ -3512,6 +3513,8 @@ export function ClassicApp() {
         <Route path="scout" element={<ScoutWorkspace />} />
         <Route path="markets" element={<MarketsPage />} />
         <Route path="assets" element={<AssetsPage />} />
+        <Route path="assets/receive" element={<CryptoReceivePage />} />
+        <Route path="assets/wallets/:walletId" element={<CryptoWalletPage />} />
         <Route path="plan" element={<MoneyPlanPage />} />
         <Route path="rewards" element={<RewardsPage />} />
         <Route path="perks" element={<PerksPage />} />

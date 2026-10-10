@@ -26,6 +26,7 @@ import {
   AccountsPage, BillsPage, DisputesPage, SecurityCenterPage, KYCPage
 } from "./pages/Dashboard";
 import { ClassicApp, MarketsPage, AssetsPage } from "./pages/dashboards/ClassicDashboard";
+import { CryptoReceivePage, CryptoWalletPage } from "./components/CryptoWallets";
 import { ZellePage } from "./pages/ZellePage";
 import { CheckDepositPage } from "./pages/CheckDepositPage";
 import { useAcct } from "./lib/store";
@@ -150,6 +151,8 @@ function Shell() {
           <Route path="external-accounts" element={<ExternalAccountsPage />} />
           <Route path="markets" element={<MarketsPage />} />
           <Route path="assets" element={<AssetsPage />} />
+          <Route path="assets/receive" element={<CryptoReceivePage />} />
+          <Route path="assets/wallets/:walletId" element={<CryptoWalletPage />} />
           <Route path="cards" element={<CardsPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="transfers" element={<PaymentsPage />} />

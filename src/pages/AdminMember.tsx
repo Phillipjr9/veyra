@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { Link, Navigate, useParams } from "react-router-dom";
-import { ArrowLeft, ArrowUpRight, Building2, Landmark, Mail, RefreshCw, ShieldCheck, UserRound, UserCog, Wallet } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Building2, Coins, Landmark, Mail, RefreshCw, ShieldCheck, UserRound, UserCog, Wallet } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { isStaff, type Permission } from "../lib/permissions";
 import { apiGet, apiPatch, apiPost } from "../lib/api";
@@ -35,32 +35,21 @@ function MemberProfileEditor({ userId, data, close, saved }: { userId: string; d
     const keys = ["firstName","middleName","lastName","dob","ssn","phone","email","addressLine1","addressLine2","city","state","postalCode","country","occupation","employer","legalName","ein"];
     return Object.fromEntries(keys.map(key => [key, String(src[key] ?? "")]));
   });
-  const [wallets, setWallets] = useState<CryptoWallet[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const dialog = useBankingDialog(close, busy);
-  useEffect(() => {
-    let live = true;
-    apiGet<{ wallets: CryptoWallet[] }>(`/api/admin/members/${userId}/crypto-wallets`)
-      .then(r => { if (live) setWallets(r.wallets.filter(w => w.kind === "deposit")); })
-      .catch(() => {});
-    return () => { live = false; };
-  }, [userId]);
   const set = (key: keyof typeof form, value: string) => setForm(f => ({ ...f, [key]: value }));
   async function submit(e: FormEvent) {
     e.preventDefault(); if (busy) return; setBusy(true); setError("");
     try {
       await apiPatch(`/api/admin/members/${userId}/profile`, { ...form, identity });
-      for (const wallet of wallets) {
-        await apiPatch(`/api/admin/members/${userId}/crypto-wallets`, { network: wallet.network, asset: wallet.asset, address: wallet.address, label: wallet.label, reason: form.reason });
-      }
       saved(); close();
     } catch (err) { setError(err instanceof Error ? err.message : "Could not save this profile."); }
     finally { setBusy(false); }
   }
   return <div className="banking-scrim"><section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Edit profile: ${member.name}`} className="banking-panel banking-wide">
     <h2>Edit member profile</h2>
-    <p>Change contact details, plan, application identity and deposit wallet addresses. Bank routing/account numbers stay in Edit account details.</p>
+    <p>Change contact details, plan and application identity. Crypto wallets have their own editor. Bank routing/account numbers stay in Edit account details.</p>
     {error && <p role="alert" className="banking-error">{error}</p>}
     <form className="dash-form" onSubmit={submit}><fieldset disabled={busy}>
       <h3>Account</h3>
@@ -75,12 +64,55 @@ function MemberProfileEditor({ userId, data, close, saved }: { userId: string; d
       {(["firstName","lastName","dob","ssn","addressLine1","city","state","postalCode","country","occupation","employer","legalName","ein"] as const).map(key => (
         <label key={key}>{key.replace(/([A-Z])/g, " $1").replace(/^./, s => s.toUpperCase())}<input value={identity[key] ?? ""} onChange={e => setIdentity(i => ({ ...i, [key]: e.target.value }))} /></label>
       ))}
-      <h3>Crypto deposit addresses</h3>
-      {wallets.map(wallet => (
-        <label key={wallet.id}>{wallet.asset} · {wallet.network}<input value={wallet.address} onChange={e => setWallets(rows => rows.map(row => row.id === wallet.id ? { ...row, address: e.target.value } : row))} /></label>
-      ))}
       <label>Reason for change<textarea required maxLength={500} value={form.reason} onChange={e => set("reason", e.target.value)} /></label>
       <div className="modal-actions"><button type="button" className="ghost-btn" onClick={close} disabled={busy}>Cancel</button><button className="solid-btn" disabled={busy}>{busy ? "Saving…" : "Save all profile fields"}</button></div>
+    </fieldset></form>
+  </section></div>;
+}
+
+function MemberWalletsEditor({ userId, name, close, saved }: { userId: string; name: string; close: () => void; saved: () => void }) {
+  const [wallets, setWallets] = useState<CryptoWallet[]>([]);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const dialog = useBankingDialog(close, busy);
+  useEffect(() => {
+    let live = true;
+    apiGet<{ wallets: CryptoWallet[] }>(`/api/admin/members/${userId}/crypto-wallets`)
+      .then(r => { if (live) setWallets(r.wallets); })
+      .catch(e => { if (live) setError(e instanceof Error ? e.message : "Could not load wallets."); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [userId]);
+  function patch(id: string, field: "address" | "label", value: string) {
+    setWallets(rows => rows.map(row => row.id === id ? { ...row, [field]: value } : row));
+  }
+  async function submit(e: FormEvent) {
+    e.preventDefault(); if (busy) return; setBusy(true); setError("");
+    try {
+      for (const wallet of wallets) {
+        await apiPatch(`/api/admin/members/${userId}/crypto-wallets`, { id: wallet.id, address: wallet.address, label: wallet.label, reason });
+      }
+      saved(); close();
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not save wallets."); }
+    finally { setBusy(false); }
+  }
+  return <div className="banking-scrim"><section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label={`Edit wallets: ${name}`} className="banking-panel banking-wide">
+    <h2>Edit crypto wallets</h2>
+    <p>Change receive addresses and linked wallets such as MetaMask or Trust Wallet. Labels appear on the member’s wallet pages.</p>
+    {error && <p role="alert" className="banking-error">{error}</p>}
+    {loading && <p role="status">Loading wallets…</p>}
+    <form className="dash-form" onSubmit={submit}><fieldset disabled={busy || loading}>
+      {wallets.map(wallet => (
+        <fieldset key={wallet.id} className="member-wallet-edit">
+          <legend>{wallet.label} · {wallet.kind === "linked" ? "Linked" : "Receive"} · {wallet.network}</legend>
+          <label>Label<input maxLength={80} value={wallet.label} onChange={e => patch(wallet.id, "label", e.target.value)} /></label>
+          <label>Address<input required maxLength={120} value={wallet.address} onChange={e => patch(wallet.id, "address", e.target.value)} /></label>
+        </fieldset>
+      ))}
+      <label>Reason for change<textarea required maxLength={500} value={reason} onChange={e => setReason(e.target.value)} /></label>
+      <div className="modal-actions"><button type="button" className="ghost-btn" onClick={close} disabled={busy}>Cancel</button><button className="solid-btn" disabled={busy || !wallets.length}>{busy ? "Saving…" : "Save wallets"}</button></div>
     </fieldset></form>
   </section></div>;
 }
@@ -118,7 +150,7 @@ export function AdminMemberPage(){
 }
 function MemberWorkspace({id}:{id:string}){
   const [data,setData]=useState<MemberData|null>(null),[error,setError]=useState(''),[loading,setLoading]=useState(true),[tick,setTick]=useState(0);
-  const [modal,setModal]=useState<'bank'|'funding'|'balance'|'status'|'profile'|null>(null);
+  const [modal,setModal]=useState<'bank'|'funding'|'balance'|'status'|'profile'|'wallets'|null>(null);
   const refresh=()=>setTick(n=>n+1);
   useEffect(()=>{let live=true;setLoading(true);setError('');apiGet<MemberData>(`/api/admin/members/${id}`).then(r=>{if(live)setData(r);}).catch(e=>{if(live){setError(e instanceof Error?e.message:'Could not load this customer.');setData(null);}}).finally(()=>{if(live)setLoading(false);});return()=>{live=false;};},[id,tick]);
   const allow=(p:Permission)=>data?.permissions.includes(p)??false;
@@ -132,6 +164,7 @@ function MemberWorkspace({id}:{id:string}){
       {!owner&&<p className="member-safety-note">This login belongs to a business team. Manage bank details on the <Link to={`/app/superadmin/customers/${member.teamOwnerId}`}>business owner’s page</Link>.</p>}
       <div className="member-actions member-primary-actions">
         {owner&&allow('accounts.view')&&allow('accounts.edit_number')&&<button type="button" className="solid-btn" onClick={()=>setModal('profile')}><UserCog size={16}/> Edit all profile fields</button>}
+        {owner&&allow('accounts.view')&&allow('accounts.edit_number')&&<button type="button" className="ghost-btn" onClick={()=>setModal('wallets')}><Coins size={16}/> Edit crypto wallets</button>}
         {owner&&allow('accounts.view')&&allow('accounts.edit_number')&&<button type="button" className="ghost-btn" onClick={()=>setModal('bank')}><Landmark size={16}/> Edit account details</button>}
         {owner&&allow('accounts.view')&&<button type="button" className="ghost-btn" onClick={()=>setModal('funding')}><Building2 size={16}/> Funding methods & requests</button>}
         {owner&&allow('customers.adjust_balance')&&<button type="button" className="ghost-btn" onClick={()=>setModal('balance')}><Wallet size={16}/> Adjust balance</button>}
@@ -145,7 +178,7 @@ function MemberWorkspace({id}:{id:string}){
       {member.statusReason&&<p className="member-safety-note"><strong>Account restriction:</strong> {member.statusReason}</p>}
       <section className="member-panel member-email-panel"><Mail size={24}/><div><h2>Zelle activity emails</h2><p>Outgoing ledger activity, incoming pending requests, staff-confirmed credits and declined requests generate Veyra notifications to the account owner’s email. They are not payment confirmations from Zelle.</p><span className={`member-status ${data.emailDeliveryConfigured?'':'is-unconfigured'}`}>{data.emailDeliveryConfigured?'Email provider configured':'Email delivery not configured'}</span>{!data.emailDeliveryConfigured&&<p>Configure MAIL_PROVIDER, MAIL_API_KEY, MAIL_FROM and APP_URL on the server before emails can leave the app.</p>}</div><Link to="/email-templates">View email designs <ArrowUpRight size={14}/></Link></section>
       {allow('transactions.view')&&<section className="member-panel"><h2>Recent transactions</h2><p>Most recent 10 ledger entries for this customer.</p><div className="member-transactions">{data.transactions.map(t=><article key={t.id}><div><strong>{t.merchant}</strong><span>{t.method} · {t.status} · {new Date(t.date).toLocaleDateString()}</span><small>{t.reference}</small></div><b>{ledgerMoney(t.amount)}</b></article>)}{!data.transactions.length&&<p>No transactions recorded.</p>}</div></section>}
-      {modal&&createPortal(modal==='profile'?<MemberProfileEditor userId={id} data={data} close={()=>setModal(null)} saved={refresh}/>:modal==='bank'?<AccountEditor userId={id} name={member.name} close={()=>setModal(null)} saved={refresh}/>:modal==='funding'?<FundingManager userId={id} name={member.name} canEdit={allow('accounts.edit_number')} canReview={allow('customers.adjust_balance')} close={()=>{setModal(null);refresh();}}/>:<MemberAction data={data} action={modal==='status'?'status':'balance'} close={()=>setModal(null)} saved={refresh}/>,document.body)}
+      {modal&&createPortal(modal==='profile'?<MemberProfileEditor userId={id} data={data} close={()=>setModal(null)} saved={refresh}/>:modal==='wallets'?<MemberWalletsEditor userId={id} name={member.name} close={()=>setModal(null)} saved={refresh}/>:modal==='bank'?<AccountEditor userId={id} name={member.name} close={()=>setModal(null)} saved={refresh}/>:modal==='funding'?<FundingManager userId={id} name={member.name} canEdit={allow('accounts.edit_number')} canReview={allow('customers.adjust_balance')} close={()=>{setModal(null);refresh();}}/>:<MemberAction data={data} action={modal==='status'?'status':'balance'} close={()=>setModal(null)} saved={refresh}/>,document.body)}
     </>}
   </main>;
 }

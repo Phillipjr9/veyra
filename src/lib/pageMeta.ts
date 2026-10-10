@@ -65,6 +65,7 @@ const APP: Record<string, PageMeta> = {
   "/app/external-accounts": page("External accounts", "Account references submitted for staff review, and the funding methods available to you."),
   "/app/markets": page("Markets", "Digital-asset market data, timestamps and your own positions."),
   "/app/assets": page("Digital assets", "Your Veyra holdings and connected wallets — kept separate, never combined."),
+  "/app/assets/receive": page("Receive crypto", "Share a QR code or barcode, or link MetaMask, Trust Wallet, Phantom or UniSat by pasting a public address."),
   "/app/cards": page("Cards", "Issue, freeze and manage your Veyra cards, limits and shipping."),
   "/app/transactions": page("Transactions", "Your full ledger, filterable by type, category and date."),
   "/app/transfers": page("Transfers", "Send money, receive money, deposit a check and review fees before anything is sent."),
@@ -112,6 +113,7 @@ export function pageMeta(pathname: string): PageMeta {
     return page(`${role} · Careers`, `Veyra is hiring a ${role}. Read the role and get in touch.`);
   }
   if (path.startsWith("/app/superadmin")) return APP["/app/superadmin"]!;
+  if (path.startsWith("/app/assets/wallets/")) return page("Wallet", "QR code, barcode and public address for this wallet.");
   if (path.startsWith("/app/")) return APP["/app"]!;
   if (path === "/application") {
     return page("Application status", "Where your Veyra application stands and what happens next.");

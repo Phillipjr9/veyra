@@ -169,21 +169,30 @@ export function createCryptoWallets(db: DatabaseSync, audit: Audit) {
     adminSet(req: Request, res: Response) {
       const userId = String(req.params.id);
       const body = req.body ?? {};
+      const reason = text(body.reason, 500, true);
+      const address = text(body.address, 120, true);
+      const label = text(body.label, 80);
+      const id = text(body.id, 80);
+      ensureDeposit(userId);
+      if (id) {
+        const before = db.prepare("SELECT * FROM user_crypto_wallets WHERE id=? AND user_id=?").get(id, userId) as WalletRow | undefined;
+        if (!before) return void res.status(404).json({ error: "Wallet not found." });
+        if (!validWallet(before.network, address)) fail(`Enter a valid ${before.network} address.`);
+        db.prepare("UPDATE user_crypto_wallets SET address=?,label=? WHERE id=?").run(address, label || before.label, before.id);
+        audit(req, "crypto.wallet.admin", "Financial", `user:${userId}`, reason, before.address, address);
+        return void res.json({ wallets: list(userId).map(publicRow) });
+      }
       const network = text(body.network, 40, true);
       if (!NETWORKS.includes(network as typeof NETWORKS[number])) fail("Choose Bitcoin, Ethereum or Solana.");
-      const asset = text(body.asset, 8, true).toUpperCase();
-      const address = text(body.address, 120, true);
       if (!validWallet(network, address)) fail(`Enter a valid ${network} address.`);
-      const label = text(body.label, 80) || asset;
-      const reason = text(body.reason, 500, true);
-      ensureDeposit(userId);
+      const asset = text(body.asset, 8, true).toUpperCase();
       const before = db.prepare("SELECT * FROM user_crypto_wallets WHERE user_id=? AND kind='deposit' AND network=? AND asset=?").get(userId, network, asset) as WalletRow | undefined;
       const at = now();
       if (before) {
-        db.prepare("UPDATE user_crypto_wallets SET address=?,label=? WHERE id=?").run(address, label, before.id);
+        db.prepare("UPDATE user_crypto_wallets SET address=?,label=? WHERE id=?").run(address, label || before.label, before.id);
       } else {
         db.prepare("INSERT INTO user_crypto_wallets(id,user_id,kind,network,asset,address,label,created_at) VALUES(?,?,'deposit',?,?,?,?,?)")
-          .run(rid("cw"), userId, network, asset, address, label, at);
+          .run(rid("cw"), userId, network, asset, address, label || asset, at);
       }
       audit(req, "crypto.wallet.admin", "Financial", `user:${userId}`, reason, before?.address, address);
       res.json({ wallets: list(userId).map(publicRow) });

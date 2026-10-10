@@ -1,5 +1,6 @@
 import { StaffNote } from "./StaffNote";
 import { assetIcon } from "../../shared/assetIcons";
+import { Link } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import { Cable, Copy, Download, ExternalLink, Link2, RefreshCw, ShieldCheck, Unplug, Wallet, X } from "lucide-react";
 import QRCode from "qrcode";
@@ -15,7 +16,7 @@ function WalletPicker({ close, choices, select, busy, error }: { close: () => vo
     {error && <p role="alert" className="banking-error">{error}</p>}
     <div className="cw-wallet-choices">{choices.map(choice => <button type="button" className="cw-wallet-choice" key={choice.id} disabled={busy} onClick={() => select(choice)}><Wallet size={22} /><span><b>{choice.name}</b><small>{choice.network}{choice.network === "Solana" ? " · public address" : " · mainnet required"}</small></span><Link2 size={18} /></button>)}</div>
     {busy && <p role="status">Check your wallet for the connection request. Veyra will never ask for your recovery phrase.</p>}
-    {!choices.length && <div className="cw-notice"><b>No browser wallet detected</b><p>You can still link a wallet by pasting its public address in Your Veyra wallets below. Extensions may not be available in an embedded browser.</p><a href={window.location.href} target="_blank" rel="noopener noreferrer">Open Veyra in a new tab <ExternalLink size={12} /></a></div>}
+    {!choices.length && <div className="cw-notice"><b>No browser wallet detected</b><p>Paste a MetaMask, Trust Wallet, Phantom or UniSat address on Receive — no extension required. Extensions may not be available in an embedded browser.</p><Link to="/app/assets/receive">Open Receive</Link></div>}
     <details className="cw-install"><summary>Compatible wallets & connection help</summary><p>Ethereum: EIP-6963 or EIP-1193 browser wallets. Solana: Phantom. Bitcoin: UniSat with Bitcoin-mainnet support. Wallet names are self-reported, not a Veyra endorsement.</p><div><a href="https://metamask.io/download" target="_blank" rel="noopener noreferrer">Ethereum wallet <ExternalLink size={12} /></a><a href="https://phantom.com/download" target="_blank" rel="noopener noreferrer">Phantom <ExternalLink size={12} /></a><a href="https://unisat.io/download" target="_blank" rel="noopener noreferrer">UniSat <ExternalLink size={12} /></a></div><p>WalletConnect QR/mobile linking is not configured. Use a supported wallet’s browser instead.</p></details>
     <button type="button" className="ghost-btn cw-close" disabled={busy} onClick={close}>Close</button>
   </section></div>;
@@ -65,7 +66,7 @@ export function ConnectedWallet({ sepoliaTestnetSend = false }: { sepoliaTestnet
   function disconnect() { sequence.current++; stopWatching.current?.(); stopWatching.current = null; const previous = wallet; setWallet(null); setReceive(false); setError(""); running.current = false; setBusy(false); if (previous) void disconnectWallet(previous); }
   return <section className="cw-card cw-wallet-card">
     <div className="cw-section-head"><div><span className="cw-eyebrow">SELF-CUSTODY</span><h2>Your connected wallet</h2></div><span className="cw-icon"><Wallet size={23} /></span></div>
-    <p className="cw-subtle">Connect a browser wallet, or paste an address in Your Veyra wallets. Assets stay separate from checking. No keys or recovery phrases are stored.</p>
+    <p className="cw-subtle">Connect MetaMask, Trust Wallet, Phantom or UniSat in the browser, or paste an address on Receive. Assets stay separate from checking. No keys or recovery phrases are stored.</p>
     {error && !picker && <p role="alert" className="banking-error">{error}<button type="button" className="cw-icon-button" aria-label="Dismiss wallet message" onClick={() => setError("")}><X size={14} /></button></p>}
     {!wallet ? <><div className="cw-wallet-empty"><span className="cw-connection-art" aria-hidden="true"><Wallet size={35} /><Link2 size={20} /></span><h3>A window into your wallet.</h3><p>Connect Bitcoin, Ethereum or Solana.<br />Your assets remain in your control.</p></div><button className="solid-btn" type="button" onClick={() => { setError(""); setPicker(true); }}><Link2 size={16} /> Connect wallet</button></> : <>
       <div className="cw-connected-label"><span className="cw-dot" /><b>{wallet.choice.name}</b><span>{wallet.choice.network}</span></div>
