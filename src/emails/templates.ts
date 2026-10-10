@@ -592,7 +592,7 @@ const welcome: EmailTemplate = {
       ${details([
         ["Account", "Business checking •••• 9014"],
         ["Routing number", "091408735"],
-        ["Bank partner", "Northfield Bank, Member FDIC"],
+        ["Bank partner", "Connected when live banking rails go live"],
         ["Plan", "Growth"],
         ["Opened", "Oct 2, 2026"],
       ])}

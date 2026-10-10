@@ -28,7 +28,7 @@ for (const f of files) {
   if (!html.startsWith("<!doctype html>") || !html.trim().endsWith("</html>")) fail(`${f}: incomplete document`);
   if (!html.includes('src="https://veyra.com/images/email/logo-mark.png"')) fail(`${f}: hosted logo missing`);
   if (/<svg/.test(html)) fail(`${f}: inline SVG present (stripped by Gmail/Outlook)`);
-  for (const must of ["Manrope", "DM Sans", "available 24/7", "100 Market Street", "not a bank"])
+  for (const must of ["Manrope", "DM Sans", "available 24/7", "125 Market Street", "not a bank"])
     if (!html.includes(must)) fail(`${f}: missing "${must}"`);
 
   for (const tag of ["table", "tr", "td", "div", "span", "p", "a", "h1"]) {

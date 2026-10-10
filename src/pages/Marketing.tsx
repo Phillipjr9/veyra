@@ -126,7 +126,7 @@ export function SecurityPage() {
     { icon: <Fingerprint />, title: "Strong authentication", text: "Credentials are stored as one-way digests, never as readable passwords." },
     { icon: <CreditCard />, title: "Instant card controls", text: "Freeze a card, change a limit or lock it to one merchant in a single tap." },
     { icon: <ShieldCheck />, title: "Continuous monitoring", text: "Transactions are screened in real time with alerts the moment something looks wrong." },
-    { icon: <Landmark />, title: "Partner bank protection", text: "Deposits are held at partner banks with FDIC insurance eligibility." },
+    { icon: <Landmark />, title: "Built for a partner-bank model", text: "Card issuing and payment rails are designed to run through an approved sponsor bank once one is connected. No deposit-insurance arrangement is in place yet, and nothing here is a deposit account." },
     { icon: <BarChart3 />, title: "Full audit trail", text: "Every action is logged so your team always knows who did what." },
   ];
   return (

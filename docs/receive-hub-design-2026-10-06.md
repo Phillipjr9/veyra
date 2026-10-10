@@ -16,6 +16,15 @@ Redesigned the existing **Transfers → Receive Zelle® QR** dialog without chan
 
 ## Files
 
+> **Superseded 8 October 2026 (PR #13).** This receive UI was replaced by the
+> dedicated Zelle page: `src/pages/ZellePage.tsx` (+ `src/styles/zelle-page.css`), routed at
+> `/app/zelle`. `ReceiveHub.tsx`, `ZelleHubModal.tsx` and `receive-hub.css` no longer exist,
+> and `tests/e2e/receive-hub.spec.ts` was deleted and superseded by `tests/e2e/zelle-page.spec.ts`
+> (the `test:e2e:demo` / `test:e2e:account` scripts now run that file). The description below is
+> kept as the design record for the flow; the Zelle page carries the same QR, share and
+> disclosure behaviour.
+
+
 `src/components/ReceiveHub.tsx`, `src/components/ZelleHubModal.tsx`, `src/styles/receive-hub.css` contain the new receive UI. `DemoPayments.tsx` now only contains the existing shared mode notice; its stylesheet no longer carries retired playground styling. `bankingDialog.ts` excludes descendants of closed details from focus trapping (except the direct summary), avoiding an invisible focus endpoint.
 
 ## Checks

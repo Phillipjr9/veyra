@@ -2337,7 +2337,15 @@ export function MarketsPage() {
               ))}
             </tbody>
           </table>
-          {rows.length === 0 && <p className="holding-chart-msg">No markets match “{query}”.</p>}
+          {rows.length === 0 && (
+            <p className="holding-chart-msg">
+              {query
+                ? `No markets match “${query}”.`
+                : (data?.markets ?? []).length === 0
+                  ? "No markets to show right now."
+                  : "No markets match the current filters."}
+            </p>
+          )}
         </div>
       )}
 
@@ -2701,7 +2709,7 @@ export function DisputesPage() {
 
   return (
     <div className="app-page disputes-complete-page">
-      <PageHeader eyebrow="Transaction Protection · Card & Transfer Arbitration · FDIC-Compliant" title="Disputes & Fraud Resolution">
+      <PageHeader eyebrow="Transaction protection · card and transfer arbitration" title="Disputes & Fraud Resolution">
         <button type="button" className="solid-btn" onClick={() => setOpen(true)}>
           <Plus size={15} /> File New Dispute
         </button>

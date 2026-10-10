@@ -147,10 +147,10 @@ export function StatementsPage() {
     document.text("VEYRA", margin, 28);
     document.setFontSize(7);
     document.setFont("helvetica", "normal");
-    document.text("Northfield Bank, Member FDIC | Commercial Treasury Operations", margin, 43);
+    document.text("Internal ledger record · not a bank statement", margin, 43);
     document.setFont("helvetica", "bold");
     document.setFontSize(10.5);
-    document.text("OFFICIAL ACCOUNT STATEMENT", right, 25, { align: "right" });
+    document.text("ACCOUNT STATEMENT", right, 25, { align: "right" });
     document.setFont("helvetica", "normal");
     document.setFontSize(7.5);
     document.text(activeStatement.label, right, 40, { align: "right" });
@@ -216,7 +216,7 @@ export function StatementsPage() {
       didDrawPage: data => {
         document.setFontSize(6.2);
         document.setTextColor(105, 100, 112);
-        document.text("Veyra is a financial technology company, not a bank. Banking services are provided by partner institutions.", margin, pageHeight - 18);
+        document.text("Veyra is a financial technology product, not a bank. This statement reports Veyra's internal ledger. No sponsor bank or deposit-insurance arrangement is in place.", margin, pageHeight - 18);
         document.text(`Page ${data.pageNumber}`, right, pageHeight - 18, { align: "right" });
       },
     });
@@ -245,8 +245,8 @@ export function StatementsPage() {
     <div className="app-page statements-suite-page">
       <header className="app-head">
         <div>
-          <span className="app-eyebrow">FDIC-Insured Partner Custody · Official Certified Records</span>
-          <h1>Official Statements & Reports</h1>
+          <span className="app-eyebrow">Internal ledger records · printable PDF and CSV</span>
+          <h1>Statements & Reports</h1>
           <p className="panel-sub">
             Generate, inspect, print and download official monthly bank statements with complete institutional verification.
           </p>
@@ -310,14 +310,14 @@ export function StatementsPage() {
               <span className="stmt-logo-text">veyra</span>
             </div>
             <p className="stmt-partner-bank">
-              Northfield Bank, Member FDIC<br />
-              Commercial Treasury Operations<br />
-              One Financial Center, Suite 1800
+              Veyra internal ledger record<br />
+              {COMPANY.legalName}<br />
+              {companyAddress}
             </p>
           </div>
 
           <div className="stmt-account-meta">
-            <span className="stmt-badge-official">OFFICIAL BANK STATEMENT</span>
+            <span className="stmt-badge-official">ACCOUNT STATEMENT</span>
             <div className="stmt-meta-line"><span>Statement Period:</span> <strong>{activeStatement?.label}</strong></div>
             <div className="stmt-meta-line"><span>Account Number:</span> <code>•••• •••• {account.bankDetails.accountNumber.slice(-4)}</code></div>
             <div className="stmt-meta-line"><span>Routing (ABA):</span> <code>{account.bankDetails.routingNumber}</code></div>
@@ -473,9 +473,9 @@ export function StatementsPage() {
           <div className="stmt-fdic-seal">
             <ShieldCheck size={24} />
             <div>
-              <strong>FDIC Insured up to $250,000 per depositor</strong>
+              <strong>Not a bank · no deposit insurance</strong>
               <p>
-                Banking services provided by partner institutions, Members FDIC. Funds are held in omnibus custodial accounts at our sponsor banks.
+                Veyra is a financial technology product, not a bank. This statement reports Veyra's internal ledger for your account. No sponsor bank, payment rail, custodial account or deposit-insurance arrangement is established by this release.
               </p>
             </div>
           </div>

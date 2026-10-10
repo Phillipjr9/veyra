@@ -159,7 +159,7 @@ export function CommandPalette({
         id: "nav-statements",
         category: "Navigation",
         title: "Official Bank Statements",
-        subtitle: "Printable certified FDIC vector PDF & CSV",
+        subtitle: "Printable statement PDF and CSV export",
         icon: <FileText size={16} />,
         action: () => {
           onClose();

@@ -2,7 +2,7 @@
 
 A production banking product front-to-back: marketing site, personal & business
 dashboards, cards, transfers, invoicing, Scout AI savings, statements, a Super
-Admin console, a 25-template transactional email system — on a real Express +
+Admin console, an 81-template transactional email system — on a real Express +
 SQLite backend — built on one design system.
 
 Every login, account, transaction and admin action is server-authoritative:
@@ -63,11 +63,13 @@ If a stored session goes stale (expired token, or a browser that blocks web
 storage), the app clears it and returns to the login page with a notice instead
 of a dead-end error screen.
 
-The panel is **dev-only**: it renders when `import.meta.env.DEV` is true (any
-`npm run dev` session) or when a build is opened with `?demo=1`. Production
-builds without that flag never ship the credentials. Before a real launch,
-change `ADMIN_PASSWORD` and delete the `DEMO_ACCOUNTS` block in
-`src/pages/Auth.tsx`.
+The panel is **dev-only**: the credentials are served by `GET /api/auth/config`,
+which returns an empty list in production regardless of flags, and the panel
+renders only when `import.meta.env.DEV` is true or a build is opened with
+`?demo=1`. Production builds never ship them, so there is no client-side block
+to delete — but the fixture *accounts* still exist in any database that was
+seeded in development. Before a real launch: change `ADMIN_PASSWORD`, run with
+`DEMO_SEED=0`, and use a fresh `DB_PATH` (or delete the seeded demo accounts).
 
 ## Super Admin control center
 
@@ -129,7 +131,7 @@ src/
   App.tsx               Routes (marketing / auth / app)
   Landing.tsx           Marketing home page
   lib/
-    auth.tsx            Users, sessions, password digests (localStorage)
+    auth.tsx            Session client for the API's scrypt auth, tokens and MFA
     store.tsx           Account state: money, cards, invoices, KYC, team…
     scoutEngine.ts      Scout AI insight generation
   pages/
@@ -148,12 +150,12 @@ src/
   components/           Chrome, MoneyFlow, CommandPalette, modals, toasts…
   emails/
     design.ts           Email design system (tokens → inline-style HTML)
-    templates.ts        24 transactional templates
+    templates.ts        81 transactional templates
   styles/               Shared CSS per area (personal.css, business.css, admin.css…)
 emails/                 Exported standalone HTML (build:emails)
 scripts/
   test-permissions.ts  RBAC mirror unit tests (14 checks)
-  check-emails.mjs     Email template validation (25 checks)
+  check-emails.mjs     Email template validation (81 templates)
   check-api-coverage.mjs  Route coverage: every server route has a caller (1 check)
   e2e-server.ts       Disposable real-API browser-test host + local price feed
   build-emails.ts      Email export
@@ -176,7 +178,7 @@ server/
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
   scripts/test-api.ts   HTTP integration suite (boots the real server)
   scripts/price-fixture.ts Offline market quotes/history for audit and browser tests
-  scripts/audit-routes.ts  132 routes × 6 identities gate/isolation audit (+22 isolation/validation probes)
+  scripts/audit-routes.ts  136 routes × 6 identities gate/isolation audit (+22 isolation/validation probes)
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -199,7 +201,8 @@ npm run test:stripe-rails
 - `src/emails/templates.ts` covers every notification the product generates:
   security, transfers, cards, invoicing, Scout and account lifecycle.
 - Preview in-app at `#/email-templates` (desktop/mobile toggle, copy HTML) or
-  open `email-showcase.html` for all 24 rendered in one page.
+  open `email-showcase.html` for a selection rendered in one page (regenerate it
+  after changing templates — `build:emails` only writes `emails/*.html`).
 
 ```bash
 npm run build:emails   # export templates to emails/*.html
@@ -351,6 +354,24 @@ funds) to the status columns.
 | `RECAPTCHA_*` | off | Bot defence on the anonymous auth routes — see below |
 
 Variables can live in a `.env` file (loaded automatically — see `.env.example`).
+
+**Four variables are hard production requirements — the API refuses to boot
+without them** (each prints `Refusing to start: …` and exits):
+
+| Variable | Requirement |
+|---|---|
+| `TOKEN_SECRET` | ≥ 32 characters, unique per environment |
+| `TOTP_ENCRYPTION_KEY` | ≥ 32 characters, unique per environment |
+| `APP_URL` | One canonical **HTTPS** origin (email links, Stripe return links) |
+| `WEBAUTHN_ORIGINS` | The canonical HTTPS app origin (comma-separated) |
+
+With `NODE_ENV=production` the server also warns when reCAPTCHA is unconfigured
+and when `TRUST_PROXY` is unset behind a proxy. Before launch also change
+`ADMIN_PASSWORD` and run with `DEMO_SEED=0` on a fresh `DB_PATH`,
+and set the `VITE_COMPANY_*` / `VITE_SUPPORT_*` variables so the Contact page,
+statements and legal copy carry real contact details (`src/lib/company.ts`,
+which otherwise falls back to `support@veyra.example`). Run with `DEMO_SEED=0`
+on a fresh `DB_PATH` so no demo member or fixture staff account exists.
 
 ### reCAPTCHA
 
@@ -799,10 +820,16 @@ npm run server         # Express + SQLite API (port 8787)
 npm run build          # production build → dist/index.html (single file)
 npm run build:emails   # export email templates → emails/*.html
 npm run typecheck:server  # strict typecheck of server/
-npm test               # permissions (14) + emails (25) + route coverage (1) + route audit (1) + API integration (434 runtime assertions); the audit exercises 624 HTTP security probes (+22 isolation/validation probes)
+npm test               # permissions (14) + emails (81) + route coverage (1) + route audit (1) + API integration (436 runtime assertions); the audit exercises 624 HTTP security probes (+22 isolation/validation probes)
 node scripts/dev-prices.mjs  # offline crypto price feed (see Digital assets)
 ```
 
+> **Search and social metadata:** one HTML document serves every screen, so
+> `src/lib/pageMeta.ts` writes `document.title`, the meta description and the
+> OG/Twitter tags on navigation from a route map. Add an entry there for every
+> new public route — without one, a page inherits the previous tab's title.
+> There is still no `robots.txt` or `sitemap.xml` in `public/`.
+>
 > **Production notes:** the frontend is API-only (no offline mode). Email
 > delivery is built in (`server/src/mail.ts`) but off until you set
 > `MAIL_PROVIDER`, `MAIL_API_KEY`, `MAIL_FROM` and `APP_URL` — see

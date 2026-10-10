@@ -2,6 +2,8 @@ import { ExternalAccountsPage } from "./components/ExternalAccounts";
 import { DemoPaymentsProvider } from "./lib/demoPayments";
 import { AdminMemberPage } from "./pages/AdminMember";
 import { HashRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
+import { useEffect, useMemo } from "react";
+import { applyPageMeta, pageMeta } from "./lib/pageMeta";
 import { MotionConfig } from "motion/react";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { AccountProvider } from "./lib/store";
@@ -87,6 +89,10 @@ function MemberSurface() {
 
 function Shell() {
   const { pathname, hash } = useLocation();
+  // One document serves every screen, so the tab title and the social/SEO
+  // description have to be written on navigation instead of in index.html.
+  const meta = useMemo(() => pageMeta(pathname), [pathname]);
+  useEffect(() => { applyPageMeta(meta); }, [meta]);
   return (
     <>
       <ScrollManager pathname={pathname} hash={hash} />

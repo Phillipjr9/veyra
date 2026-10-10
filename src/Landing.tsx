@@ -398,7 +398,7 @@ export function SecuritySection() {
         <span className="kicker">Security by design</span>
         <h2>Protected at every layer.</h2>
         <p>Enterprise-grade controls, encryption and real people watching over your money around the clock.</p>
-        <ul><li><Check /> Lock any card instantly</li><li><Check /> Custom roles and approvals</li><li><Check /> FDIC insurance eligibility*</li></ul>
+        <ul><li><Check /> Lock any card instantly</li><li><Check /> Custom roles and approvals</li><li><Check /> Append-only audit trail</li></ul>
         <Link to="/security" className="text-link">Explore security <ArrowRight size={15} /></Link>
       </Reveal>
     </section>
