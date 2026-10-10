@@ -24,14 +24,12 @@ export function CommandPalette({
   open,
   onClose,
   onOpenDeposit,
-  onOpenCheckDeposit,
   onOpenZelleHub,
   onOpenScout,
 }: {
   open: boolean;
   onClose: () => void;
   onOpenDeposit: () => void;
-  onOpenCheckDeposit: () => void;
   onOpenZelleHub: () => void;
   onOpenScout: () => void;
 }) {
@@ -68,12 +66,12 @@ export function CommandPalette({
       {
         id: "act-deposit-check",
         category: "Quick Action",
-        title: "Deposit a Check (Mobile Photo)",
-        subtitle: "Snap front and endorsed back for instant credit",
+        title: "Deposit a check",
+        subtitle: "Photograph front and endorsed back. Pending review — not credited.",
         icon: <Camera size={16} />,
         action: () => {
           onClose();
-          onOpenCheckDeposit();
+          navigate("/app/check-deposit");
         },
       },
       {
@@ -314,7 +312,7 @@ export function CommandPalette({
     }
 
     return list;
-  }, [user, account, query, navigate, onClose, onOpenDeposit, onOpenCheckDeposit, onOpenZelleHub, onOpenScout]);
+  }, [user, account, query, navigate, onClose, onOpenDeposit, onOpenZelleHub, onOpenScout]);
 
   const filteredItems = useMemo(() => {
     if (!query.trim()) return items;

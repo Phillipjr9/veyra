@@ -95,6 +95,18 @@ try {
  check("other members never see the Zelle recipient",!(await api("GET","/api/me/funding",bob.token)).json.methods.some((m:any)=>m.recipient_contact));
  check("other members cannot submit against Zelle instructions",(await api("POST","/api/me/deposits",bob.token,{amount:25,methodId:zelle.id,requestKey:randomUUID()})).status===400);
  check("US phone contacts are accepted for Zelle instructions",(await api("PUT",fundPath,admin,{methods:[{...availableKinds[2],id:zelle.id,recipientContact:'+1 (212) 555-0123'}]})).status===200);
+ const beforeCheck=(await state()).balance;
+ check("check deposit requires both sides",(await api("POST","/api/me/check-deposits",alice.token,{amount:"25.00",requestKey:randomUUID(),frontCaptured:true})).status===400);
+ check("check deposit refuses image payloads",(await api("POST","/api/me/check-deposits",alice.token,{amount:"25.00",requestKey:randomUUID(),frontCaptured:true,backCaptured:true,frontImage:"data:image/jpeg;base64,xx"})).status===400);
+ const checkKey=randomUUID();
+ const [c1,c2]=await Promise.all([
+  api("POST","/api/me/check-deposits",alice.token,{amount:"55.00",requestKey:checkKey,frontCaptured:true,backCaptured:true,note:"RDC"}),
+  api("POST","/api/me/check-deposits",alice.token,{amount:"55.00",requestKey:checkKey,frontCaptured:true,backCaptured:true,note:"RDC"}),
+ ]);
+ const checkSnap=JSON.parse(c1.json.request.method_snapshot);
+ check("mobile check deposit is pending, idempotent and never credits",c1.status===201&&c1.json.request.status==="pending"&&c1.json.request.id===c2.json.request.id&&(await state()).balance===beforeCheck);
+ check("check deposit snapshot records capture without images",checkSnap.kind==="check"&&checkSnap.frontCaptured===true&&checkSnap.backCaptured===true&&!("frontImage" in checkSnap));
+ check("staff cannot use the member check-deposit route",(await api("POST","/api/me/check-deposits",admin,{amount:"55.00",requestKey:randomUUID(),frontCaptured:true,backCaptured:true})).status===403);
  check("personal transfer category is optional",(await api("POST","/api/me/transfers",alice.token,{amount:1,counterparty:"Fixture"})).status===201&&(await state()).transactions[0].category==='Uncategorized');
  check("business transfer category is required",(await api("POST","/api/me/transfers",bob.token,{amount:1,counterparty:"Fixture"})).status===400);
  let holdings=(await api("GET","/api/me/holdings",alice.token)).json;

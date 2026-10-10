@@ -33,7 +33,7 @@
     "test:e2e:demo": "npm run build && DEMO_PAYMENTS_ENABLED=1 playwright test tests/e2e/demo-payments.spec.ts tests/e2e/zelle-page.spec.ts",
     "server:demo": "DEMO_PAYMENTS_ENABLED=1 tsx server/src/index.ts",
     "test:e2e:charts": "npm run build && DEMO_PAYMENTS_ENABLED=1 playwright test tests/e2e/dashboard-responsive.spec.ts tests/e2e/ledger-charts.spec.ts",
-    "test:e2e:account": "npm run build && ACCOUNT_LEDGER_ENABLED=1 playwright test tests/e2e/account-interface.spec.ts tests/e2e/ledger-charts.spec.ts tests/e2e/demo-payments.spec.ts tests/e2e/zelle-page.spec.ts",
+    "test:e2e:account": "npm run build && ACCOUNT_LEDGER_ENABLED=1 playwright test tests/e2e/account-interface.spec.ts tests/e2e/ledger-charts.spec.ts tests/e2e/demo-payments.spec.ts tests/e2e/zelle-page.spec.ts tests/e2e/check-deposit.spec.ts",
     "check:market-feed": "node --env-file-if-exists=.env --import tsx server/scripts/check-market-feed.ts",
     "test:market-feed": "tsx server/scripts/test-market-feed.ts",
     "test:crypto": "tsx server/scripts/test-crypto-workspace.ts",

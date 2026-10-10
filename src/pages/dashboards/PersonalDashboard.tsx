@@ -316,8 +316,8 @@ export function PersonalOverview() {
 
       <motion.section className="p-strip" {...rise(7)}>
         <span className="p-strip-icon"><Landmark size={16} /></span>
-        <div><strong>Deposit a check</strong><small>Snap a photo and the funds are yours</small></div>
-        <Link to="/app/transfers" className="p-strip-btn">Deposit <ArrowRight size={13} /></Link>
+        <div><strong>Deposit a check</strong><small>Photograph the front and endorsed back</small></div>
+        <Link to="/app/check-deposit" className="p-strip-btn">Deposit <ArrowRight size={13} /></Link>
         <span className="p-strip-dot" />
         <span className="p-strip-icon alt"><Sparkles size={16} /></span>
         <div><strong>Ask Scout anything</strong><small>“How much did I spend on coffee?”</small></div>

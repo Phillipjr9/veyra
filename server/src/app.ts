@@ -1135,6 +1135,7 @@ export function createApp(dbPath?: string) {
 
   app.get("/api/me/funding", requireAuth, wrap(banking.fundingGet));
   app.post("/api/me/deposits", requireAuth, requireApproved, wrap(banking.deposit));
+  app.post("/api/me/check-deposits", requireAuth, requireApproved, wrap(banking.checkDeposit));
   app.get("/api/me/crypto-withdrawals", requireAuth, wrap(banking.withdrawalsGet));
   app.post("/api/me/crypto-withdrawals", requireAuth, requireApproved, requireIntegration("crypto_send"), wrap(banking.withdraw));
 

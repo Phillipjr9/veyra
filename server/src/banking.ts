@@ -3,6 +3,7 @@ import { rateLimit } from "./security.js";
 import { sendCryptoNotification } from "./cryptoNotifications.js";
 import { demoPaymentsEnabled } from "./demoPayments.js";
 import { sendZelleNotification } from "./zelleNotifications.js";
+import { sendFundingNotification } from "./fundingNotifications.js";
 import type { DatabaseSync } from "node:sqlite";
 import type { Request, Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
@@ -303,6 +304,43 @@ export function createBanking(db: DatabaseSync, audit: Audit, integrations?: Int
       if (created && JSON.parse(request.method_snapshot).kind === "zelle") sendZelleNotification(db,id,{event:"incoming_pending",amountCents:request.amount_cents,reference:request.reference,occurredAt:request.created_at});
       res.status(201).json({ request, status: request.status, message: "Request recorded. No funds have been collected or credited." });
     },
+    /** Mobile remote deposit: both sides captured in the browser. Always pending.
+     * Images are never accepted or stored. Demo mode still does not credit. */
+    checkDeposit(req: Request, res: Response) {
+      if (req.user!.role !== "user" || req.user!.loginId || req.user!.status !== "active") return void res.status(403).json({ error: "Only an active account owner can deposit a check." });
+      const body = req.body ?? {};
+      if (Object.keys(body).some(key => !["amount", "note", "requestKey", "frontCaptured", "backCaptured"].includes(key))) throw new BadInputError("Check images are not uploaded. Capture both sides in the browser, then submit the amount.");
+      if (body.frontCaptured !== true || body.backCaptured !== true) throw new BadInputError("Capture the front and the endorsed back of the check.");
+      if (!["string", "number"].includes(typeof body.amount) || !/^\d+(\.\d{1,2})?$/.test(String(body.amount))) throw new BadInputError("Enter a dollar amount with at most two decimals.");
+      const amount = dollarsToCents(body.amount);
+      if (amount < 1000 || amount > 10000000) throw new BadInputError("Check deposits must be between $10 and $100,000.");
+      if (!kindAllowed("check")) throw new BadInputError("Check deposit is not available right now.");
+      const key = requestKey(body), id = req.user!.id, note = text(body.note ?? "", 500);
+      let created = false;
+      const request = inTransaction(db, () => {
+        const prior = db.prepare("SELECT * FROM funding_requests WHERE user_id=? AND request_key=?").get(id, key) as any;
+        if (prior) {
+          const snap = JSON.parse(prior.method_snapshot);
+          if (prior.amount_cents !== amount || prior.note !== note || snap.kind !== "check" || !snap.frontCaptured || !snap.backCaptured) throw new BadInputError("This request identifier was already used for different details.");
+          return prior;
+        }
+        if ((db.prepare("SELECT COUNT(*) AS n FROM funding_requests WHERE user_id=? AND status='pending'").get(id) as { n: number }).n >= 20) throw new BadInputError("You have 20 pending funding requests. Resolve existing requests before adding more.");
+        let method = db.prepare("SELECT * FROM funding_methods WHERE user_id=? AND kind='check' ORDER BY enabled DESC, updated_at DESC LIMIT 1").get(id) as Method | undefined;
+        const methodId = method?.id ?? `check_${id}`;
+        if (!method) {
+          db.prepare("INSERT INTO funding_methods(id,user_id,label,kind,instructions,bank_name,routing_number,account_number,recipient,enabled,updated_at,recipient_contact) VALUES(?,?,?,?,?,'','','',?,0,?,'') ON CONFLICT(id) DO NOTHING").run(methodId, id, "Check deposit", "check", "Mobile check deposit. Staff confirm receipt before funds are available. Images are not stored.", "Your Veyra account", now());
+          method = { id: methodId, user_id: id, label: "Check deposit", kind: "check", instructions: "Mobile check deposit. Staff confirm receipt before funds are available. Images are not stored.", bank_name: "", routing_number: "", account_number: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0 };
+        }
+        const requestId = rid("deposit"), reference = ref(), at = now();
+        const snapshot = { id: method.id, kind: "check", label: method.label || "Check deposit", instructions: method.instructions, capture: "browser", frontCaptured: true, backCaptured: true, ledgerOnly: true };
+        db.prepare("INSERT INTO funding_requests(id,user_id,method_id,amount_cents,reference,method_snapshot,note,request_key,created_at) VALUES(?,?,?,?,?,?,?,?,?)").run(requestId, id, method.id, amount, reference, JSON.stringify(snapshot), note, key, at);
+        db.prepare("INSERT INTO notifications(id,user_id,type,title,detail,read,created_at) VALUES(?,?,'info',?,?,0,?)").run(rid("note"), id, "Check deposit received", `$${centsToDecimal(amount)} submitted for staff review. Front and back were captured on your device. Images were not uploaded. No funds have been credited.`, at);
+        created = true;
+        return db.prepare("SELECT * FROM funding_requests WHERE id=?").get(requestId);
+      });
+      if (created) sendFundingNotification(db, id, { event: "check_received", amountCents: request.amount_cents, reference: request.reference, occurredAt: request.created_at, methodLabel: "Check deposit" });
+      res.status(201).json({ request, status: request.status, message: "Check submitted for review. No funds have been credited." });
+    },
     reviewDeposit(req: Request, res: Response) {
       const id = String(req.params.id); member(id);
       const decision = req.body?.decision;
@@ -323,7 +361,11 @@ export function createBanking(db: DatabaseSync, audit: Audit, integrations?: Int
         audit(req,"funding.review","Financial",`user:${id}`,`${request.reference}: ${decision}. ${evidence}`,"pending",decision);
         return request;
       });
-      if (reviewed && JSON.parse(reviewed.method_snapshot).kind === "zelle") sendZelleNotification(db,id,{event:decision === "confirmed" ? "incoming_confirmed" : "incoming_rejected",amountCents:reviewed.amount_cents,reference:reviewed.reference,occurredAt:now()});
+      if (reviewed) {
+        const kind = JSON.parse(reviewed.method_snapshot).kind;
+        if (kind === "zelle") sendZelleNotification(db,id,{event:decision === "confirmed" ? "incoming_confirmed" : "incoming_rejected",amountCents:reviewed.amount_cents,reference:reviewed.reference,occurredAt:now()});
+        if (kind === "check") sendFundingNotification(db,id,{event:decision === "confirmed" ? "check_cleared" : "request_rejected",amountCents:reviewed.amount_cents,reference:reviewed.reference,occurredAt:now(),methodLabel:"Check deposit"});
+      }
       res.json({ ok: true });
     },
     withdrawalsGet(req: Request, res: Response) {

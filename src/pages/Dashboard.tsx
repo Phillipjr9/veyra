@@ -21,7 +21,6 @@ import { useToast } from "../components/Toast";
 import { ScoutQuickDrawer } from "../components/ScoutAIAssistant";
 import { SecurityCenterContent } from "../components/SecurityCenterContent";
 import { CommandPalette } from "../components/CommandPalette";
-import { MobileCheckDepositModal } from "../components/MobileCheckDeposit";
 import { CategoryPicker } from "../components/CategoryPicker";
 import { VeyraIdCard, transferCategoryOptions } from "../components/SendMoneyShared";
 import { Confetti, ETA, useMoneyFlow, ZelleLogo, type SendMethod } from "../components/MoneyFlow";
@@ -90,6 +89,7 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/markets", label: "Markets", icon: <CandlestickChart size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Transfers", icon: <Send size={18} /> },
+      { to: "/app/check-deposit", label: "Check deposit", icon: <Camera size={18} /> },
       { to: "/app/invoices", label: "Invoicing", icon: <ReceiptText size={18} /> },
       { to: "/app/bills", label: "Bills & scheduled", icon: <CalendarClock size={18} /> },
       { to: "/app/plan", label: "Cash plan", icon: <TrendingUp size={18} />, badge: "NEW" },
@@ -127,6 +127,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
       { to: "/app/zelle", label: "Zelle®", icon: <ZelleLogo size={18} /> },
+      { to: "/app/check-deposit", label: "Check deposit", icon: <Camera size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
       { to: "/app/plan", label: "Money plan", icon: <TrendingUp size={18} />, badge: "NEW" },
     ],
@@ -538,7 +539,6 @@ export function DashboardLayout() {
   const [ringing, setRinging] = useState(false);
   const [scoutDrawerOpen, setScoutDrawerOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [checkDepositOpen, setCheckDepositOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const unread = account?.notifications.filter(n => !n.read).length ?? 0;
   const prevUnread = useRef(unread);
@@ -648,7 +648,6 @@ export function DashboardLayout() {
             onOpenPalette={() => setPaletteOpen(true)}
             onOpenScout={() => setScoutDrawerOpen(true)}
             onOpenDeposit={() => openDeposit()}
-            onOpenCheckDeposit={() => setCheckDepositOpen(true)}
             onSignOut={() => { logout(); navigate("/"); }}
           >{content}</BusinessChrome>
         )}
@@ -660,11 +659,9 @@ export function DashboardLayout() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         onOpenDeposit={() => openDeposit()}
-        onOpenCheckDeposit={() => setCheckDepositOpen(true)}
         onOpenZelleHub={() => navigate("/app/zelle")}
         onOpenScout={() => setScoutDrawerOpen(true)}
       />
-      <MobileCheckDepositModal open={checkDepositOpen} onClose={() => setCheckDepositOpen(false)} />
     </>
   );
 }
@@ -1334,7 +1331,6 @@ function LegacyPaymentsPage() {
   const [errorKey, setErrorKey] = useState(0);
   const [selected, setSelected] = useState<Txn | null>(null);
   const [payeeOpen, setPayeeOpen] = useState(false);
-  const [checkOpen, setCheckOpen] = useState(false);
   const [payeeForm, setPayeeForm] = useState({ name: "", nickname: "", bankName: "", routing: "", accountLast4: "", accountType: "Checking" as "Checking" | "Savings" });
   const recent = useMemo(() => (account ? recentPayees(account.transactions) : []), [account]);
 
@@ -1398,9 +1394,9 @@ function LegacyPaymentsPage() {
         <Link to="/app/zelle" className="ghost-btn">
           <ZelleLogo size={14} /> Receive Zelle® QR
         </Link>
-        <button type="button" className="ghost-btn" onClick={() => setCheckOpen(true)}>
+        <Link to="/app/check-deposit" className="ghost-btn">
           <Camera size={14} /> Deposit Check
-        </button>
+        </Link>
       </PageHeader>
       <div className="pay-layout">
         <motion.form className="panel dash-form" onSubmit={submit} noValidate {...rise(0)}>
@@ -1515,7 +1511,7 @@ function LegacyPaymentsPage() {
               <div><h2>Receive money</h2><span className="panel-sub">Share these for incoming ACH, wires & Zelle®</span></div>
               <div className="receive-head-btns">
                 <Link to="/app/zelle" className="ghost-btn sm"><ZelleLogo size={13} /> Zelle®</Link>
-                <button type="button" className="ghost-btn sm" onClick={() => setCheckOpen(true)}><Camera size={13} /> Check</button>
+                <Link to="/app/check-deposit" className="ghost-btn sm"><Camera size={13} /> Check</Link>
                 <button type="button" className="ghost-btn sm" onClick={() => openDeposit()}><Plus size={13} /> Add funds</button>
               </div>
             </div>
@@ -1553,7 +1549,6 @@ function LegacyPaymentsPage() {
           <button type="submit" className="solid-btn dash-submit">Save recipient</button>
         </form>
       </Modal>
-      <MobileCheckDepositModal open={checkOpen} onClose={() => setCheckOpen(false)} />
     </div>
   );
 }

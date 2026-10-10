@@ -14,7 +14,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  ArrowDownLeft, ArrowUpRight, Building2, Camera, ExternalLink, LogOut, Menu, Plus, Search, Send,
+  ArrowDownLeft, ArrowUpRight, Building2, ExternalLink, LogOut, Menu, Plus, Search, Send,
   ShieldCheck, Sparkles, X,
 } from "lucide-react";
 import { AnimatedMoney, Logo, ease } from "../../components/common";
@@ -42,7 +42,6 @@ type ChromeProps = {
   onOpenPalette: () => void;
   onOpenScout: () => void;
   onOpenDeposit: () => void;
-  onOpenCheckDeposit: () => void;
   onSignOut: () => void;
   children: ReactNode;
 };
@@ -82,7 +81,7 @@ function BalanceDelta({ value }: { value: number }) {
 
 export function BusinessChrome({
   user, accountNumber, balance, nav, notifications,
-  onOpenPalette, onOpenScout, onOpenDeposit, onOpenCheckDeposit, onSignOut, children,
+  onOpenPalette, onOpenScout, onOpenDeposit, onSignOut, children,
 }: ChromeProps) {
   const [navOpen, setNavOpen] = useState(false);
   useEffect(() => {
@@ -136,12 +135,7 @@ export function BusinessChrome({
                   )}
                 </NavLink>
               ))}
-              {group.title === "Money" && (
-                <button type="button" className="dash-link dash-link-btn" onClick={() => { setNavOpen(false); onOpenCheckDeposit(); }}>
-                  <span className="dash-link-icon"><Camera size={18} /></span>
-                  <span className="dash-link-label">Check deposit</span>
-                </button>
-              )}
+
             </div>
           ))}
         </nav>

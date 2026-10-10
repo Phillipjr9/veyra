@@ -63,6 +63,13 @@ try{
  const cap=await preview(),senderBefore=balance(),bobBefore=balance(b.id);db.prepare('UPDATE accounts SET balance_cents=1000000000 WHERE user_id=?').run(b.id);check('recipient cap rolls back sender debit',(await action({...confirm,id:cap.json.preview.id})).status===400&&balance()===senderBefore);db.prepare('UPDATE accounts SET balance_cents=? WHERE user_id=?').run(bobBefore,b.id);
  check('business requires category',(await preview(a.email,c.token)).status===400);check('business category accepted',(await preview(a.email,c.token,'Supplies')).status===200);
  check('no real emails emitted',recentMail.length===inboxBefore);
+ const beforeCheck=balance();
+ const checkBody={amount:'40.00',requestKey:randomUUID(),note:'Mobile RDC',frontCaptured:true,backCaptured:true};
+ const rdc=await api('POST','/api/me/check-deposits',a.token,checkBody);
+ check('mobile check deposit stays pending in demo',rdc.status===201&&rdc.json.request.status==='pending'&&balance()===beforeCheck);
+ check('check deposit replay is idempotent',(await api('POST','/api/me/check-deposits',a.token,checkBody)).json.request.id===rdc.json.request.id);
+ check('check images are refused',(await api('POST','/api/me/check-deposits',a.token,{...checkBody,requestKey:randomUUID(),frontImage:'data:image/jpeg;base64,xx'})).status===400);
+ check('check deposit notifies without crediting',recentMail.some((m: {tag?: string})=>m.tag==='funding-check-received'));
  process.env.DEMO_PAYMENTS_ENABLED='0';check('disabled mode refuses demo credit',(await deposit(body)).status===400);check('disabled fixtures not exposed',(await funding()).methods.length===0);check('disabled payments refused',(await action(confirm)).status===400);
  process.env.ACCOUNT_LEDGER_ENABLED='1';
  check('standard account switch enables immediate funding',(await funding()).immediateFunding===true);

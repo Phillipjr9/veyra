@@ -1,0 +1,164 @@
+/* Dedicated mobile check deposit page. Camera/slot chrome lives in admin.css. */
+.check-deposit-page {
+  display: grid;
+  gap: 18px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 720px;
+  margin: 0 auto;
+  color: var(--ink, #2a1c3d);
+}
+.check-deposit-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.check-deposit-head-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: #eef8f1;
+  border: 1px solid #d5eadc;
+  color: #2b7044;
+  flex: none;
+}
+.check-deposit-head-copy { flex: 1 1 260px; min-width: 0; }
+.check-deposit-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: #2b7044;
+}
+.check-deposit-head-copy h1 {
+  margin: 2px 0 6px;
+  font-size: 28px;
+  line-height: 1.15;
+  font-weight: 700;
+}
+.check-deposit-head-copy p {
+  margin: 0;
+  color: var(--muted, #6e6480);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.check-deposit-card {
+  background: var(--paper, #fff);
+  border: 1px solid var(--line, #ebe4f3);
+  border-radius: 18px;
+  padding: 20px;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  box-shadow: 0 1px 2px rgba(42, 28, 61, .04);
+}
+.check-deposit-card h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.check-deposit-sub {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted, #6e6480);
+}
+
+.check-deposit-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.check-deposit-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #faf8fc;
+  border: 1px solid #efe9f6;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.check-deposit-steps svg { flex: none; margin-top: 2px; color: #2b7044; }
+.check-deposit-steps strong { font-weight: 650; }
+
+.check-slot-wrap {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  justify-items: start;
+}
+.check-slot-wrap .check-slot { width: 100%; }
+.check-slot-wrap .check-file-btn { margin-top: 0; }
+
+.check-deposit-form .flow-label { margin: 4px 0 7px; }
+.check-deposit-form .dash-submit { margin-top: 8px; }
+
+.check-deposit-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.check-deposit-rows > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f4faf6;
+  border: 1px solid #d5eadc;
+  min-width: 0;
+}
+.check-deposit-rows dt {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #4a7a58;
+}
+.check-deposit-rows dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.check-deposit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.check-deposit-page h1,
+.check-deposit-page h2,
+.check-deposit-page p { text-align: left; }
+
+/* Sweep the viewfinder guide while the camera is live. */
+@keyframes check-scan-sweep {
+  from { top: 10%; }
+  to { top: 86%; }
+}
+.check-slot.is-live .check-scan-line {
+  animation: check-scan-sweep 1.8s ease-in-out infinite alternate;
+}
+@media (prefers-reduced-motion: reduce) {
+  .check-slot.is-live .check-scan-line { animation: none; }
+}
+
+@media (max-width: 640px) {
+  .check-deposit-card { padding: 16px; }
+  .check-deposit-head-copy h1 { font-size: 24px; }
+  .check-slot-wrap .check-file-btn { width: 100%; justify-content: center; }
+}

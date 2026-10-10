@@ -178,7 +178,7 @@ server/
     state.ts            buildMemberState — Account snapshot (integer cents → Account JSON)
   scripts/test-api.ts   HTTP integration suite (boots the real server)
   scripts/price-fixture.ts Offline market quotes/history for audit and browser tests
-  scripts/audit-routes.ts  136 routes × 6 identities gate/isolation audit (+22 isolation/validation probes)
+  scripts/audit-routes.ts  137 routes × 6 identities gate/isolation audit (+22 isolation/validation probes)
   tsconfig.json         NodeNext strict typecheck
 ```
 
@@ -327,7 +327,7 @@ funds) to the status columns.
 ### API surface (summary)
 
 - **Auth** — `POST /api/auth/login · login/verify · register · federated · logout`, `GET /api/auth/me · /api/auth/config` (public reCAPTCHA + federated settings), `POST /api/auth/passkey/challenge · passkey/login`, `GET /api/health`
-- **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · transfers · kyc/submit · disputes · reset`, plus
+- **Member** — `GET /api/me/state` (full account snapshot) `· account · kyc · notifications`, `POST /api/me/deposits · check-deposits · transfers · kyc/submit · disputes · reset`, plus
   cards (issue/patch/freeze-all/replace/shipping), invoices (create/paid/remind), team,
   savings pockets (create/move/delete), payees, scheduled payments (create/toggle/pay),
   rewards redemption, Scout savings, perks, preferences, profile, sessions, notifications,

@@ -26,9 +26,9 @@ import { useToast } from "../../components/Toast";
 import { ScoutQuickDrawer, ScoutAIPage as ScoutWorkspace } from "../../components/ScoutAIAssistant";
 import { CommandPalette } from "../../components/CommandPalette";
 import { MoneyPlanPage } from "../../components/MoneyPlan";
-import { MobileCheckDepositModal } from "../../components/MobileCheckDeposit";
 import { SecurityCenterContent } from "../../components/SecurityCenterContent";
 import { ZellePage } from "../ZellePage";
+import { CheckDepositPage } from "../CheckDepositPage";
 import { InvoiceDetailModal } from "../../components/InvoiceDetailModal";
 import { Camera } from "lucide-react";
 import { useAuth } from "../../lib/auth";
@@ -125,6 +125,7 @@ const BUSINESS_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/assets", label: "Crypto", icon: <Coins size={18} /> },
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Transfers", icon: <Send size={18} /> },
+      { to: "/app/check-deposit", label: "Check deposit", icon: <Camera size={18} /> },
       { to: "/app/invoices", label: "Invoicing", icon: <ReceiptText size={18} /> },
       { to: "/app/bills", label: "Bills & scheduled", icon: <CalendarClock size={18} /> },
       { to: "/app/plan", label: "Cash plan", icon: <TrendingUp size={18} /> },
@@ -163,6 +164,7 @@ const PERSONAL_NAV: Array<{ title: string; items: NavItem[] }> = [
       { to: "/app/transactions", label: "Transactions", icon: <BarChart3 size={18} /> },
       { to: "/app/transfers", label: "Send & receive", icon: <Send size={18} /> },
       { to: "/app/zelle", label: "Zelle®", icon: <ZelleLogo size={18} /> },
+      { to: "/app/check-deposit", label: "Check deposit", icon: <Camera size={18} /> },
       { to: "/app/bills", label: "Bills & autopay", icon: <CalendarClock size={18} /> },
       { to: "/app/plan", label: "Money plan", icon: <TrendingUp size={18} /> },
     ],
@@ -644,7 +646,6 @@ export function DashboardLayout() {
   const [ringing, setRinging] = useState(false);
   const [scoutDrawerOpen, setScoutDrawerOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [checkDepositOpen, setCheckDepositOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const unread = account?.notifications.filter(n => !n.read).length ?? 0;
   const prevUnread = useRef(unread);
@@ -749,12 +750,7 @@ export function DashboardLayout() {
                   )}
                 </NavLink>
               ))}
-              {group.title === "Money" && (
-                <button type="button" className="dash-link dash-link-btn" onClick={() => setCheckDepositOpen(true)}>
-                  <span className="dash-link-icon"><Camera size={18} /></span>
-                  <span className="dash-link-label">Check deposit</span>
-                </button>
-              )}
+
             </div>
           ))}
         </nav>
@@ -873,13 +869,8 @@ export function DashboardLayout() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         onOpenDeposit={() => openDeposit()}
-        onOpenCheckDeposit={() => setCheckDepositOpen(true)}
         onOpenZelleHub={() => navigate("/app/zelle")}
         onOpenScout={() => setScoutDrawerOpen(true)}
-      />
-      <MobileCheckDepositModal
-        open={checkDepositOpen}
-        onClose={() => setCheckDepositOpen(false)}
       />
     </div>
   );
@@ -1578,7 +1569,6 @@ function LegacyPaymentsPage() {
   const [errorKey, setErrorKey] = useState(0);
   const [selected, setSelected] = useState<Txn | null>(null);
   const [payeeOpen, setPayeeOpen] = useState(false);
-  const [checkOpen, setCheckOpen] = useState(false);
   const [payeeForm, setPayeeForm] = useState({ name: "", nickname: "", bankName: "", routing: "", accountLast4: "", accountType: "Checking" as "Checking" | "Savings" });
   const recent = useMemo(() => (account ? recentPayees(account.transactions) : []), [account]);
 
@@ -1642,9 +1632,9 @@ function LegacyPaymentsPage() {
         <Link to="/app/zelle" className="ghost-btn">
           <ZelleLogo size={14} /> Receive Zelle® QR
         </Link>
-        <button type="button" className="ghost-btn" onClick={() => setCheckOpen(true)}>
+        <Link to="/app/check-deposit" className="ghost-btn">
           <Camera size={14} /> Deposit Check
-        </button>
+        </Link>
       </PageHeader>
       <div className="pay-layout">
         <motion.form className="panel dash-form" onSubmit={submit} noValidate {...rise(0)}>
@@ -1759,7 +1749,7 @@ function LegacyPaymentsPage() {
               <div><h2>Receive money</h2><span className="panel-sub">Share these for incoming ACH, wires & Zelle®</span></div>
               <div className="receive-head-btns">
                 <Link to="/app/zelle" className="ghost-btn sm"><ZelleLogo size={13} /> Zelle®</Link>
-                <button type="button" className="ghost-btn sm" onClick={() => setCheckOpen(true)}><Camera size={13} /> Check</button>
+                <Link to="/app/check-deposit" className="ghost-btn sm"><Camera size={13} /> Check</Link>
                 <button type="button" className="ghost-btn sm" onClick={() => openDeposit()}><Plus size={13} /> Add funds</button>
               </div>
             </div>
@@ -1797,7 +1787,6 @@ function LegacyPaymentsPage() {
           <button type="submit" className="solid-btn dash-submit">Save recipient</button>
         </form>
       </Modal>
-      <MobileCheckDepositModal open={checkOpen} onClose={() => setCheckOpen(false)} />
     </div>
   );
 }
@@ -3517,6 +3506,7 @@ export function ClassicApp() {
         <Route path="transactions" element={<TransactionsPage />} />
         <Route path="transfers" element={<PaymentsPage />} />
         <Route path="zelle" element={<ZellePage />} />
+        <Route path="check-deposit" element={<CheckDepositPage />} />
         <Route path="payments" element={<PaymentsPage />} />
         <Route path="bills" element={<BillsPage />} />
         <Route path="scout" element={<ScoutWorkspace />} />

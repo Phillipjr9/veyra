@@ -85,7 +85,7 @@ export function FundingDetails({ methods, selected, amount, note, busy, onMethod
       {!takesAmount && !showAccount && currentMethod && <section className="direct-deposit-details receiving-account" aria-label={`${currentMethod.label} instructions`}>
         <h3>{currentMethod.label}</h3>
         <p>{currentMethod.kind === "check"
-          ? "Mail-in instructions only. This screen does not capture photos, perform OCR or clear checks."
+          ? <>Mail-in instructions only. To photograph a check, use <Link className="text-link" to="/app/check-deposit" onClick={onCancel}>mobile check deposit</Link>.</>
           : "Follow the instructions from your administrator. You do not enter an amount here."}</p>
         {currentMethod.instructions ? <p>{currentMethod.instructions}</p> : <StaffNote>No instructions are configured for this method yet.</StaffNote>}
       </section>}

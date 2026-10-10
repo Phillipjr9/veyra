@@ -124,6 +124,7 @@ const BASELINE: Policy[] = [
   { method: "POST", path: "/api/me/crypto-withdrawals", auth: true, perm: null },
 
   { method: "POST", path: "/api/me/deposits", auth: true, perm: null },
+  { method: "POST", path: "/api/me/check-deposits", auth: true, perm: null, memberOnly: true },
   { method: "POST", path: "/api/me/transfers", auth: true, perm: null },
   // Veyra-to-Veyra: a lookup shows the recipient before anything moves; the transfer
   // itself is authenticated, approved-only, and idempotent on its request key.

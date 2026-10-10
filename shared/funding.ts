@@ -6,7 +6,7 @@ export const FUNDING_OPTIONS = [
   { kind: "bank", label: "Bank transfer", description: "Share your routing and account number so another bank can send an ACH credit. You do not enter an amount here.", providerRequired: false },
   { kind: "wire", label: "Wire transfer", description: "Share incoming-wire details with the sending bank. Wires are not initiated from Veyra.", providerRequired: false },
   { kind: "direct_deposit", label: "Direct deposit", description: "Share routing and account numbers with payroll. You do not enter an amount here.", providerRequired: false },
-  { kind: "check", label: "Check deposit", description: "View check-delivery instructions, where configured for your account.", providerRequired: false },
+  { kind: "check", label: "Check deposit", description: "Mail-in instructions, where configured. Photograph a check on the mobile deposit page.", providerRequired: false },
   { kind: "other", label: "Other funding", description: "Additional funding instructions provided by your administrator.", providerRequired: false },
 ] as const;
 

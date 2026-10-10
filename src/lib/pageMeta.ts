@@ -69,6 +69,7 @@ const APP: Record<string, PageMeta> = {
   "/app/transactions": page("Transactions", "Your full ledger, filterable by type, category and date."),
   "/app/transfers": page("Transfers", "Send money, receive money, deposit a check and review fees before anything is sent."),
   "/app/zelle": page("Zelle®", "Your Zelle® receiving identifier, QR code and deposit details."),
+  "/app/check-deposit": page("Check deposit", "Photograph the front and endorsed back of a check. Staff review before funds are available."),
   "/app/payments": page("Payments", "Outgoing payments, saved recipients and scheduled bills."),
   "/app/invoices": page("Invoicing", "Create invoices, send reminders and record payment."),
   "/app/bills": page("Bills & scheduled payments", "Scheduled and recurring payments, and what is due next."),

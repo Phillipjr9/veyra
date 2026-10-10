@@ -26,6 +26,7 @@ import {
 } from "./pages/Dashboard";
 import { ClassicApp, MarketsPage, AssetsPage } from "./pages/dashboards/ClassicDashboard";
 import { ZellePage } from "./pages/ZellePage";
+import { CheckDepositPage } from "./pages/CheckDepositPage";
 import { useAcct } from "./lib/store";
 import { SuperAdminPage } from "./pages/SuperAdmin";
 import { ApplicationStatusPage } from "./pages/ApplicationStatus";
@@ -152,6 +153,7 @@ function Shell() {
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="transfers" element={<PaymentsPage />} />
           <Route path="zelle" element={<ZellePage />} />
+          <Route path="check-deposit" element={<CheckDepositPage />} />
           <Route path="payments" element={<PaymentsPage />} />
           <Route path="invoices" element={<BusinessOnly><InvoicesPage /></BusinessOnly>} />
           <Route path="bills" element={<BillsPage />} />

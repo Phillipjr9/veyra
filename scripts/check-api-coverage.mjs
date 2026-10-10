@@ -29,6 +29,7 @@ const CLIENT_FILES = [
   "src/components/CryptoTradeDialog.tsx",
   "src/lib/store.tsx",
   "src/pages/Dashboard.tsx",
+  "src/pages/CheckDepositPage.tsx",
   "src/pages/SuperAdmin.tsx",
   "src/pages/AdminMember.tsx",
   "src/components/BulkAccountEditor.tsx",
