@@ -5,25 +5,42 @@ export const FLOW_DAY = 86_400_000;
 const DAY = FLOW_DAY;
 export type FlowRange = 7 | 30 | 90;
 
+/** UTC calendar day that contains `ts` (midnight inclusive). */
+export function utcDayStart(ts: number) {
+  const date = new Date(ts);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function utcDayLabel(ts: number) {
+  return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
+
 /** Read-only rolling-window analytics. Aggregate cents, exclude pending and
- * future-dated records, and never manufacture a trend for an empty account. */
+ * future-dated records, and never manufacture a trend for an empty account.
+ * Each range is one UTC calendar day per bucket so a posted movement lands on
+ * the same date the ledger shows, not a multi-day blob labeled with its end. */
 export function buildCashFlow(transactions: readonly LedgerRow[], days: FlowRange, now = Date.now()) {
-  const start = now - days * DAY;
-  const count = days === 7 ? 7 : days === 30 ? 10 : 12;
-  const step = days * DAY / count;
-  const buckets = Array.from({ length: count }, (_, i) => ({
-    at: start + i * step, end: start + (i + 1) * step,
-    inflowCents: 0, outflowCents: 0,
-  }));
+  const today = utcDayStart(now);
+  const start = today - (days - 1) * DAY;
+  const buckets = Array.from({ length: days }, (_, i) => {
+    const at = start + i * DAY;
+    return {
+      at,
+      end: i === days - 1 ? now : at + DAY,
+      inflowCents: 0,
+      outflowCents: 0,
+    };
+  });
   let included = 0;
   let pending = 0;
   const categories = new Map<string, number>();
   const channels = new Map<string, { inflow: number; outflow: number }>();
   for (const transaction of transactions) {
-    if (transaction.date <= start || transaction.date > now || !Number.isFinite(transaction.amount) || !Number.isFinite(transaction.date)) continue;
+    if (transaction.date < start || transaction.date > now || !Number.isFinite(transaction.amount) || !Number.isFinite(transaction.date)) continue;
     if (transaction.status === "pending") { pending++; continue; }
     if (transaction.status !== "cleared" || Math.round(Math.abs(transaction.amount) * 100) === 0) continue;
-    const index = Math.min(count - 1, Math.floor((transaction.date - start) / step));
+    const index = Math.floor((utcDayStart(transaction.date) - start) / DAY);
+    if (index < 0 || index >= days) continue;
     const cents = Math.round(Math.abs(transaction.amount) * 100);
     if (transaction.amount > 0) buckets[index].inflowCents += cents;
     else buckets[index].outflowCents += cents;
@@ -45,9 +62,7 @@ export function buildCashFlow(transactions: readonly LedgerRow[], days: FlowRang
     channels: [...channels].map(([name, value]) => ({ name, inflow: value.inflow / 100, outflow: value.outflow / 100, total: (value.inflow + value.outflow) / 100, share: (value.inflow + value.outflow) / Math.max(1, inflowCents + outflowCents) * 100 })).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
     buckets: buckets.map(bucket => ({
       at: bucket.at, end: bucket.end,
-      // Label the period end so the latest plotted interval shows today,
-      // not the start of its 3-day / 7.5-day aggregation bucket.
-      label: new Date(bucket.end).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }),
+      label: utcDayLabel(bucket.at),
       inflow: bucket.inflowCents / 100, outflow: bucket.outflowCents / 100,
     })),
   };

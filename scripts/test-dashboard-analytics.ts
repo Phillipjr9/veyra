@@ -11,8 +11,14 @@ assert.equal(seven.outflow, .15);
 assert.equal(seven.net, .15);
 assert.equal(seven.pending, 1);
 assert.equal(seven.included, 3);
+assert.equal(seven.buckets.length, 7);
+assert.equal(buildCashFlow(items, 30, now).buckets.length, 30);
+assert.equal(buildCashFlow(items, 90, now).buckets.length, 90);
 assert.equal(buildCashFlow(items, 30, now).inflow, 6.3);
 assert.equal(buildCashFlow(items, 90, now).inflow, 14.3);
+assert.equal(seven.buckets[6].inflow, .1);
+assert.equal(seven.buckets[5].inflow, .2);
+assert.equal(seven.buckets[5].outflow, .15);
 for (const range of [7, 30, 90] as FlowRange[]) {
   const result = buildCashFlow(items, range, now);
   assert.equal(Math.round(result.buckets.reduce((sum, bucket) => sum + bucket.inflow, 0) * 100), Math.round(result.inflow * 100));
@@ -53,9 +59,15 @@ const boundary = buildLedgerAnalytics([txn("sept", .1, monthBoundary - 1), txn("
 assert.equal(boundary.months[4].inflow, .1);
 assert.equal(boundary.months[5].inflow, .2);
 assert.equal(boundary.months[5].categories.length, 0);
-const dayBoundary = now - 7 * day;
-assert.equal(buildCashFlow([txn("cutoff", 1, dayBoundary), txn("after", 2, dayBoundary + 1)], 7, now).inflow, 2);
+const firstSeven = Date.UTC(2026, 8, 29);
+assert.equal(buildCashFlow([txn("on-start", 1, firstSeven), txn("before", 2, firstSeven - 1)], 7, now).inflow, 1);
 assert.equal(buildCashFlow([txn("aged", 1, now - 7 * day + 1)], 7, now + 2).inflow, 0);
+const split = buildCashFlow([txn("oct5", 10, Date.UTC(2026, 9, 5, 8)), txn("oct4", 20, Date.UTC(2026, 9, 4, 22))], 30, now);
+assert.equal(split.buckets.length, 30);
+assert.equal(split.buckets[29].inflow, 10);
+assert.equal(split.buckets[28].inflow, 20);
+assert.equal(split.buckets[0].label, "Sep 6");
+assert.equal(split.buckets[29].label, "Oct 5");
 console.log("Ledger breakdowns: all rails, status whitelist, zero/empty states, UTC month boundaries, aging and cent reconciliation passed.");
 
-assert.equal(seven.buckets[seven.buckets.length - 1].label, new Date(now).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }), "The newest chart interval is labeled with its current end date");
+assert.equal(seven.buckets[seven.buckets.length - 1].label, new Date(now).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }), "The newest chart interval is labeled with that UTC calendar day");

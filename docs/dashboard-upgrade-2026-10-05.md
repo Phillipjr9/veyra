@@ -21,7 +21,7 @@ Active integrations:
 
 ## Data semantics
 
-`src/lib/dashboardAnalytics.ts` aggregates integer cents from the supplied ledger. Windows are rolling, exclusive of their start and inclusive of the current instant, using 7, 10 and 12 buckets respectively. Pending, future-dated and invalid records do not contribute to totals. No synthetic transactions or trends are introduced. Transfers can appear in activity; the table explicitly states that net movement is not profit.
+`src/lib/dashboardAnalytics.ts` aggregates integer cents from the supplied ledger. Each 7 / 30 / 90-day range is one UTC calendar day per bucket, from the first day's midnight through the current instant. Pending, future-dated and invalid records do not contribute to totals. No synthetic transactions or trends are introduced. Transfers can appear in activity; the table explicitly states that net movement is not profit.
 
 The charts respect reduced-motion preferences. Their tooltip uses a stable in-chart position so stale offsets after resizing cannot create invisible horizontal overflow.
 

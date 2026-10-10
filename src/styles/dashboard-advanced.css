@@ -81,7 +81,7 @@
 .dx-flow-stats span { display: flex; align-items: center; gap: 5px; color: #75627f; font-size: 10px; }
 .dx-flow-stats strong { display: block; margin-top: 8px; font: 600 clamp(17px,1.65vw,25px)/1.3 var(--display); letter-spacing: -.05em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .dx-flow .positive { color: #33745b; }.dx-flow .negative { color: #a54c52; }
-.dx-chart-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 13px; color: #75627f; font-size: 10px; }
+.dx-chart-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 13px; color: #75627f; font-size: 10px; }
 .dx-chart-toolbar > div { display: flex; gap: 3px; }
 .dx-chart-toolbar button { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid transparent; border-radius: 6px; background: none; color: #9b8aaa; }
 .dx-chart-toolbar button[aria-pressed=true] { border-color: #e2d8ea; background: #f5f0f9; color: #674f81; }
@@ -96,10 +96,14 @@
 .dx-flow-data summary::-webkit-details-marker { display: none; }
 .dx-flow-data[open] summary svg { rotate: 180deg; }
 .dx-flow-data p { color: #786984; font-size: 10px; line-height: 1.6; }
+.dx-data-days { margin: 12px 0 6px; }
 .dx-data-scroll { overflow: auto; width: 100%; max-height: 250px; overscroll-behavior: contain; }
+.dx-data-scroll + .dx-data-scroll { margin-top: 8px; }
 .dx-data-scroll table { width: 100%; border-collapse: collapse; min-width: 330px; font-size: 10px; }
 .dx-data-scroll th, .dx-data-scroll td { text-align: right; padding: 10px 7px; border-bottom: 1px solid #eee7f2; white-space: nowrap; }
 .dx-data-scroll th:first-child { text-align: left; font-weight: 500; }
+.dx-data-scroll .dx-data-merchant { text-align: left; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.dx-data-scroll td.in { color: #33745b; font-weight: 600; }
 .dx-flow-empty { min-height: 225px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; background: #faf8fc; border-radius: 9px; color: #8b7998; padding: 25px; }
 .dx-flow-empty strong { color: #5c4a6b; font-size: 13px; }.dx-flow-empty p { font-size: 11px; margin: 0; line-height: 1.6; }
 .dx-flow-panel { padding: 24px; }
