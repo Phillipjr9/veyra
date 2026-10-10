@@ -9,6 +9,7 @@
  *   ADMIN_PASSWORD — first Super Admin password (min 8 chars)
  *   ADMIN_NAME     — optional display name for the bootstrap admin
  *   CORS_ORIGIN    — allow a non-proxied browser origin
+ *   API_BIND       — listen address (default 127.0.0.1 in development, 0.0.0.0 in production)
  */
 import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
@@ -106,9 +107,13 @@ server.on("error", (error: NodeJS.ErrnoException) => {
   console.error(`Veyra API could not bind port ${PORT}: ${error.message}`);
   process.exitCode = 1;
 });
-server.listen(PORT, "0.0.0.0");
+// Vite is the public preview in development and proxies /api. Binding the API
+// to loopback keeps Express (which sends frame-ancestors 'none') out of the
+// iframe, where that header would render as a blank white page.
+const bind = process.env.API_BIND ?? (isProduction ? "0.0.0.0" : "127.0.0.1");
+server.listen(PORT, bind);
 server.on("listening", () => {
-  console.log(`Veyra API listening on http://0.0.0.0:${PORT}`);
+  console.log(`Veyra API listening on http://${bind}:${PORT}`);
   console.log(describeRecaptcha());
   console.log(describeFederated());
   console.log(describeWebauthn());

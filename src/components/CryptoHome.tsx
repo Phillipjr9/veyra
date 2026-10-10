@@ -16,8 +16,8 @@ function Entrance({ children, className = "", delay = 0 }: { children: ReactNode
   const element = useRef<HTMLDivElement>(null);
   const inView = useInView(element, { amount: .08 });
   return <motion.div ref={element} className={className} data-live={enabled && inView ? "true" : "false"}
-    initial={reduced ? false : { opacity: 0, y: 22 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true, amount: .1 }}
-    transition={{ duration: enabled ? .7 : 0, delay: enabled ? delay : 0, ease: [.22, 1, .36, 1] }}>{children}</motion.div>;
+    initial={false} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true, amount: 0.01 }}
+    transition={{ duration: enabled && !reduced ? .7 : 0, delay: enabled && !reduced ? delay : 0, ease: [.22, 1, .36, 1] }}>{children}</motion.div>;
 }
 
 function VaultVisual() {
