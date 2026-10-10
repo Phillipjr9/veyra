@@ -1098,13 +1098,15 @@
 
 .check-slot {
   position: relative;
-  min-height: 150px;
-  aspect-ratio: 16 / 10;
+  min-height: 0;
+  aspect-ratio: 8.25 / 3;
   padding: 0;
   overflow: hidden;
-  border: 2px dashed #d5caea;
-  border-radius: 16px;
-  background: #faf8fe;
+  border: 1px solid #1b4a32;
+  border-radius: 6px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.28), transparent 40%),
+    repeating-linear-gradient(-12deg, #d7ead8 0 2px, #cfe3d1 2px 4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2110,6 +2112,4 @@
 .integration-checks { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
 .integration-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .integration-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; }
-.integration-switch input { width: 18px; height: 18px; accent-color: var(--violet); cursor: pointer; }
- font-weight: 600; }
 .integration-switch input { width: 18px; height: 18px; accent-color: var(--violet); cursor: pointer; }
