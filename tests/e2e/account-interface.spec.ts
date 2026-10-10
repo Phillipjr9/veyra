@@ -1,7 +1,7 @@
 import { chooseFundingMethod, confirmFunding, fundingMethodOptions, openFundingMethods } from "./funding-helpers";
 import { test, expect, type Page } from "@playwright/test";
 import { applicationFor } from "../../server/scripts/fixtures";
-import { ADD_FUNDS_OPTIONS } from "../../shared/funding";
+import { ADD_FUNDS_OPTIONS, methodTakesAmount } from "../../shared/funding";
 import { quoteFee } from "../../shared/fees";
 
 test.skip((process.env.ACCOUNT_LEDGER_ENABLED || process.env.DEMO_PAYMENTS_ENABLED) !== "1", "Requires account-ledger funding.");
@@ -33,11 +33,16 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
     await openFundingMethods(dialog); await expect(fundingMethodOptions(dialog)).toHaveCount(7);
     await ordinaryInterface(page);
     await chooseFundingMethod(dialog, option.label);
+    if (!methodTakesAmount({ kind: option.kind })) {
+      await expect(dialog.getByLabel("Amount (USD)")).toHaveCount(0);
+      await expect(dialog.getByRole("button", { name: "Review deposit", exact: true })).toHaveCount(0);
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      continue;
+    }
     await dialog.getByLabel("Amount (USD)", { exact: true }).fill("14.25");
-    if (option.kind === "ach" || option.kind === "direct_deposit") {
+    if (option.kind === "ach") {
       await expect(dialog.getByRole("button", { name: "Review deposit", exact: true })).toBeDisabled();
-      if (option.kind === "ach") await expect(dialog.getByRole("link", { name: "Link an external account" })).toBeVisible();
-      else await expect(dialog).not.toContainText("has not configured Direct Deposit"); // members never see setup status
+      await expect(dialog.getByRole("link", { name: "Link an external account" })).toBeVisible();
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
       continue;
     }
@@ -63,7 +68,7 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
   }
   const account = (await (await request.get("/api/me/state", { headers: { authorization: `Bearer ${user.token}` } })).json()).account;
   expect(Math.round(account.balance * 100)).toBe(Math.round((total - fees) * 100));
-  expect(account.transactions).toHaveLength(6);
+  expect(account.transactions).toHaveLength(1);
   expect(account.transactions.filter((row: { fee?: number }) => (row.fee ?? 0) > 0)).toHaveLength(1);
   expect(Math.round(account.transactions.reduce((sum: number, row: { fee?: number }) => sum + (row.fee ?? 0), 0) * 100)).toBe(21);
   for (const row of account.transactions) { expect(row.status).toBe("cleared"); expect(row.reference).toMatch(/^VYR-/); expect(row.merchant).not.toMatch(/\bdemo\b/i); }
@@ -82,5 +87,5 @@ for (const type of ["personal", "business"] as const) test(`${type}: available f
   await expect(page.getByRole("img", { name: /Barcode for/ })).toBeVisible();
   await ordinaryInterface(page);
   await page.goto("/#/app");
-  await expect(page.locator('[data-flow="in"]')).toHaveText("$85.50");
+  await expect(page.locator('[data-flow="in"]')).toHaveText("$14.25");
 });

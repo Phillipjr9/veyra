@@ -81,10 +81,13 @@ test("funding lists the real linked account; Direct Deposit displays only admin-
   const details = dialog.getByRole("region", { name: "Direct Deposit banking details" });
   await expect(details).toContainText("User Specific Payroll Bank"); await expect(details).toContainText("021000021"); await expect(details).toContainText("Savings");
   await expect(details).not.toContainText("777123456789"); await details.getByRole("button", { name: "Show account number" }).click(); await expect(details).toContainText("777123456789");
+  await expect(dialog.getByLabel("Amount (USD)")).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Review deposit", exact: true })).toHaveCount(0);
   for (const width of [320, 390, 768, 1440]) { await page.setViewportSize({ width, height: 900 }); await fits(page); }
   await page.setViewportSize({ width: 390, height: 900 }); await page.screenshot({ path: info.outputPath("funding-mobile.png") });
   await expect(dialog.getByText("Recent deposits", { exact: true })).toHaveCount(0);
-  await dialog.getByRole("link", { name: "Manage linked accounts" }).click(); await expect(page).toHaveURL(/external-accounts/);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.goto("/#/app/external-accounts"); await expect(page).toHaveURL(/external-accounts/);
   await expect(page.getByRole("heading", { name: "Your linked accounts" })).toBeVisible(); await expect(page.getByRole("region", { name: "Available bank accounts" })).toContainText("7890"); await fits(page);
   await page.goto("/#/app"); await expect(page.getByRole("heading", { name: "Recent deposits", exact: true })).toBeVisible();
 });
@@ -98,7 +101,9 @@ test("no linked account has a direct linking action, no fake bank, and no generi
   await dialog.getByLabel("Amount (USD)", { exact: true }).fill("25"); await expect(dialog.getByRole("button", { name: "Review deposit" })).toBeDisabled();
   await chooseFundingMethod(dialog, "Direct deposit");
   await expect(dialog).toContainText("has not configured Direct Deposit"); await expect(dialog.locator(".direct-deposit-details")).not.toContainText("Northfield");
-  await dialog.getByRole("link", { name: "Link an external account" }).click(); await expect(page).toHaveURL(/external-accounts/);
+  await expect(dialog.getByLabel("Amount (USD)")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.goto("/#/app/external-accounts"); await expect(page).toHaveURL(/external-accounts/);
   await expect(page.getByRole("heading", { name: "Link an external account" })).toBeVisible(); await expect(page.getByRole("region", { name: "Available bank accounts" })).toContainText("No verified external accounts");
   await page.setViewportSize({ width: 320, height: 900 }); await fits(page);
 });

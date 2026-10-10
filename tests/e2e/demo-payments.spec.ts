@@ -22,8 +22,8 @@ async function addFunds(page:Page,method='Debit card',amount='100.00'){
 }
 for(const type of ['personal','business'] as const)test(`${type}: original Add funds credits normal balance immediately and persists`,async({page,request})=>{
  const u=await fixture(request,`Funding${type}`,type==='personal'?'+1 555 019 8101':'+1 555 019 8102',type);await login(page,u.email);await page.goto('/#/app/transfers');await expect(page.getByRole('heading',{name:'Transfers',exact:true})).toBeVisible();await expect(page.getByText('PAYMENT PLAYGROUND',{exact:true})).toHaveCount(0);
- const before=await account(request,u.token),dialog=await addFunds(page,type==='personal'?'Debit card':'Bank transfer','125.50');
- const credited=125.5-(type==='personal'?quoteFee('card_deposit',12550).feeCents/100:0);
+ const before=await account(request,u.token),dialog=await addFunds(page,'Debit card','125.50');
+ const credited=125.5-quoteFee('card_deposit',12550).feeCents/100;
  expect(Math.round((await account(request,u.token)).balance*100)).toBe(Math.round((before.balance+credited)*100));await expect(dialog.getByRole("button",{name:"Review deposit",exact:true})).toHaveCount(0);await expect(dialog.getByText('Simulate approval',{exact:true})).toHaveCount(0);
  for(const width of [320,390,768,1440]){await page.setViewportSize({width,height:900});await fits(page);}
  await dialog.getByRole('button',{name:'Close',exact:true}).click();await expect(page.locator('.app-topbar,.topbar,.dash-topbar').first()).toContainText(`$${(before.balance+credited).toFixed(2)}`);await page.reload();expect(Math.round((await account(request,u.token)).balance*100)).toBe(Math.round((before.balance+credited)*100));
@@ -43,12 +43,12 @@ test('QR email/phone and signed-out deep link work with the restored transfer fo
 test('a lost deposit response can be retried without a second credit',async({page,request})=>{
  const u=await fixture(request,'Retry','+1 555 019 8105');await login(page,u.email);await page.goto('/#/app/transfers');let calls=0;
  await page.route('**/api/me/deposits',async route=>{calls++;if(calls===1){await route.fetch();await route.abort('failed');}else await route.continue();});
- await page.getByRole('button',{name:'Add funds',exact:true}).first().click();const dialog=page.getByRole('dialog',{name:'Add funds',exact:true});await chooseFundingMethod(dialog, 'Wire transfer');await dialog.getByLabel('Amount (USD)',{exact:true}).fill('150');await confirmFunding(dialog);await expect(dialog.getByRole('alert')).toBeVisible();expect((await account(request,u.token)).balance).toBe(150);
- await confirmFunding(dialog);await expect(dialog.getByRole('status')).toContainText('Funds added');expect((await account(request,u.token)).balance).toBe(150);expect((await account(request,u.token)).transactions.filter((t:{reference:string})=>t.reference?.startsWith('VYR-'))).toHaveLength(1);
+ await page.getByRole('button',{name:'Add funds',exact:true}).first().click();const dialog=page.getByRole('dialog',{name:'Add funds',exact:true});await chooseFundingMethod(dialog, 'Debit card');await dialog.getByLabel('Amount (USD)',{exact:true}).fill('150');await confirmFunding(dialog);await expect(dialog.getByRole('alert')).toBeVisible();const credited=150-quoteFee('card_deposit',15000).feeCents/100;expect((await account(request,u.token)).balance).toBe(credited);
+ await confirmFunding(dialog);await expect(dialog.getByRole('status')).toContainText('Funds added');expect((await account(request,u.token)).balance).toBe(credited);expect((await account(request,u.token)).transactions.filter((t:{reference:string})=>t.reference?.startsWith('VYR-'))).toHaveLength(1);
 });
 
 test('deposit success survives an account-refresh failure',async({page,request})=>{
  const u=await fixture(request,'Refresh','+1 555 019 8106');await login(page,u.email);await page.goto('/#/app/transfers');await expect(page.locator('#pay-to')).toBeVisible();
- await page.route('**/api/me/state',route=>route.fulfill({status:503,contentType:'application/json',body:'{"error":"Refresh unavailable"}'}));const dialog=await addFunds(page,'Bank transfer','75');await expect(dialog.getByRole('alert')).toContainText('Funds were added');await expect(dialog.getByRole("button",{name:"Review deposit",exact:true})).toHaveCount(0);expect((await account(request,u.token)).balance).toBe(75);
+ await page.route('**/api/me/state',route=>route.fulfill({status:503,contentType:'application/json',body:'{"error":"Refresh unavailable"}'}));const dialog=await addFunds(page,'Debit card','75');await expect(dialog.getByRole('alert')).toContainText('Funds were added');await expect(dialog.getByRole("button",{name:"Review deposit",exact:true})).toHaveCount(0);expect((await account(request,u.token)).balance).toBe(75-quoteFee('card_deposit',7500).feeCents/100);
  await page.unroute('**/api/me/state');await dialog.getByRole('button',{name:'Refresh funding status',exact:true}).click();await expect(dialog.getByRole('alert')).toHaveCount(0);
 });

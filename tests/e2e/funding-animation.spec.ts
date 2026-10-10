@@ -17,13 +17,14 @@ async function owner(page: Page, request: APIRequestContext, accountType: "perso
   return user.token as string;
 }
 const state = async (request: APIRequestContext, token: string) => (await (await request.get("/api/me/state", { headers: { authorization: `Bearer ${token}` } })).json()).account;
+const cardCredit = (dollars: number) => dollars - quoteFee("card_deposit", Math.round(dollars * 100)).feeCents / 100;
 async function form(page: Page, amount = "25.50", quickJump = false) {
   if (quickJump) {
     await page.getByRole("button", { name: "Search or quick jump (Command K)" }).click();
     await page.locator(".command-palette-box").getByRole("button", { name: /^Add Funds/ }).click();
   } else await page.getByRole("button", { name: "Add funds", exact: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "Add funds", exact: true });
-  await chooseFundingMethod(dialog, "Bank transfer");
+  await chooseFundingMethod(dialog, "Debit card");
   await dialog.getByLabel("Amount (USD)", { exact: true }).fill(amount);
   return dialog;
 }
@@ -64,7 +65,7 @@ test("money movement waits for confirmation, credits immediately, prevents dupli
     await page.keyboard.press("Escape"); await expect(dialog).toBeVisible();
     expect(posts).toBe(1);
     const account = await state(request, token);
-    expect(account.balance).toBe(25.5); expect(account.transactions).toHaveLength(1);
+    expect(account.balance).toBe(cardCredit(25.5)); expect(account.transactions).toHaveLength(1);
     // Deliberately outwait the presentation duration: the timer alone cannot
     // announce success while the actual response is still withheld.
     await page.waitForTimeout(4000);
@@ -87,7 +88,7 @@ test("money movement waits for confirmation, credits immediately, prevents dupli
     await dialog.screenshot({ path: testInfo.outputPath("funding-confirmed.png") });
     await dialog.getByRole("button", { name: "Done", exact: true }).click();
     await expect(dialog).toBeHidden();
-    expect((await state(request, token)).balance).toBe(25.5);
+    expect((await state(request, token)).balance).toBe(cardCredit(25.5));
   } finally { release(); }
 });
 
@@ -108,8 +109,7 @@ test("a fast response still gets a visible animation and adding more uses a new 
   await confirmFunding(dialog);
   await expect(dialog.getByRole("status")).toContainText("Funds added to your account immediately");
   expect(keys).toHaveLength(2); expect(keys[0]).not.toBe(keys[1]);
-  const cardFee = quoteFee("card_deposit", 1500).feeCents / 100;
-  expect((await state(request, token)).balance).toBe(10 + 15 - cardFee);
+  expect((await state(request, token)).balance).toBe(cardCredit(10) + cardCredit(15));
 });
 
 test("reduced motion uses a quiet confirmation without moving particles or confetti", async ({ page, request }) => {
@@ -150,7 +150,7 @@ test("a refusal restores the editable form without celebrating or crediting fund
   await expect(dialog.locator(".funding-animation.is-processing")).toBeVisible();
   await expect(dialog.getByRole("status")).toContainText("Funds added to your account immediately");
   expect(Date.now() - started).toBeGreaterThanOrEqual(2300);
-  expect((await state(request, token)).balance).toBe(25.5);
+  expect((await state(request, token)).balance).toBe(cardCredit(25.5));
 });
 
 
@@ -170,7 +170,7 @@ test("business overview and quick-jump funding on accounts/transfers share the v
     await dialog.getByRole("button", { name: "Done", exact: true }).click();
   }
   const account = await state(request, token);
-  expect(account.balance).toBe(30);
+  expect(Math.round(account.balance * 100)).toBe(Math.round(cardCredit(10) * 100) * 3);
   expect(account.transactions).toHaveLength(3);
 });
 
@@ -188,7 +188,7 @@ test("details and review match the send flow; edit and cancel never submit a dep
   await dialog.screenshot({ path: testInfo.outputPath("funding-details.png") });
   await dialog.getByRole("button", { name: "Review deposit", exact: true }).click();
   await expect(dialog.getByRole("heading", { name: "Review deposit", exact: true })).toBeVisible();
-  await expect(dialog.locator(".flow-rows")).toContainText("Bank transfer");
+  await expect(dialog.locator(".flow-rows")).toContainText("Debit card");
   await expect(dialog.locator(".flow-rows")).toContainText("My account top-up");
   await expect(dialog.locator(".flow-confirm")).toHaveText("Add $40.00");
   expect(posts).toBe(0); expect((await state(request, token)).balance).toBe(0);

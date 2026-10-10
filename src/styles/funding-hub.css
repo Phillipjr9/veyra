@@ -95,9 +95,13 @@
 .direct-deposit-details h3 { margin: 0 0 8px; font-size: 15px; }
 .direct-deposit-details p { font-size: 12px; line-height: 1.6; }
 .direct-deposit-details dl { margin: 0; }
-.direct-deposit-details dl > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid #e7e3ec; font-size: 12px; }
-.direct-deposit-details dt { color: var(--muted, #716e78); }
-.direct-deposit-details dd { margin: 0; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.direct-deposit-details dl > div, .receiving-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 9px 0; border-bottom: 1px solid #e7e3ec; font-size: 12px; }
+.direct-deposit-details dt { color: var(--muted, #716e78); flex: 0 0 110px; }
+.direct-deposit-details dd, .receiving-row dd { margin: 0; text-align: right; overflow-wrap: anywhere; min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; }
+.direct-deposit-details dd code, .receiving-row code { font-size: 12px; }
+.receiving-icon-btn { display: inline-flex; align-items: center; gap: 4px; }
+.receiving-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+.receiving-timing { margin: 10px 0 0; color: var(--muted, #716e78); }
 .external-accounts-page { max-width: 880px; margin: 0 auto; }
 .external-accounts-page header { margin: 24px 0; }
 .external-accounts-page h1 { font-size: clamp(24px, 4vw, 32px); }

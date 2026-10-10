@@ -8,7 +8,7 @@ import type { Request, Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { validWallet } from "../../shared/walletAddress.js";
 export { validWallet } from "../../shared/walletAddress.js";
-import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider } from "../../shared/funding.js";
+import { FUNDING_OPTIONS, fundingOption, fundingRequiresProvider, methodTakesAmount } from "../../shared/funding.js";
 import type { Integrations } from "./integrations.js";
 import { ASSETS } from "../../shared/catalog.js";
 import { BadInputError, centsToDecimal, dollarsToCents, getSetting, inTransaction, now, rid } from "./db.js";
@@ -48,27 +48,34 @@ export function createBanking(db: DatabaseSync, audit: Audit, integrations?: Int
   // administrator set on the member's account (Admin → Member → Account details).
   // They are unavailable until those details exist, so a member is never shown
   // routing numbers that were not configured for them.
-  const BANK_INFO_KINDS = new Set<string>(["direct_deposit", "wire", "ach"]);
+  const BANK_INFO_KINDS = new Set<string>(["direct_deposit", "wire", "ach", "bank"]);
   const accountMethods = (id: string) => FUNDING_OPTIONS.flatMap(option => {
     const receiving = BANK_INFO_KINDS.has(option.kind) ? directDeposit(id) : null;
     const base = { id: `demo_${id}_${option.kind}`, user_id: id, label: option.label, kind: option.kind,
-      instructions: "Add funds directly to your account balance. External bank and card processing is not connected.",
+      instructions: option.kind === "direct_deposit" || option.kind === "wire" || option.kind === "bank"
+        ? "Share the receiving details below. You do not enter an amount here — money appears when the sender posts it. External settlement is not connected."
+        : "Add funds directly to your account balance. External bank and card processing is not connected.",
       bank_name: "", routing_number: "", account_number: "", account_type: "", recipient: "Your Veyra account", recipient_contact: "", enabled: 0, demo: true, ledgerOnly: true,
-      linkedAccountId: "", unavailable: option.kind === "direct_deposit" && !receiving, ...receiving };
-    if (option.kind === "wire" || option.kind === "direct_deposit") return [base];
-    if (option.kind !== "ach" && option.kind !== "card") return [base];
+      linkedAccountId: "", inboundReceive: false, takesAmount: methodTakesAmount({ kind: option.kind }),
+      unavailable: option.kind === "direct_deposit" && !receiving, ...receiving };
+    if (option.kind === "wire" || option.kind === "direct_deposit" || option.kind === "bank") return [{ ...base, takesAmount: false }];
+    if (option.kind !== "ach" && option.kind !== "card") return [{ ...base, takesAmount: false }];
     const linked = linkedAccounts(id).filter(account => (account.kind ?? "bank") === (option.kind === "card" ? "card" : "bank"));
     if (option.kind === "ach" && receiving) {
       // Receiving into the admin-set Veyra account by ACH; linked accounts stay listed too.
-      const receivingAch = { ...base, label: "ACH to your Veyra account", instructions: "Send an ACH credit to the receiving details below. Account entries credit immediately; external ACH settlement is not connected." };
-      const linkedRows = linked.map(account => ({ ...base, bank_name: "", routing_number: "", account_number: "", recipient: "Your Veyra account", unavailable: false, id: `linked_${id}_${account.id}`, linkedAccountId: account.id, label: `${account.bank_name} ${account.account_type} •••• ${account.last4}${account.verification_kind === "staff_reference" ? " · Account reference" : " · ACH"}`, instructions: base.instructions }));
+      const receivingAch = { ...base, label: "ACH to your Veyra account", inboundReceive: true, takesAmount: false, instructions: "Send an ACH credit to the receiving details below. You do not enter an amount here. External ACH settlement is not connected." };
+      const linkedRows = linked.map(account => ({ ...base, bank_name: "", routing_number: "", account_number: "", recipient: "Your Veyra account", unavailable: false, inboundReceive: false, takesAmount: true, id: `linked_${id}_${account.id}`, linkedAccountId: account.id, label: `${account.bank_name} ${account.account_type} •••• ${account.last4}${account.verification_kind === "staff_reference" ? " · Account reference" : " · ACH"}`, instructions: base.instructions }));
       return [receivingAch, ...linkedRows];
     }
-    if (!linked.length) return [{ ...base, unavailable: true }];
+    if (option.kind === "card" && !linked.length) return [{ ...base, unavailable: false, takesAmount: true }];
+    if (!linked.length) return [{ ...base, unavailable: true, takesAmount: true }];
     return linked.map(account => ({
       ...base,
       id: `linked_${id}_${account.id}`,
       linkedAccountId: account.id,
+      inboundReceive: false,
+      takesAmount: true,
+      unavailable: false,
       label: account.kind === "card"
         ? `${account.card_brand ? `${account.card_brand} ` : "Debit card "}•••• ${account.last4} · Card funding`
         : `${account.bank_name} ${account.account_type} •••• ${account.last4}${account.verification_kind === "staff_reference" ? " · Account reference" : " · ACH"}`,
@@ -200,7 +207,7 @@ export function createBanking(db: DatabaseSync, audit: Audit, integrations?: Int
       res.json({ accounts: externalAccounts(id) });
     },
     fundingGet(req: Request, res: Response) {
-      res.json({ immediateFunding: demoPaymentsEnabled(), demoMode: demoPaymentsEnabled(), methods: (demoPaymentsEnabled() ? accountMethods(req.user!.id) : methods(req.user!.id).filter((r: any) => r.enabled)).filter((m: any) => kindAllowed(m.kind)),
+      res.json({ immediateFunding: demoPaymentsEnabled(), demoMode: demoPaymentsEnabled(), methods: (demoPaymentsEnabled() ? accountMethods(req.user!.id) : methods(req.user!.id).filter((r: any) => r.enabled).map((m: any) => ({ ...m, takesAmount: methodTakesAmount({ kind: m.kind }) }))).filter((m: any) => kindAllowed(m.kind)),
         availableKinds: integrations ? integrations.availableFundingKinds() : undefined,
         linkedAccounts: linkedAccounts(req.user!.id), directDeposit: directDeposit(req.user!.id), requests: fundingRequests(req.user!.id) });
     },

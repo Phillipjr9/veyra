@@ -10,13 +10,13 @@ const CARD_FEE_PERCENT = quoteFee("card_deposit", 10_000).rateBps / 100;
 // One icon and one short plain-English hint per funding kind. Zelle keeps its
 // own logo so members recognise it at a glance.
 const KIND: Record<string, { Icon: LucideIcon; hint: string }> = {
-  ach: { Icon: Landmark, hint: "Link a bank account" },
+  ach: { Icon: Landmark, hint: "From a linked bank" },
   card: { Icon: CreditCard, hint: `Debit card · ${CARD_FEE_PERCENT}% fee` },
   zelle: { Icon: ArrowDownLeft, hint: "Zelle® · instant, no fee" },
-  bank: { Icon: ArrowDownLeft, hint: "Transfer from another bank" },
-  wire: { Icon: Building2, hint: "Incoming domestic wire" },
-  direct_deposit: { Icon: WalletCards, hint: "Payroll or employer deposit" },
-  check: { Icon: FileCheck2, hint: "Mail-in check deposit" },
+  bank: { Icon: ArrowDownLeft, hint: "Share routing and account" },
+  wire: { Icon: Building2, hint: "Incoming wire · account details" },
+  direct_deposit: { Icon: WalletCards, hint: "Payroll · routing and account" },
+  check: { Icon: FileCheck2, hint: "Mail-in instructions" },
   other: { Icon: CircleHelp, hint: "Instructions from your administrator" },
 };
 const fallback = { Icon: CircleHelp, hint: "Funding method" };

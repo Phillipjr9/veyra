@@ -46,11 +46,14 @@ test('admin edits account details and per-member funding; member request waits f
  try {
   await signIn(member,u.email);await member.goto('/#/app/accounts');await expect(member.locator('.checking-account-card')).toContainText('Personal savings');
   await member.goto('/#/app');await member.getByRole('button',{name:'Add funds',exact:true}).filter({visible:true}).first().click();
-  const funds=member.getByRole('dialog',{name:'Add funds',exact:true});await funds.getByRole('button',{name:'Bank transfer',exact:true}).click();await expect(funds).toContainText('Browser verified wire');await expect(funds).toContainText('23456789012345');await funds.getByLabel('Amount (USD)',{exact:true}).fill('75');await funds.getByRole('button',{name:'Submit funding request'}).click();await expect(funds.getByRole('status')).toContainText('pending');await fits(member);
+  const funds=member.getByRole('dialog',{name:'Add funds',exact:true});await funds.getByRole('button',{name:'Bank transfer',exact:true}).click();await expect(funds).toContainText('Browser verified wire');await funds.getByRole('button',{name:'Show account number',exact:true}).click();await expect(funds).toContainText('23456789012345');await expect(funds.getByLabel('Amount (USD)')).toHaveCount(0);await expect(funds.getByRole('button',{name:'Submit funding request'})).toHaveCount(0);await fits(member);
+  const funding=await (await request.get('/api/me/funding',{headers:{authorization:`Bearer ${u.token}`}})).json();
+  const bankMethod=funding.methods.find((m:{kind:string})=>m.kind==='bank');expect(bankMethod).toBeTruthy();
+  expect((await request.post('/api/me/deposits',{headers:{authorization:`Bearer ${u.token}`},data:{amount:75,methodId:bankMethod.id,requestKey:crypto.randomUUID()}})).status()).toBe(201);
   let state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(0);
   await row.getByRole('button',{name:'Funding',exact:true}).click();await manager.getByRole('button',{name:'Confirm received funds',exact:true}).click();await manager.getByLabel('Evidence / reason').fill('Synthetic independent bank receipt check');await manager.getByRole('button',{name:'Commit review'}).click();await expect(manager.getByText('$75.00 · confirmed',{exact:true})).toBeVisible();
   state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(75);await expect(manager.getByRole('button',{name:'Confirm received funds'})).toHaveCount(0);
-  await funds.getByRole('button',{name:'Refresh funding status'}).click();await expect(funds.getByRole('status')).toContainText('Funds added');await expect(funds.getByRole('status')).toContainText('confirmed');await funds.getByRole('button',{name:'Close',exact:true}).click();await member.goto('/#/app/accounts');await expect(member.locator('.checking-account-card')).toContainText('$75.00');
+  await funds.getByRole('button',{name:'Close',exact:true}).click();await member.goto('/#/app/accounts');await expect(member.locator('.checking-account-card')).toContainText('$75.00');
  } finally {await ctx.close();}
 });
 
@@ -148,7 +151,7 @@ test('admin configures Zelle and direct deposit; Zelle stays out of Add funds wh
   expect(await dialog.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
   await dialog.getByRole('button',{name:'Direct deposit',exact:true}).click();
   await dialog.getByRole('button',{name:'Show account number',exact:true}).click();await expect(dialog).toContainText('123456789012');await expect(dialog).toContainText('021000021');
-  await dialog.getByLabel('Amount (USD)',{exact:true}).fill('50');await dialog.getByRole('button',{name:'Submit funding request',exact:true}).click();await expect(dialog.getByRole('status')).toContainText('pending');
+  await expect(dialog.getByLabel('Amount (USD)')).toHaveCount(0);await expect(dialog.getByRole('button',{name:'Submit funding request'})).toHaveCount(0);
   const state=await (await request.get('/api/me/state',{headers:{authorization:`Bearer ${u.token}`}})).json();expect(state.account.balance).toBe(0);
  }finally{await ctx.close();}
 });

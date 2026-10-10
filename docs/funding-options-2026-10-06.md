@@ -10,18 +10,18 @@ Open **Add funds** from the personal or business dashboard.
 
 | Choice | Current behavior |
 | --- | --- |
-| Link a bank (ACH) | Explains account-holder/routing/account details, trial-deposit verification and separate transfer authorization. Bank fields are a disabled setup preview. Explicitly awaiting provider activation. |
-| Debit card | Secure-linking preparation screen. No PAN/CVV fields or card tokenization. Explicitly awaiting provider activation. |
-| Zelle | Shows only the member’s enabled, admin-configured recipient name, enrolled email/US phone and instructions. The member uses their own participating bank’s service and verifies the recipient independently. |
-| Bank transfer | Manual receiving bank, routing/account and recipient instructions. This is not an ACH pull from a linked external bank. |
-| Wire transfer | Manual incoming-wire instructions configured by the administrator. |
-| Direct deposit | Manual receiving instructions to share with an employer/payroll provider after independent verification. No payroll enrollment is performed. |
-| Check deposit | Configured check-delivery instructions only. No camera collection, OCR or clearance simulation. |
-| Other funding | Appears when an additional method is configured for the member. |
+| Link a bank (ACH) | Pull from a linked external account (amount + authorization) once a provider is connected. Inbound ACH to the Veyra account shows routing and account details and does **not** take an amount. |
+| Debit card | Amount + fee review. Secure-linking preparation until a card processor is connected. |
+| Zelle | Not shown in Add funds. Send money only. |
+| Bank transfer | Routing and account details to receive an ACH credit from another bank. **No amount field** — the sending bank originates the transfer. |
+| Wire transfer | Incoming-wire details (beneficiary, routing, account). **No amount field** — wires are not initiated from Veyra. |
+| Direct deposit | Routing and account details to share with payroll. **No amount field** — payroll sends the deposit. |
+| Check deposit | Configured check-delivery instructions only. No camera collection, OCR, clearance, or amount. |
+| Other funding | Appears when an additional method is configured for the member. Instructions only; no amount. |
 
 Cards distinguish **Activation needed**, **Instructions available**, and **Not configured**. Unconfigured choices remain discoverable but cannot submit a funding request. No demo account number is silently substituted as a usable real-world destination.
 
-After following manual instructions, the member can record an incoming transfer for review. Requests remain pending and do not increase balances until authorized staff independently confirm receipt. Existing idempotency, member scoping, amount limits and pending-request caps remain in force. Refresh updates instructions, request statuses and the account balance. Removed/disabled selected instructions are cleared from the current form.
+Receive methods (direct deposit, wire, bank transfer, check) show account or delivery details only. Members do not type an amount there — money appears when the sender posts it. Amount entry is limited to debit card and a linked-bank ACH pull. Existing idempotency, member scoping, amount limits and pending-request caps remain in force for those amount methods. Refresh updates instructions, request statuses and the account balance. Removed/disabled selected instructions are cleared from the current form.
 
 ## Administrator controls
 
